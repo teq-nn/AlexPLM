@@ -14,12 +14,18 @@
 //! ([`render_gitattributes`]) — stay table-testable without a real repo.
 
 use crate::classifier::{classify, AttrMarker};
+use crate::import_gate::{decide_import, GateDecision, RepoState};
 use crate::projection::{project_product, ProductView};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 use std::process::Command;
+
+/// Heavy-binary threshold: a blob this size or larger, already committed into history, is a
+/// "Riesen-Binary" (E38) that warrants the `git lfs migrate` rewrite. 50 MiB — well above
+/// source files, comfortably below typical CAD/mesh exports the tool wants out of git.
+const GIANT_BINARY_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Outcome of an import, returned to the UI shell.
 #[derive(Debug, Serialize, Clone)]
@@ -251,6 +257,197 @@ fn commit(root: &Path, message: &str) -> std::io::Result<()> {
         ));
     }
     Ok(())
+}
+
+// ---- Import Gate I/O glue (Issue #7, E38) ----
+//
+// The pure decision lives in `crate::import_gate`. Here we only *gather* the three repo
+// facts from the real folder, and — strictly behind a `MigrateBehindGate` decision plus an
+// explicit confirmation — run the destructive `git lfs migrate`. The dangerous git call is
+// kept far from the pure gate so it can never be reached by accident.
+
+/// What the Import Gate decided for a folder, plus the facts it decided on, for the UI to
+/// explain the stakes before any history is touched.
+#[derive(Debug, Serialize, Clone)]
+pub struct GateReport {
+    /// The one decision: clean-init | migrate-behind-gate | refuse.
+    pub decision: GateDecision,
+    /// Whether the folder already carries git history.
+    pub has_history: bool,
+    /// Whether shared clones (a remote) exist — the refuse trigger (E38).
+    pub shared_clones_exist: bool,
+    /// Whether heavy binaries are already committed into history.
+    pub giant_binaries_in_history: bool,
+}
+
+/// Probe a folder's git state and run the pure Import Gate over it (no mutation).
+///
+/// This is the read step the UI calls first: it reports whether the safe clean import
+/// applies, whether the gated history rewrite is offered, or whether the tool must refuse
+/// because the repo is shared. It never writes anything.
+pub fn evaluate_import_gate(root: &Path) -> std::io::Result<GateReport> {
+    if !root.is_dir() {
+        return Err(Error::new(
+            ErrorKind::NotFound,
+            format!("Kein Ordner: {}", root.display()),
+        ));
+    }
+    let has_history = repo_has_history(root);
+    let shared_clones_exist = has_history && repo_has_shared_clones(root);
+    let giant_binaries_in_history = has_history && repo_has_giant_binaries_in_history(root);
+    let state = RepoState {
+        has_history,
+        shared_clones_exist,
+        giant_binaries_in_history,
+    };
+    Ok(GateReport {
+        decision: decide_import(state),
+        has_history,
+        shared_clones_exist,
+        giant_binaries_in_history,
+    })
+}
+
+/// Run the destructive `git lfs migrate import` history rewrite — ONLY when the gate
+/// permits it. Re-probes the live repo and refuses unless the current decision is
+/// [`GateDecision::MigrateBehindGate`]; a stale UI can never push us past the gate. This is
+/// the only place in the codebase that rewrites history.
+///
+/// After the rewrite the heavy blobs live in LFS (pointers in history, content in the store),
+/// `.gitattributes` carries the lockable markers, and the product re-projects for the shell.
+pub fn migrate_history_behind_gate(root: &Path) -> std::io::Result<ImportResult> {
+    let report = evaluate_import_gate(root)?;
+    if report.decision != GateDecision::MigrateBehindGate {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "Historie-Umschreibung nicht erlaubt: das Gate gibt sie für diesen Ordner nicht frei \
+             (geteilte Klone oder kein Bedarf).",
+        ));
+    }
+
+    // Decide lockable patterns exactly as the clean path does, so post-migrate the same
+    // unmergeable types are tracked by LFS and marked lockable.
+    let existing = read_existing_attributes(root)?;
+    let leaves = collect_leaf_files(root)?;
+    let mut markers: BTreeMap<String, bool> = BTreeMap::new();
+    let mut locked_count = 0usize;
+    for rel in &leaves {
+        let pattern = pattern_for(rel);
+        let lockable = classify(rel, existing.get(&pattern).copied()).is_lockable();
+        if lockable {
+            locked_count += 1;
+        }
+        markers
+            .entry(pattern)
+            .and_modify(|v| *v = *v || lockable)
+            .or_insert(lockable);
+    }
+    write_gitattributes(root, &render_gitattributes(&markers))?;
+
+    // The destructive step: rewrite history so the lockable patterns become LFS pointers.
+    let patterns: Vec<String> = markers
+        .iter()
+        .filter(|(_, lockable)| **lockable)
+        .map(|(p, _)| p.clone())
+        .collect();
+    run_lfs_migrate(root, &patterns)?;
+
+    run_git(root, &["add", "-A"])?;
+    commit(root, "Import: Historie auf LFS umgeschrieben (PLM-Werkzeug, E38)")?;
+
+    let product = project_product(root)?;
+    Ok(ImportResult {
+        git_initialized: false,
+        locked_count,
+        product,
+    })
+}
+
+/// Whether the folder is a git repo carrying at least one commit.
+fn repo_has_history(root: &Path) -> bool {
+    if !is_git_repo(root) {
+        return false;
+    }
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Whether shared clones exist — proxied by any configured remote. A repo with a remote may
+/// have clones we would poison by rewriting history, so its mere presence forces refuse (E38).
+fn repo_has_shared_clones(root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["remote"])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+/// Whether any blob reachable from history is at or above the giant-binary threshold.
+fn repo_has_giant_binaries_in_history(root: &Path) -> bool {
+    // List every (type, oid, size) of all objects across all refs; scan for a giant blob.
+    let rev = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-list", "--objects", "--all"])
+        .output();
+    let Ok(rev) = rev else { return false };
+    if !rev.status.success() || rev.stdout.is_empty() {
+        return false;
+    }
+    // `rev-list --objects` prints "<oid> [<path>]"; cat-file's batch-check wants just the oid,
+    // so strip everything after the first whitespace per line before piping it in.
+    let oids: String = String::from_utf8_lossy(&rev.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|oid| format!("{oid}\n"))
+        .collect();
+    let batch = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "--batch-check=%(objecttype) %(objectsize)"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn();
+    let Ok(mut child) = batch else { return false };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(oids.as_bytes());
+    }
+    let Ok(out) = child.wait_with_output() else { return false };
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let mut p = line.split_whitespace();
+        matches!(p.next(), Some("blob"))
+            && p.next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|sz| sz >= GIANT_BINARY_BYTES)
+                .unwrap_or(false)
+    })
+}
+
+/// Run `git lfs migrate import` over the lockable patterns. Destructive: rewrites history.
+fn run_lfs_migrate(root: &Path, patterns: &[String]) -> std::io::Result<()> {
+    if patterns.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<String> = vec![
+        "lfs".into(),
+        "migrate".into(),
+        "import".into(),
+        "--everything".into(),
+        "--yes".into(),
+    ];
+    for p in patterns {
+        args.push(format!("--include={p}"));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git(root, &refs)
 }
 
 #[cfg(test)]
