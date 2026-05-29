@@ -1,0 +1,108 @@
+/* PLM-Werkzeug design tokens — verbatim from the PRD (#1, ui-stilbeschreibung).
+   Orange (--accent) is rationed: only the "laute Ausnahme". Not used in this slice. */
+
+:root {
+  /* Surfaces — warm grey */
+  --surface-base: #e4e2dc;
+  --surface-raised: #f0eee8;
+  --surface-sunken: #d7d4cd;
+
+  /* Display ("screen") zone — recessed dark instrument LCD */
+  --screen-bg: #0e0d0c;
+  --screen-fg: #e8e6e1;
+
+  /* Keys */
+  --key-dark: #1c1a19;
+  --key-light: #edeae3;
+  --key-mid: #94918c;
+
+  /* Accent — RATIONED: laute Ausnahme only */
+  --accent: #f0421c;
+  --accent-ink: #ffffff;
+
+  /* LED status dots */
+  --led-free: #3c9a4b;
+  --led-working: #c9c6bf;
+  --led-attention: #f0421c;
+  --led-off: #6b6864;
+
+  /* Ink */
+  --ink-strong: #1c1a19;
+  --ink-default: #3a3833;
+  --ink-muted: #6b6864;
+
+  --hairline: #c9c6bf;
+
+  /* Second colour, dark surfaces only (graph): foreign state */
+  --data-foreign: #2e7ff0;
+
+  /* Type */
+  --font-label: "Archivo", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Geometry & motion */
+  --radius: 5px;
+  --radius-sm: 3px;
+  --ease: cubic-bezier(0.32, 0.72, 0.3, 1);
+  --dur: 150ms;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--screen-bg);
+}
+
+body {
+  font-family: var(--font-label);
+  color: var(--ink-default);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* Caps label utility — Neo-Grotesk, gesperrt, small. */
+.label {
+  font-family: var(--font-label);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+/* All data / values / paths / timestamps in Mono. */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-feature-settings: "ss02";
+}
+
+/* Thin, muted scrollbars to match the instrument. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--hairline);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
