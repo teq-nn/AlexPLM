@@ -1,7 +1,15 @@
 <script lang="ts">
   import type { ProductView } from "./types";
 
-  let { product }: { product: ProductView | null } = $props();
+  let {
+    product,
+    activeMilestone = null,
+  }: { product: ProductView | null; activeMilestone?: string | null } = $props();
+
+  // The version bar's largest, brightest element is the active Meilenstein (E28/§24):
+  // the durable human version. Until a Stand is promoted there is none — say so honestly
+  // rather than invent a number.
+  let version = $derived(activeMilestone ?? null);
 </script>
 
 <header class="bar">
@@ -12,7 +20,11 @@
         <span class="sep">·</span>
         <span class="branch">{product.branch}</span>
         <span class="sep">·</span>
-        <span class="version">{product.version}</span>
+        {#if version}
+          <span class="version">{version}</span>
+        {:else}
+          <span class="version none">— kein Meilenstein —</span>
+        {/if}
       {:else}
         <span class="idle">kein Produkt geöffnet</span>
       {/if}
@@ -90,9 +102,21 @@
   .branch {
     color: #b8b4ad;
   }
+  /* The active Meilenstein: the largest, brightest element — a hint of 7-segment display. */
   .version {
     color: var(--screen-fg);
-    font-weight: 600;
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 0.02em;
+    line-height: 1;
+    text-shadow: 0 0 8px rgba(232, 230, 225, 0.22);
+  }
+  .version.none {
+    color: #5a564f;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-shadow: none;
   }
   .idle {
     color: #6b6660;
