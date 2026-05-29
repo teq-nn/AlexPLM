@@ -1,9 +1,12 @@
 pub mod autocommit;
+pub mod edges;
+pub mod edgestore;
 pub mod graph;
 pub mod graphread;
 pub mod projection;
 pub mod watcher;
 
+use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
 use graph::VersionGraph;
 use graphread::{promote_to_milestone, read_graph};
 use projection::{project_product, ProductView};
@@ -88,6 +91,42 @@ fn promote_milestone(
         .map_err(|e| e.to_string())
 }
 
+/// Read the product's manual „abgeleitet von" edges and their Stale-Warnungen (Issue #10).
+/// Edges are opt-in: a product with no edge file has zero edges and no warnings (E40). Pure
+/// read — the edges + artifact timestamps are gathered then judged by the pure core.
+#[tauri::command]
+fn read_edges(path: String) -> Result<EdgeView, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(read_edge_view(root))
+}
+
+/// Draw a manual „abgeleitet von" edge (`derived` „stammt aus" `source`) and persist it
+/// (Issue #10). Returns the refreshed edge view (edges + Stale-Warnungen) so the UI updates
+/// in one round-trip.
+#[tauri::command]
+fn add_edge(path: String, derived: String, source: String) -> Result<EdgeView, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    add_persisted_edge(root, &derived, &source).map_err(|e| e.to_string())?;
+    Ok(read_edge_view(root))
+}
+
+/// Remove a manual edge and persist the result (Issue #10). Returns the refreshed edge view.
+#[tauri::command]
+fn remove_edge(path: String, derived: String, source: String) -> Result<EdgeView, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    remove_persisted_edge(root, &derived, &source).map_err(|e| e.to_string())?;
+    Ok(read_edge_view(root))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -99,7 +138,10 @@ pub fn run() {
             start_watching,
             stop_watching,
             read_version_graph,
-            promote_milestone
+            promote_milestone,
+            read_edges,
+            add_edge,
+            remove_edge
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

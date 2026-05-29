@@ -4,6 +4,8 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import type {
+    Baustein,
+    EdgeView,
     ProductView,
     Stand,
     StandEvent,
@@ -38,6 +40,17 @@
   // driving the bar. Read read-only and refreshed whenever a new Stand settles.
   let graph = $state<VersionGraph | null>(null);
 
+  // Manual „abgeleitet von" edges + their Stale-Warnungen (Issue #10). Opt-in: a product
+  // with no drawn edges keeps this empty and shows no warnings (E40).
+  let edgeView = $state<EdgeView>({ edges: [], warnings: [] });
+
+  // Per-artifact lookups derived from the edge view: which source a card is derived from,
+  // and whether it is currently stale (source newer than derivation — E26).
+  const sourceOf = $derived(
+    new Map(edgeView.edges.map((e) => [e.derived, e.source])),
+  );
+  const staleSet = $derived(new Set(edgeView.warnings.map((w) => w.derived)));
+
   async function refreshGraph() {
     if (!productPath) return;
     try {
@@ -50,6 +63,41 @@
     }
   }
 
+  async function refreshEdges() {
+    if (!productPath) return;
+    try {
+      edgeView = await invoke<EdgeView>("read_edges", { path: productPath });
+    } catch (e) {
+      // Edges are opt-in extra; a read failure must not break the read-only shell.
+      error = String(e);
+    }
+  }
+
+  // Other Bausteine this card can be derived from (itself excluded; no self-edge).
+  function candidatesFor(self: Baustein): Baustein[] {
+    return product ? product.bausteine.filter((b) => b.path !== self.path) : [];
+  }
+
+  async function deriveFrom(derived: string, source: string) {
+    if (!productPath) return;
+    edgeView = await invoke<EdgeView>("add_edge", {
+      path: productPath,
+      derived,
+      source,
+    });
+  }
+
+  async function clearEdge(derived: string) {
+    if (!productPath) return;
+    const source = sourceOf.get(derived);
+    if (!source) return;
+    edgeView = await invoke<EdgeView>("remove_edge", {
+      path: productPath,
+      derived,
+      source,
+    });
+  }
+
   // Single long-lived listener for settled saves. The watcher (Rust) does the
   // debouncing and the silent local commit; we only render the resulting Stand and
   // refresh the tree so the new node appears.
@@ -57,6 +105,8 @@
   listen<StandEvent>("stand-created", (e) => {
     stands = [{ ...e.payload, id: standSeq++ }, ...stands];
     void refreshGraph();
+    // A new save can change an artifact's timestamp, so Stale-Warnungen may flip (E26).
+    void refreshEdges();
   }).then((u) => (unlisten = u));
 
   onDestroy(() => {
@@ -80,11 +130,13 @@
       stands = [];
       await invoke("start_watching", { path: selected });
       await refreshGraph();
+      await refreshEdges();
     } catch (e) {
       error = String(e);
       product = null;
       productPath = null;
       graph = null;
+      edgeView = { edges: [], warnings: [] };
     } finally {
       loading = false;
     }
@@ -122,7 +174,15 @@
         {#if product.bausteine.length > 0}
           <div class="grid">
             {#each product.bausteine as b, i (b.path)}
-              <ArtifactCard baustein={b} index={i} />
+              <ArtifactCard
+                baustein={b}
+                index={i}
+                candidates={candidatesFor(b)}
+                source={sourceOf.get(b.path) ?? null}
+                stale={staleSet.has(b.path)}
+                onDeriveFrom={(s) => deriveFrom(b.path, s)}
+                onClearEdge={() => clearEdge(b.path)}
+              />
             {/each}
           </div>
         {:else}

@@ -56,3 +56,28 @@ export interface VersionGraph {
   active_milestone: string | null;
   offloaded_archive: string | null;
 }
+
+/** A manual „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10).
+ *  Both are product-relative artifact paths. Mirrors `Edge` in src-tauri/src/edges.rs. */
+export interface Edge {
+  /** The derivation — made *from* `source`. */
+  derived: string;
+  /** The source the derivation „stammt aus". */
+  source: string;
+}
+
+/** A fired Stale-Warnung: the derivation is older than its source (E26).
+ *  Mirrors `StaleWarning` in src-tauri/src/edges.rs. */
+export interface StaleWarning {
+  derived: string;
+  source: string;
+  source_timestamp: string;
+  derived_timestamp: string;
+}
+
+/** Manual edges + their Stale-Warnungen, returned in one round-trip (Issue #10).
+ *  Mirrors `EdgeView` in src-tauri/src/edgestore.rs. Opt-in: zero edges = no warnings. */
+export interface EdgeView {
+  edges: Edge[];
+  warnings: StaleWarning[];
+}
