@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Baustein } from "./types";
+  import type { Baustein, ArtifactSignal } from "./types";
   import Led from "./Led.svelte";
 
   let {
@@ -14,6 +14,10 @@
     // Gestures: draw / clear a manual „abgeleitet von" edge for this card.
     onDeriveFrom = (_source: string) => {},
     onClearEdge = () => {},
+    // Auto-Lock & Status-Signale (Issue #6): the derived per-artifact LED signal, and the
+    // edit gesture that auto-acquires a lock (E31).
+    signal = null,
+    onedit = undefined,
   }: {
     baustein: Baustein;
     index?: number;
@@ -22,6 +26,8 @@
     stale?: boolean;
     onDeriveFrom?: (source: string) => void;
     onClearEdge?: () => void;
+    signal?: ArtifactSignal | null;
+    onedit?: (() => void) | undefined;
   } = $props();
 
   // Split the main file into directory + filename so the filename can carry weight
@@ -39,14 +45,38 @@
     picking = false;
     pick = "";
   }
+
+  // Map the derived status (Status Reader, E37) onto the physical-LED vocabulary.
+  //   free            → green  (frei / sauber)
+  //   in-progress     → grey   (in Arbeit / ruhend) — the quiet default
+  //   locked-by-other → orange (gesperrt — the one loud exception)
+  // A stale derivation (E26) is the other loud exception, so it also raises the LED.
+  const status = $derived(signal?.status ?? "in-progress");
+  const led = $derived(
+    status === "locked-by-other" || stale
+      ? "attention"
+      : status === "free"
+        ? "free"
+        : "working",
+  );
+  const ledTitle = $derived(
+    status === "locked-by-other"
+      ? (signal?.tooltip ?? "gesperrt")
+      : stale
+        ? "Prüfung erforderlich — Quelle ist neuer"
+        : status === "free"
+          ? "frei"
+          : "in Arbeit / ruhend",
+  );
+  const lockedByOther = $derived(status === "locked-by-other");
+  // Editing is offered for any artifact with a file; lockable ones auto-acquire a lock when
+  // opened (E31). A foreign-locked file can't be taken over here — that's loud coordination.
+  const canEdit = $derived(!!onedit && !!baustein.main_file && !lockedByOther);
 </script>
 
-<article class="card" class:stale style:--i={index}>
+<article class="card" class:stale class:locked={lockedByOther} style:--i={index}>
   <div class="head">
-    <Led
-      status={stale ? "attention" : "working"}
-      title={stale ? "Prüfung erforderlich — Quelle ist neuer" : "in Arbeit / ruhend"}
-    />
+    <Led status={led} title={ledTitle} />
     <h2 class="label name">{baustein.name}</h2>
     {#if stale}
       <span class="label flag">Prüfen</span>
@@ -60,7 +90,24 @@
     {:else}
       <div class="mono path empty">{baustein.path}</div>
     {/if}
+
+    {#if lockedByOther && signal}
+      <!-- The loud exception, stated honestly: who holds it and since when. -->
+      <div class="lockline mono" title={signal.tooltip}>
+        gesperrt von <span class="who">{signal.locked_by}</span>
+        {#if signal.locked_at}
+          <span class="since">seit {signal.locked_at}</span>
+        {/if}
+      </div>
+    {/if}
   </div>
+
+  {#if canEdit}
+    <!-- Primary card action: opening/editing a lockable artifact auto-acquires its lock (E31). -->
+    <button class="key edit" onclick={() => onedit?.()}>
+      <span class="label">bearbeiten</span>
+    </button>
+  {/if}
 
   <!-- „Abgeleitet von" — opt-in lineage. Absent edge = quiet card, no claim (E40). -->
   <div class="edge">
@@ -115,6 +162,12 @@
   }
   .card.stale:hover {
     border-color: var(--accent);
+  }
+  /* The loud exception: a foreign-locked card gets a thin orange left edge — enough to
+     find at a glance on a grey grid, never a full orange fill (orange is rationed). */
+  .card.locked {
+    border-left: 2px solid var(--accent);
+    padding-left: 14px;
   }
 
   .head {
@@ -267,6 +320,51 @@
   }
   .link:hover {
     color: var(--ink-strong);
+  }
+
+  /* "gesperrt von X seit …" — the honest coordination line on a foreign-locked card. */
+  .lockline {
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lockline .who {
+    font-weight: 600;
+  }
+  .lockline .since {
+    color: var(--ink-muted);
+  }
+
+  /* Neutral card action key — creme cap, hairline, seated edge (Stilbeschreibung §Tasten).
+     Quiet by default; locking is a routine, grey act, not the loud orange exception. */
+  .edit {
+    appearance: none;
+    cursor: pointer;
+    align-self: flex-start;
+    background: var(--key-light);
+    color: var(--ink-strong);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    padding: 6px 11px;
+    box-shadow: 0 1px 0 rgba(28, 26, 25, 0.1);
+    transition:
+      transform var(--dur) var(--ease),
+      box-shadow var(--dur) var(--ease),
+      background var(--dur) var(--ease);
+  }
+  .edit .label {
+    color: inherit;
+    font-size: 10px;
+  }
+  .edit:hover {
+    background: #f5f3ee;
+  }
+  .edit:active {
+    transform: translateY(1px);
+    box-shadow: 0 0 0 rgba(28, 26, 25, 0.1);
   }
 
   @keyframes rise {
