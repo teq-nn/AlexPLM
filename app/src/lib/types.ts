@@ -134,3 +134,25 @@ export interface ForeignLock {
   /** "gesperrt von X seit …" */
   tooltip: string;
 }
+
+// The one-time Einrichtungs-Zeremonie (Issue #5, E41). Mirrors `SetupReport` /
+// `SetupStage` in src-tauri/src/setup.rs. This is the rare, explicit exception where
+// git-near wording is allowed; the daily sync stays silent everywhere else.
+
+/** Where a product stands in the one-time ceremony. Mirrors `SetupStage`. */
+export type SetupStage =
+  | "not-configured"
+  | "remote-set-not-published"
+  | "eingerichtet";
+
+/** The ceremony state for a product. Mirrors `SetupReport` in src-tauri/src/setup.rs. */
+export interface SetupReport {
+  /** Drives whether the ceremony or the settled readout shows. */
+  stage: SetupStage;
+  /** Whether a server (remote) is connected. */
+  has_remote: boolean;
+  /** Whether the product has been published (first push done). */
+  has_published: boolean;
+  /** Credential-free clone URL to hand a colleague, once a server is connected. */
+  clone_url: string | null;
+}

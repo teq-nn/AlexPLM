@@ -9,6 +9,7 @@ pub mod import_gate;
 pub mod lockglue;
 pub mod locks;
 pub mod projection;
+pub mod setup;
 pub mod watcher;
 
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
@@ -17,6 +18,7 @@ use graphread::{promote_to_milestone, read_graph};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
+use setup::{configure_remote, publish_product, read_setup, SetupReport};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -210,6 +212,43 @@ impl From<LockInfo> for ForeignLock {
     }
 }
 
+/// Read the one-time **Einrichtungs-Zeremonie** state for a product (Issue #5, E41): is a
+/// server connected, has the product been published, and the colleague's credential-free clone
+/// URL. Pure read — the UI shows the ceremony only when not yet configured, a settled
+/// "eingerichtet" readout otherwise. This ceremony is the rare, explicit exception where
+/// git-near wording is allowed; the daily sync stays silent.
+#[tauri::command]
+fn read_setup_state(path: String) -> Result<SetupReport, String> {
+    let root = Path::new(&path);
+    read_setup(root).map_err(|e| e.to_string())
+}
+
+/// Connect the self-hosted Forgejo/Gitea server (Issue #5, E41): validate + normalize the typed
+/// host/owner/repo/credentials (pure core), configure the git remote, and enable `locksverify`
+/// for the host. Credentials are embedded in the push URL but never echoed back — the returned
+/// report carries only the credential-free clone URL. Returns the refreshed ceremony state.
+#[tauri::command]
+fn connect_server(
+    path: String,
+    host: String,
+    owner: String,
+    repo: String,
+    user: String,
+    token: String,
+) -> Result<SetupReport, String> {
+    let root = Path::new(&path);
+    configure_remote(root, &host, &owner, &repo, &user, &token).map_err(|e| e.to_string())
+}
+
+/// Perform the **first push** that publishes the product to the connected server (Issue #5,
+/// E41), setting the upstream so the later silent daily sync has a tracking ref. Returns the
+/// refreshed ceremony state (now `eingerichtet`).
+#[tauri::command]
+fn publish_to_server(path: String) -> Result<SetupReport, String> {
+    let root = Path::new(&path);
+    publish_product(root).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -230,7 +269,10 @@ pub fn run() {
             migrate_history,
             lock_artifact,
             read_status,
-            read_foreign_locks
+            read_foreign_locks,
+            read_setup_state,
+            connect_server,
+            publish_to_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
