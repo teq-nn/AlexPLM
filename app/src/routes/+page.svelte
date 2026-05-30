@@ -465,6 +465,34 @@
 <div class="app">
   <VersionBar {product} activeMilestone={graph?.active_milestone ?? null} />
 
+  <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
+       Bausteine pane — they aren't part of browsing Bausteine. The write-vs-read distinction
+       stays legible: "Neues Produkt" is the solid primary key (schreibt), "Produkt öffnen" the
+       quieter ghost key (liest nur). -->
+  <div class="entrybar">
+    <div class="entry-actions">
+      <button
+        class="key"
+        onclick={importProduct}
+        disabled={loading !== null}
+      >
+        <span class="label"
+          >{loading === "gate"
+            ? "prüfe …"
+            : loading === "import" || loading === "migrate"
+              ? "lege an …"
+              : "Neues Produkt"}</span
+        >
+      </button>
+      <button class="key ghost" onclick={openProduct} disabled={loading !== null}>
+        <span class="label"
+          >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
+        >
+      </button>
+      <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
+    </div>
+  </div>
+
   <div class="stage">
     <main class="work">
     <div class="toolbar">
@@ -524,25 +552,6 @@
             {/if}
           </span>
         {/if}
-
-        <button
-          class="key"
-          onclick={importProduct}
-          disabled={loading !== null}
-        >
-          <span class="label"
-            >{loading === "gate"
-              ? "prüfe …"
-              : loading === "import" || loading === "migrate"
-                ? "lege an …"
-                : "Ordner anlegen"}</span
-          >
-        </button>
-        <button class="key" onclick={openProduct} disabled={loading !== null}>
-          <span class="label"
-            >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
-          >
-        </button>
       </div>
     </div>
 
@@ -590,7 +599,7 @@
                     ? "prüfe …"
                     : loading === "import" || loading === "migrate"
                       ? "lege an …"
-                      : "Ordner anlegen"}</span
+                      : "Neues Produkt"}</span
                 >
               </button>
               <button
@@ -650,6 +659,28 @@
     flex-direction: column;
     height: 100vh;
     background: var(--surface-base);
+  }
+
+  /* The app-level entry bar: product entry points sit here, above the work chassis, so the
+     Bausteine pane stays about Bausteine. Reads as a shelf seated under the LCD display. */
+  .entrybar {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    background: var(--surface-raised);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .entry-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  /* The read-only distinction, kept legible after the move (mirrors the empty-state sub-line). */
+  .entry-hint {
+    margin-left: 4px;
+    color: var(--ink-muted);
+    font-size: 11px;
+    opacity: 0.8;
   }
 
   /* Work chassis + instrument rail (foreign locks + Stände) share the row below the display. */
