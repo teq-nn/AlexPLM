@@ -83,9 +83,10 @@
     }
   }
 
-  // The connect button is inert until the three URL parts are present (credentials optional).
+  // The connect button is inert until server, product name and username are present. The owner is
+  // optional — left blank it defaults to the authenticated user (the username) on the Rust side.
   let canConnect = $derived(
-    host.trim() !== "" && owner.trim() !== "" && repo.trim() !== "",
+    host.trim() !== "" && repo.trim() !== "" && user.trim() !== "",
   );
 </script>
 
@@ -144,11 +145,11 @@
           </label>
           <div class="row">
             <label class="field">
-              <span class="label fk">Besitzer / Team</span>
+              <span class="label fk">Besitzer / Team <span class="opt">(optional)</span></span>
               <input
                 class="mono in"
                 bind:value={owner}
-                placeholder="team"
+                placeholder="dein Account"
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -166,22 +167,21 @@
           </div>
           <div class="row">
             <label class="field">
-              <span class="label fk">Benutzer</span>
+              <span class="label fk">Username</span>
               <input
                 class="mono in"
                 bind:value={user}
-                placeholder="optional"
+                placeholder="anna"
                 autocomplete="off"
                 spellcheck="false"
               />
             </label>
             <label class="field">
-              <span class="label fk">Zugangs-Token</span>
+              <span class="label fk">Passwort</span>
               <input
                 class="mono in"
                 type="password"
                 bind:value={token}
-                placeholder="optional"
                 autocomplete="off"
               />
             </label>
@@ -394,6 +394,12 @@
   .fk {
     color: var(--ink-muted);
     font-size: 10px;
+  }
+  .fk .opt {
+    color: var(--ink-muted);
+    opacity: 0.65;
+    text-transform: none;
+    letter-spacing: 0;
   }
   /* Recessed input wells, echoing the dark instrument readouts but light enough to type into. */
   .in {
