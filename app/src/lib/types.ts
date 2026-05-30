@@ -171,3 +171,43 @@ export type WardenAction =
   | "sicherungs-push"
   | "auto-unlock"
   | "refuse";
+
+// The stiller Sync + Sync Decider (Issue #11, E41). The daily net-sync runs SILENTLY: the user
+// only ever sees "aktuell / gesichert" in the calm status readout — never push/pull/merge. The
+// ONE exception is a real, unmergeable contradiction: the stiller Sync stops and asks a single
+// domain-language question (the single orange-frame attention moment), never a git conflict marker.
+
+/** Which stand the user keeps in a loud exception. Mirrors `StandChoice` in src/syncdecider.rs. */
+export type StandChoice = "mine" | "theirs";
+
+/** One choosable stand in the loud question, with a domain label (never git wording).
+ *  Mirrors `StandOption` in src-tauri/src/syncdecider.rs. */
+export interface StandOption {
+  choice: StandChoice;
+  /** e.g. "mein Stand" / "Bens Stand". */
+  label: string;
+}
+
+/** The domain-language question shown in the single orange-frame loud exception. Carries NO git
+ *  conflict marker by construction. Mirrors `LoudQuestion` in src-tauri/src/syncdecider.rs. */
+export interface LoudQuestion {
+  /** „dein und Bens Gehäuse-Stand widersprechen sich — welcher gilt?" */
+  frage: string;
+  /** The contested artifacts, named as artifacts (never git refs). At least one. */
+  artefakte: string[];
+  /** The two stands to choose between. */
+  optionen: StandOption[];
+}
+
+/** The quiet daily sync status in the tool's OWN vocabulary (E41). `laute-ausnahme` is the only
+ *  one that raises the voice. Mirrors `SyncStatus` in src-tauri/src/syncglue.rs — serde external
+ *  tagging: the two quiet states are bare strings, the loud one carries the question. */
+export type SyncStatus =
+  | "aktuell"
+  | "gesichert"
+  | { "laute-ausnahme": LoudQuestion };
+
+/** Outcome of one silent daily sync pass. Mirrors `SyncOutcome` in src-tauri/src/syncglue.rs. */
+export interface SyncOutcome {
+  status: SyncStatus;
+}

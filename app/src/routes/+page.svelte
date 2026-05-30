@@ -17,6 +17,9 @@
     StandNode,
     VersionGraph,
     WardenAction,
+    SyncOutcome,
+    LoudQuestion,
+    StandChoice,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
@@ -26,6 +29,7 @@
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
+  import LauteAusnahme from "$lib/LauteAusnahme.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -79,6 +83,66 @@
       // The two push types are background safety nets; surfacing the raw error would break the
       // silent vocabulary, so we swallow it (a louder, in-tool sync error is a later slice).
     }
+  }
+
+  // The stiller Sync + Sync Decider (Issue #11, E41). The daily net-sync runs SILENTLY in the
+  // background: it just keeps the local stand "aktuell". The user never sees push/pull/merge.
+  // `syncQuiet` reflects the calm state ("aktuell" / "gesichert"); a real, unmergeable
+  // contradiction surfaces as `loud` — the SINGLE orange-frame moment in the whole instrument.
+  let syncQuiet = $state<"aktuell" | "gesichert" | null>(null);
+  let loud = $state<LoudQuestion | null>(null);
+  let syncTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Run one silent daily sync pass (E41). Best-effort: an offline/unpublished repo simply stays
+   *  quiet — a raw sync error must never break the silent vocabulary. The pure Sync Decider (Rust)
+   *  decides silent-merge vs. the loud exception; the UI only reflects the result. */
+  async function runSync() {
+    if (!productPath) return;
+    // While a loud exception is unresolved, do not keep re-running into it — wait for the choice.
+    if (loud) return;
+    try {
+      const outcome = await invoke<SyncOutcome>("sync_product", {
+        path: productPath,
+        other: foreignLocks[0]?.owner ?? null,
+      });
+      const s = outcome.status;
+      if (s === "aktuell") {
+        syncQuiet = "aktuell";
+      } else if (s === "gesichert") {
+        syncQuiet = "gesichert";
+        // a silent merge may have changed artifacts/timestamps — refresh the quiet views
+        await refreshGraph();
+        await refreshEdges();
+        await refreshStatus();
+      } else if (typeof s === "object" && "laute-ausnahme" in s) {
+        // The one moment the tool raises its voice: stop and ask whose stand applies.
+        loud = s["laute-ausnahme"];
+      }
+    } catch (e) {
+      // Silent by design (E41): no server / offline keeps the daily rhythm quiet, never loud.
+    }
+  }
+
+  function startSyncLoop() {
+    stopSyncLoop();
+    void runSync(); // pull on open (E41), then on idle ticks
+    syncTimer = setInterval(() => void runSync(), 8000);
+  }
+  function stopSyncLoop() {
+    if (syncTimer !== null) {
+      clearInterval(syncTimer);
+      syncTimer = null;
+    }
+  }
+  onDestroy(stopSyncLoop);
+
+  /** Resolve the loud exception by choosing whose stand applies. The decision-bearing resolution
+   *  lives behind a future Rust command; for now we record the choice, close the orange frame and
+   *  let the silent rhythm resume. Either way NO git vocabulary surfaces. */
+  function resolveLoud(_choice: StandChoice) {
+    loud = null;
+    syncQuiet = "gesichert";
+    void runSync();
   }
 
   // The one-time Einrichtungs-Zeremonie (Issue #5, E41). `setup` is the server-decided state;
@@ -157,10 +221,13 @@
     wardenAction = null;
     setup = null;
     ceremonyOpen = false;
+    syncQuiet = null;
+    loud = null;
     stands = [];
     graph = null;
     edgeView = { edges: [], warnings: [] };
     stopStatusLoop();
+    stopSyncLoop();
   }
 
   // The running ledger of Stände, newest first. Grows silently as saves settle.
@@ -267,6 +334,8 @@
       await refreshEdges();
       await refreshSetup();
       startStatusLoop();
+      // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
+      startSyncLoop();
     } catch (e) {
       error = String(e);
       product = null;
@@ -335,6 +404,7 @@
       // user is guided to share it. Reopening/daily use never re-triggers this.
       if (setup && setup.stage === "not-configured") ceremonyOpen = true;
       startStatusLoop();
+      startSyncLoop();
     } catch (e) {
       error = String(e);
       product = null;
@@ -389,6 +459,17 @@
       <span class="label section">Bausteine</span>
 
       <div class="actions">
+        <!-- The stiller Sync's quiet status (Issue #11, E41): "aktuell" / "gesichert" only —
+             never push/pull/merge. The loud exception is NOT shown here; it takes the screen. -->
+        {#if syncQuiet}
+          <span class="readout mono sync" role="status" aria-live="polite">
+            <span class="dot" class:fresh={syncQuiet === "aktuell"}></span>
+            <span class="readout-text"
+              >{syncQuiet === "aktuell" ? "aktuell" : "gesichert"}</span
+            >
+          </span>
+        {/if}
+
         <!-- The Lock Warden's two push types in the tool's own vocabulary (Issue #9). -->
         <Sicherungsstatus action={wardenAction} />
 
@@ -543,6 +624,12 @@
     onUpdated={(r) => (setup = r)}
     onClose={() => (ceremonyOpen = false)}
   />
+{/if}
+
+<!-- The single orange-frame moment (Issue #11, E41): the stiller Sync hit a real, unmergeable
+     contradiction and raised its voice. Domain language only; no git markers, ever. -->
+{#if loud}
+  <LauteAusnahme question={loud} onChoose={resolveLoud} />
 {/if}
 
 <style>

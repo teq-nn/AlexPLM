@@ -11,6 +11,8 @@ pub mod locks;
 pub mod projection;
 pub mod pushglue;
 pub mod setup;
+pub mod syncdecider;
+pub mod syncglue;
 pub mod warden;
 pub mod watcher;
 
@@ -21,6 +23,7 @@ use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, G
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
+use syncglue::{run_sync, SyncOutcome};
 use warden::{Checkpoint, WardenAction};
 use std::path::Path;
 use std::sync::Mutex;
@@ -266,6 +269,22 @@ fn run_checkpoint(product: String, path: String, milestone: bool) -> Result<Ward
     pushglue::run_checkpoint(root, &path, checkpoint).map_err(|e| e.to_string())
 }
 
+/// Run one **silent daily sync pass** (Issue #11, E41): fetch the remote stand, let the pure
+/// Sync Decider judge the divergence, and carry out the result. Free, mergeable divergence is
+/// merged silently with NO prompt (status `gesichert`); a contradiction over an unmergeable file
+/// (binary OR KiCad nominal-text — the #3 buckets) STOPS the sync without merging and returns the
+/// single **laute Ausnahme** — a domain-language question ("dein und X' Gehäuse-Stand
+/// widersprechen sich — welcher gilt?"), never a git conflict marker. The daily vocabulary is
+/// "aktuell / X arbeitet an Y / gesichert"; raw git (push/pull/merge) never surfaces.
+#[tauri::command]
+fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    run_sync(root, other).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -290,7 +309,8 @@ pub fn run() {
             read_setup_state,
             connect_server,
             publish_to_server,
-            run_checkpoint
+            run_checkpoint,
+            sync_product
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
