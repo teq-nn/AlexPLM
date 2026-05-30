@@ -11,12 +11,15 @@
     ForeignLock,
     Stand,
     StandEvent,
+    StandNode,
+    VersionGraph,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
   import StandList from "$lib/StandList.svelte";
+  import VersionTree from "$lib/VersionTree.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -103,6 +106,7 @@
     signals = {};
     foreignLocks = [];
     stands = [];
+    graph = null;
     stopStatusLoop();
   }
 
@@ -110,11 +114,29 @@
   let stands = $state<Stand[]>([]);
   let standSeq = 0;
 
+  // The version tree (Issue #8): Stände as nodes, Meilensteine marked, active version
+  // driving the bar. Read read-only and refreshed whenever a new Stand settles.
+  let graph = $state<VersionGraph | null>(null);
+
+  async function refreshGraph() {
+    if (!productPath) return;
+    try {
+      graph = await invoke<VersionGraph>("read_version_graph", {
+        path: productPath,
+      });
+    } catch (e) {
+      // The tree is a read-only view; a transient read failure must not break the shell.
+      error = String(e);
+    }
+  }
+
   // Single long-lived listener for settled saves. The watcher (Rust) does the
-  // debouncing and the silent local commit; we only render the resulting Stand.
+  // debouncing and the silent local commit; we only render the resulting Stand and
+  // refresh the tree so the new node appears.
   let unlisten: UnlistenFn | null = null;
   listen<StandEvent>("stand-created", (e) => {
     stands = [{ ...e.payload, id: standSeq++ }, ...stands];
+    void refreshGraph();
   }).then((u) => (unlisten = u));
 
   onDestroy(() => {
@@ -137,11 +159,13 @@
       // A fresh product starts with a fresh ledger, then watching begins silently.
       stands = [];
       await invoke("start_watching", { path: selected });
+      await refreshGraph();
       startStatusLoop();
     } catch (e) {
       error = String(e);
       product = null;
       productPath = null;
+      graph = null;
     } finally {
       loading = null;
     }
@@ -197,11 +221,13 @@
       productPath = path;
       stands = [];
       await invoke("start_watching", { path });
+      await refreshGraph();
       startStatusLoop();
     } catch (e) {
       error = String(e);
       product = null;
       productPath = null;
+      graph = null;
     } finally {
       loading = null;
     }
@@ -223,10 +249,22 @@
       loading = null;
     }
   }
+
+  // Promote a Stand to a Meilenstein: the user writes the human VERSION_NOTES text (E28),
+  // Rust persists it and labels the version durably, then returns the refreshed tree.
+  async function promote(node: StandNode, version: string, notes: string) {
+    if (!productPath) return;
+    graph = await invoke<VersionGraph>("promote_milestone", {
+      path: productPath,
+      standId: node.id,
+      version,
+      notes,
+    });
+  }
 </script>
 
 <div class="app">
-  <VersionBar {product} />
+  <VersionBar {product} activeMilestone={graph?.active_milestone ?? null} />
 
   <div class="stage">
     <main class="work">
@@ -333,6 +371,7 @@
     </main>
 
     {#if product}
+      <VersionTree {graph} onPromote={promote} />
       <aside class="rail">
         <ForeignLocksPanel locks={foreignLocks} />
         <StandList {stands} />
