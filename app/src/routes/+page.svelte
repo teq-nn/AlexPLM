@@ -11,6 +11,7 @@
     ProductView,
     ArtifactSignal,
     ForeignLock,
+    SetupReport,
     Stand,
     StandEvent,
     StandNode,
@@ -20,6 +21,7 @@
   import ArtifactCard from "$lib/ArtifactCard.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
+  import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
 
@@ -50,6 +52,23 @@
   let signals = $state<Record<string, ArtifactSignal>>({});
   let foreignLocks = $state<ForeignLock[]>([]);
   let statusTimer: ReturnType<typeof setInterval> | null = null;
+
+  // The one-time Einrichtungs-Zeremonie (Issue #5, E41). `setup` is the server-decided state;
+  // the ceremony modal opens on demand and auto-opens once when a product without a connected
+  // server is opened/imported, then stays out of the silent daily rhythm.
+  let setup = $state<SetupReport | null>(null);
+  let ceremonyOpen = $state(false);
+
+  /** Read the ceremony state from git (server connected? published?). Best-effort. */
+  async function refreshSetup() {
+    if (!productPath) return;
+    try {
+      setup = await invoke<SetupReport>("read_setup_state", { path: productPath });
+    } catch (e) {
+      // The ceremony state is auxiliary; a read failure must not break the shell.
+      setup = null;
+    }
+  }
 
   /** Re-read the world from git: per-artifact LED status + the foreign-locks panel. */
   async function refreshStatus() {
@@ -107,6 +126,8 @@
     refusal = null;
     signals = {};
     foreignLocks = [];
+    setup = null;
+    ceremonyOpen = false;
     stands = [];
     graph = null;
     edgeView = { edges: [], warnings: [] };
@@ -212,6 +233,7 @@
       await invoke("start_watching", { path: selected });
       await refreshGraph();
       await refreshEdges();
+      await refreshSetup();
       startStatusLoop();
     } catch (e) {
       error = String(e);
@@ -276,6 +298,10 @@
       await invoke("start_watching", { path });
       await refreshGraph();
       await refreshEdges();
+      await refreshSetup();
+      // A freshly created product has no server yet — open the one-time ceremony once so the
+      // user is guided to share it. Reopening/daily use never re-triggers this.
+      if (setup && setup.stage === "not-configured") ceremonyOpen = true;
       startStatusLoop();
     } catch (e) {
       error = String(e);
@@ -327,6 +353,28 @@
       <span class="label section">Bausteine</span>
 
       <div class="actions">
+        {#if setup}
+          <!-- One-time ceremony trigger / settled readout. Git-near wording lives ONLY here. -->
+          {#if setup.stage === "eingerichtet"}
+            <button
+              class="readout mono"
+              title="Geteilt — Einrichtung abgeschlossen"
+              onclick={() => (ceremonyOpen = true)}
+            >
+              <span class="dot fresh"></span>
+              <span class="readout-text">geteilt</span>
+            </button>
+          {:else}
+            <button class="key share" onclick={() => (ceremonyOpen = true)}>
+              <span class="label"
+                >{setup.stage === "remote-set-not-published"
+                  ? "Veröffentlichen"
+                  : "Teilen einrichten"}</span
+              >
+            </button>
+          {/if}
+        {/if}
+
         {#if imported}
           <!-- Import outcome chip: recessed instrument readout, tool vocabulary only. -->
           <span class="readout mono" role="status">
@@ -449,6 +497,15 @@
   />
 {/if}
 
+{#if ceremonyOpen && productPath && setup}
+  <EinrichtungsZeremonie
+    {productPath}
+    report={setup}
+    onUpdated={(r) => (setup = r)}
+    onClose={() => (ceremonyOpen = false)}
+  />
+{/if}
+
 <style>
   .app {
     display: flex;
@@ -523,6 +580,7 @@
     align-items: baseline;
     gap: 7px;
     padding: 5px 11px;
+    border: none;
     border-radius: var(--radius);
     background: linear-gradient(180deg, #131110, #0b0a09);
     box-shadow:
@@ -532,6 +590,25 @@
     font-size: 12px;
     letter-spacing: 0.01em;
     animation: readout-in 260ms var(--ease) backwards;
+  }
+  /* The settled "geteilt" readout doubles as a button to reopen the ceremony (invite). */
+  button.readout {
+    cursor: pointer;
+    font-family: var(--font-mono);
+  }
+  button.readout:hover {
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.9),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  }
+  /* The "Teilen einrichten" / "Veröffentlichen" key: dark, deliberate — a one-time act. */
+  .key.share {
+    background: var(--key-dark);
+    color: var(--key-light);
+    border-color: var(--key-dark);
+  }
+  .key.share:hover {
+    background: #2a2724;
   }
   .readout .dot {
     align-self: center;
