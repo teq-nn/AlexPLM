@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import type { ProductView } from "$lib/types";
+  import type { ImportResult, ProductView } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
 
@@ -17,24 +17,51 @@
 
   let product = $state<ProductView | null>(null);
   let error = $state<string | null>(null);
-  let loading = $state(false);
+  let loading = $state<"open" | "import" | null>(null);
+  // Import outcome, in the tool's own vocabulary — never "git" / "commit".
+  let imported = $state<ImportResult | null>(null);
 
   async function openProduct() {
     error = null;
+    imported = null;
     const selected = await open({
       directory: true,
       multiple: false,
       title: "Produkt öffnen",
     });
     if (typeof selected !== "string") return;
-    loading = true;
+    loading = "open";
     try {
       product = await invoke<ProductView>("open_product", { path: selected });
     } catch (e) {
       error = String(e);
       product = null;
     } finally {
-      loading = false;
+      loading = null;
+    }
+  }
+
+  async function importProduct() {
+    error = null;
+    imported = null;
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Ordner als Produkt anlegen",
+    });
+    if (typeof selected !== "string") return;
+    loading = "import";
+    try {
+      const result = await invoke<ImportResult>("import_product", {
+        path: selected,
+      });
+      imported = result;
+      product = result.product;
+    } catch (e) {
+      error = String(e);
+      product = null;
+    } finally {
+      loading = null;
     }
   }
 </script>
@@ -45,9 +72,41 @@
   <main class="work">
     <div class="toolbar">
       <span class="label section">Bausteine</span>
-      <button class="key" onclick={openProduct} disabled={loading}>
-        <span class="label">{loading ? "öffne …" : "Produkt öffnen"}</span>
-      </button>
+
+      <div class="actions">
+        {#if imported}
+          <!-- Import outcome chip: recessed instrument readout, tool vocabulary only. -->
+          <span class="readout mono" role="status">
+            <span class="dot" class:fresh={imported.git_initialized}></span>
+            <span class="readout-text">
+              {imported.git_initialized
+                ? "Produkt angelegt"
+                : "Bestehendes übernommen"}
+            </span>
+            {#if imported.locked_count > 0}
+              <span class="readout-sep">·</span>
+              <span class="readout-locks"
+                >{imported.locked_count.toString().padStart(2, "0")} gesperrt</span
+              >
+            {/if}
+          </span>
+        {/if}
+
+        <button
+          class="key"
+          onclick={importProduct}
+          disabled={loading !== null}
+        >
+          <span class="label"
+            >{loading === "import" ? "lege an …" : "Ordner anlegen"}</span
+          >
+        </button>
+        <button class="key" onclick={openProduct} disabled={loading !== null}>
+          <span class="label"
+            >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
+          >
+        </button>
+      </div>
     </div>
 
     <div class="content">
@@ -66,10 +125,26 @@
       {:else}
         <div class="empty">
           <div class="empty-panel">
-            <span class="label empty-hint">Ordner wählen — nur lesen</span>
-            <button class="key big" onclick={openProduct}>
-              <span class="label">Produkt öffnen</span>
-            </button>
+            <span class="label empty-hint">Ordner wählen</span>
+            <div class="empty-keys">
+              <button
+                class="key big"
+                onclick={importProduct}
+                disabled={loading !== null}
+              >
+                <span class="label">Ordner anlegen</span>
+              </button>
+              <button
+                class="key big ghost"
+                onclick={openProduct}
+                disabled={loading !== null}
+              >
+                <span class="label">Produkt öffnen</span>
+              </button>
+            </div>
+            <span class="label empty-sub"
+              >anlegen schreibt — öffnen liest nur</span
+            >
           </div>
         </div>
       {/if}
@@ -104,6 +179,63 @@
   }
   .section {
     color: var(--ink-muted);
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* Import outcome: a small recessed instrument readout, same LCD language as
+     the VersionBar screen — never git/commit wording. */
+  .readout {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 5px 11px;
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, #131110, #0b0a09);
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.9),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+    color: var(--screen-fg);
+    font-size: 12px;
+    letter-spacing: 0.01em;
+    animation: readout-in 260ms var(--ease) backwards;
+  }
+  .readout .dot {
+    align-self: center;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--led-working);
+    box-shadow: 0 0 5px rgba(201, 198, 191, 0.3);
+  }
+  /* freshly created product gets the "free / done" green; taken-over stays neutral */
+  .readout .dot.fresh {
+    background: var(--led-free);
+    box-shadow: 0 0 6px rgba(60, 154, 75, 0.5);
+  }
+  .readout-text {
+    color: var(--screen-fg);
+    font-weight: 600;
+  }
+  .readout-sep {
+    color: #4a4641;
+  }
+  .readout-locks {
+    color: #b8b4ad;
+  }
+  @keyframes readout-in {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .content {
@@ -169,6 +301,24 @@
   }
   .empty-hint {
     color: var(--ink-muted);
+  }
+  .empty-keys {
+    display: flex;
+    gap: 12px;
+  }
+  /* secondary, read-only action reads quieter than the primary "anlegen" key */
+  .key.ghost {
+    background: transparent;
+    box-shadow: none;
+    color: var(--ink-default);
+  }
+  .key.ghost:hover {
+    background: var(--surface-raised);
+  }
+  .empty-sub {
+    color: var(--ink-muted);
+    font-size: 11px;
+    opacity: 0.8;
   }
 
   .notice {
