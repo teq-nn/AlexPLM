@@ -47,9 +47,11 @@ pub struct RemoteConfig {
 /// input. Rules (deliberately strict so a typo fails loud here, not mid-push):
 /// - `host` must be a non-empty `http(s)://host[:port]` with a host part. A bare `host:port`
 ///   without scheme is accepted and defaulted to `https://` (the safe Forgejo/Gitea default).
-/// - `owner` and `repo` must be non-empty and free of slashes/whitespace/control characters.
+/// - `repo` must be non-empty and free of slashes/whitespace/control characters.
+/// - `owner` is optional: left empty it defaults to the authenticated `user` (publishing under
+///   one's own account). The effective owner must be free of slashes/whitespace/control chars.
 /// - `user` may be empty (credentials supplied out-of-band, e.g. a credential helper); if given,
-///   it is embedded; a `token` without a `user` is rejected (git would misread it).
+///   it is embedded; a `token` (password) without a `user` is rejected (git would misread it).
 /// - the `.git` suffix on `repo` is optional and normalized to exactly one.
 pub fn normalize_remote(
     host: &str,
@@ -85,22 +87,30 @@ pub fn normalize_remote(
     }
     let host_url = format!("{scheme}://{hostport}");
 
-    let owner = clean_segment(owner, "Besitzer/Organisation")?;
     let repo_raw = clean_segment(repo, "Produkt-Name")?;
     let repo = repo_raw.strip_suffix(".git").unwrap_or(&repo_raw);
     if repo.is_empty() {
         return Err("Produkt-Name fehlt.".into());
     }
 
-    let clone_url = format!("{host_url}/{owner}/{repo}.git");
-
-    // Credentials: a token without a user is ambiguous to git; reject it. An empty user means
-    // "credentials handled elsewhere" and yields a credential-free push URL.
+    // Credentials: a password without a username is ambiguous to git; reject it. An empty user
+    // means "credentials handled elsewhere" and yields a credential-free push URL.
     let user = user.trim();
     let token = token.trim();
     if user.is_empty() && !token.is_empty() {
-        return Err("Zugangs-Token ohne Benutzernamen — bitte Benutzernamen angeben.".into());
+        return Err("Passwort ohne Benutzernamen — bitte Benutzernamen angeben.".into());
     }
+
+    // The owner is optional: left blank it defaults to the authenticated user (the username just
+    // entered), so a user publishing under their own account need not repeat their name. Validate
+    // the chosen owner the same way regardless of where it came from.
+    let owner = if owner.trim().is_empty() {
+        clean_segment(user, "Besitzer/Organisation")?
+    } else {
+        clean_segment(owner, "Besitzer/Organisation")?
+    };
+
+    let clone_url = format!("{host_url}/{owner}/{repo}.git");
     let push_url = if user.is_empty() {
         clone_url.clone()
     } else if token.is_empty() {
@@ -491,6 +501,23 @@ mod tests {
     fn normalize_user_only_embeds_user_without_colon() {
         let cfg = normalize_remote("https://h", "o", "p", "anna", "").unwrap();
         assert_eq!(cfg.push_url, "https://anna@h/o/p.git");
+    }
+
+    #[test]
+    fn normalize_empty_owner_defaults_to_authenticated_user() {
+        // Owner left blank → the repo lives under the authenticated user's account. Both the
+        // shareable clone URL and the credentialed push URL use the username as the owner.
+        let cfg = normalize_remote("https://h", "", "p", "anna", "secret").unwrap();
+        assert_eq!(cfg.clone_url, "https://h/anna/p.git");
+        assert_eq!(cfg.push_url, "https://anna:secret@h/anna/p.git");
+    }
+
+    #[test]
+    fn normalize_explicit_owner_overrides_user() {
+        // A given owner (a team) is used verbatim, independent of the authenticated user.
+        let cfg = normalize_remote("https://h", "team", "p", "anna", "").unwrap();
+        assert_eq!(cfg.clone_url, "https://h/team/p.git");
+        assert_eq!(cfg.push_url, "https://anna@h/team/p.git");
     }
 
     #[test]
