@@ -16,6 +16,7 @@
     StandEvent,
     StandNode,
     VersionGraph,
+    WardenAction,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
@@ -24,6 +25,7 @@
   import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
+  import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -52,6 +54,32 @@
   let signals = $state<Record<string, ArtifactSignal>>({});
   let foreignLocks = $state<ForeignLock[]>([]);
   let statusTimer: ReturnType<typeof setInterval> | null = null;
+
+  // The Lock Warden's last decided action (Issue #9, E35), surfaced in the tool's own
+  // vocabulary by the Sicherungsstatus readout — "gesichert" (Sicherungs-Push) / "freigegeben"
+  // (Freigabe-Push) / "Sperre gelöst" (auto-unlock). The safety-critical decision (and the
+  // Binär-Invariante) lives entirely in the Rust core; the UI only reflects what it returns.
+  // `refuse` surfaces as nothing — the daily rhythm stays silent.
+  let wardenAction = $state<WardenAction | null>(null);
+
+  /** Run a Lock Warden checkpoint for one artifact and reflect the action it decided.
+   *  Best-effort: a push failure (e.g. no server yet) must never break the silent rhythm. */
+  async function runCheckpoint(path: string, milestone: boolean) {
+    if (!productPath) return;
+    try {
+      const action = await invoke<WardenAction>("run_checkpoint", {
+        product: productPath,
+        path,
+        milestone,
+      });
+      // Only a real action lights the readout; Refuse leaves the rhythm silent.
+      if (action !== "refuse") wardenAction = action;
+      await refreshStatus();
+    } catch (e) {
+      // The two push types are background safety nets; surfacing the raw error would break the
+      // silent vocabulary, so we swallow it (a louder, in-tool sync error is a later slice).
+    }
+  }
 
   // The one-time Einrichtungs-Zeremonie (Issue #5, E41). `setup` is the server-decided state;
   // the ceremony modal opens on demand and auto-opens once when a product without a connected
@@ -126,6 +154,7 @@
     refusal = null;
     signals = {};
     foreignLocks = [];
+    wardenAction = null;
     setup = null;
     ceremonyOpen = false;
     stands = [];
@@ -209,6 +238,9 @@
     void refreshGraph();
     // A new save can change an artifact's timestamp, so Stale-Warnungen may flip (E26).
     void refreshEdges();
+    // A settled save is a laufender Checkpoint: the Lock Warden runs and, for open work,
+    // mirrors it to the private backup (Sicherungs-Push) — never the shared stand (E35).
+    void runCheckpoint(e.payload.path, false);
   }).then((u) => (unlisten = u));
 
   onDestroy(() => {
@@ -341,6 +373,10 @@
       version,
       notes,
     });
+    // A Meilenstein is the Freigabe checkpoint ("ich bin fertig damit"): the Lock Warden
+    // publishes the finished artifact to the shared stand AND releases its lock atomically
+    // (E35). The Binär-Invariante is upheld in the Rust core, never here.
+    void runCheckpoint(node.path, true);
   }
 </script>
 
@@ -353,6 +389,9 @@
       <span class="label section">Bausteine</span>
 
       <div class="actions">
+        <!-- The Lock Warden's two push types in the tool's own vocabulary (Issue #9). -->
+        <Sicherungsstatus action={wardenAction} />
+
         {#if setup}
           <!-- One-time ceremony trigger / settled readout. Git-near wording lives ONLY here. -->
           {#if setup.stage === "eingerichtet"}
