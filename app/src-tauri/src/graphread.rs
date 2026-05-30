@@ -12,7 +12,6 @@
 use crate::autocommit::{format_timestamp, machine_message};
 use crate::graph::{CommitFact, MilestoneFact, RepoSnapshot, VersionGraph};
 use std::path::Path;
-use std::process::Command;
 use std::time::SystemTime;
 
 /// File that holds all human milestone text (E28). One section per Meilenstein, newest on
@@ -210,7 +209,7 @@ pub fn promote_to_milestone(
 }
 
 fn git(root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    Command::new("git").arg("-C").arg(root).args(args).output()
+    crate::gitrunner::command(root).args(args).output()
 }
 
 fn git_ok(root: &Path, args: &[&str]) -> std::io::Result<()> {
