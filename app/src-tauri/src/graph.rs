@@ -12,8 +12,18 @@
 //!
 //! Vocabulary stays in the domain (E33/E39): nodes are **Stände**, a promoted Stand is a
 //! **Meilenstein**; the words "commit"/"tag" never surface to the user.
+//!
+//! ## Zweige (Issue #28)
+//!
+//! Stände do not always form one straight line: a colleague (or the user, in their own
+//! working copy) may start a **Zweig** outside the tool and record Stände on it. The
+//! projection collects Stände across *all* lines, not just the active one, and lays them
+//! out into **Bahnen** (lanes): the active line is the trunk (lane 0) and each diverging
+//! Zweig becomes its own visible line. The active line stays clearly marked. A product with
+//! a single linear history simply has one lane and renders exactly as before.
 
 use serde::Serialize;
+use std::collections::{BTreeSet, HashMap};
 
 /// One commit as observed in the repository, newest-relevant fields only. This is the raw
 /// fact the reading glue collects; the projection turns a list of these into the tree.
@@ -42,6 +52,17 @@ pub struct MilestoneFact {
     pub has_notes: bool,
 }
 
+/// One **Zweig** (branch line) as observed in the repository: its domain name and the id of
+/// the Stand at its tip. The reading glue collects one of these per local/remote line; the
+/// projection turns the set into visible [`StandNode::lane`]s. The word "branch" stays here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchFact {
+    /// The line's domain name (e.g. `main`, `gehaeuse-v2`). Shown as the lane label.
+    pub name: String,
+    /// Commit id at the tip of this line.
+    pub tip: String,
+}
+
 /// The complete read-only snapshot fed to the projection. Collected by the git/LFS glue;
 /// the projection performs **no I/O** over it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +76,12 @@ pub struct RepoSnapshot {
     pub offloaded: Vec<String>,
     /// Archive label shown on offloaded nodes, e.g. `2025-11`. `None` if unknown.
     pub offloaded_archive: Option<String>,
+    /// Every observed line (Zweig), including the active one. Empty/one entry => the tree is
+    /// a single linear history and lays out as one lane. May be empty for back-compat.
+    pub branches: Vec<BranchFact>,
+    /// Name of the active line (the user's current branch / HEAD). Drives which lane is the
+    /// trunk and which Stände are marked active. `None` => fall back to the first line.
+    pub active_branch: Option<String>,
 }
 
 /// A single node in the version tree: a Stand, possibly promoted to a Meilenstein and/or
@@ -75,6 +102,20 @@ pub struct StandNode {
     /// Whether this node's binary content has been offloaded (E36). The node stays in the
     /// tree, honestly marked "Inhalt ausgelagert".
     pub offloaded: bool,
+    /// Which **Bahn** (lane) this Stand sits on: `0` is the trunk (the active line), each
+    /// diverging Zweig gets its own positive index. A single linear history is all lane `0`.
+    pub lane: usize,
+    /// The Zweig name labelling this Stand's lane (e.g. `gehaeuse-v2`). `None` for the trunk
+    /// (lane 0) and for unnamed lines; the UI shows it once per lane (at the lane's tip).
+    pub branch: Option<String>,
+    /// `true` when this Stand lies on the active line (the user's current Zweig). The active
+    /// line stays clearly marked even when other Zweige are visible.
+    pub on_active: bool,
+    /// The Stände this one **folgt auf** (its direct predecessors): one for a normal Stand,
+    /// two where two Linien were **zusammengeführt**. The UI draws a connector from this Stand
+    /// down to each predecessor present in the tree, so forks and Zusammenführungen become
+    /// visible lines. Ids only — never shown as git.
+    pub parents: Vec<String>,
 }
 
 /// The dark "display" version tree the UI renders, plus the active milestone version that
@@ -88,6 +129,11 @@ pub struct VersionGraph {
     pub active_milestone: Option<String>,
     /// Archive label for offloaded nodes, surfaced once for the legend; `None` if none.
     pub offloaded_archive: Option<String>,
+    /// Name of the active line (Zweig), echoed for the UI marker; `None` if unknown.
+    pub active_branch: Option<String>,
+    /// Number of distinct lanes in the tree; `1` for a single linear history. The UI uses
+    /// it to size the lane gutter only when there is more than one line.
+    pub lane_count: usize,
 }
 
 /// Parse the product-relative path out of a boring auto-commit message
@@ -113,9 +159,16 @@ pub fn path_from_message(message: &str) -> String {
 /// Ordering: newest-first. With real git the snapshot already arrives in `git log` order
 /// (newest first); to stay deterministic for tests regardless of input order we sort by
 /// timestamp descending, breaking ties by id descending.
+///
+/// Branches (Issue #28): every observed line (Zweig) is laid out into a **Bahn** (lane). The
+/// active line is the trunk (lane 0); each Stand that only a diverging Zweig can reach lands
+/// on that Zweig's own lane, so an externally-created branch shows up as a distinct line. A
+/// single linear history collapses to one lane and is unchanged.
 pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
     let milestone_of = |id: &str| snapshot.milestones.iter().find(|m| m.commit_id == id);
     let is_offloaded = |id: &str| snapshot.offloaded.iter().any(|o| o == id);
+
+    let layout = LaneLayout::compute(snapshot);
 
     let mut nodes: Vec<StandNode> = snapshot
         .commits
@@ -129,6 +182,10 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
                 milestone: ms.map(|m| m.version.clone()),
                 has_notes: ms.map(|m| m.has_notes).unwrap_or(false),
                 offloaded: is_offloaded(&c.id),
+                lane: layout.lane_of(&c.id),
+                branch: layout.label_of(&c.id),
+                on_active: layout.lane_of(&c.id) == 0,
+                parents: c.parents.clone(),
             }
         })
         .collect();
@@ -136,13 +193,100 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
     // Newest first; deterministic tie-break on id so equal timestamps order stably.
     nodes.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.id.cmp(&a.id)));
 
-    // Active Meilenstein = the newest promoted Stand in that newest-first order.
-    let active_milestone = nodes.iter().find_map(|n| n.milestone.clone());
+    // Active Meilenstein = the newest promoted Stand *on the active line* (lane 0). Diverging
+    // Zweige carry their own Meilensteine on the node but must not steal the version bar.
+    let active_milestone = nodes
+        .iter()
+        .filter(|n| n.on_active)
+        .find_map(|n| n.milestone.clone());
 
     VersionGraph {
         nodes,
         active_milestone,
         offloaded_archive: snapshot.offloaded_archive.clone(),
+        active_branch: layout.active_branch.clone(),
+        lane_count: layout.lane_count.max(1),
+    }
+}
+
+/// Per-Stand lane assignment, derived purely from the parent edges and the observed line
+/// tips. Lane `0` is the trunk (the active line). A Stand belongs to the **lowest-indexed**
+/// line that can reach it (through any parent path): shared history stays on the trunk and
+/// only the Stände unique to a diverging Zweig land on that Zweig's own lane.
+struct LaneLayout {
+    /// commit id -> lane index.
+    lane: HashMap<String, usize>,
+    /// lane index -> Zweig name (label shown once at the lane's tip); lane 0 may be unnamed.
+    labels: Vec<Option<String>>,
+    active_branch: Option<String>,
+    lane_count: usize,
+}
+
+impl LaneLayout {
+    fn lane_of(&self, id: &str) -> usize {
+        self.lane.get(id).copied().unwrap_or(0)
+    }
+
+    /// The Zweig name labelling `id`'s lane. `None` for the trunk (lane 0); the UI decides
+    /// where on the lane to draw it (it draws it once, at the lane's tip).
+    fn label_of(&self, id: &str) -> Option<String> {
+        let lane = self.lane_of(id);
+        if lane == 0 {
+            return None;
+        }
+        self.labels.get(lane).cloned().flatten()
+    }
+
+    fn compute(snapshot: &RepoSnapshot) -> LaneLayout {
+        // Order the lines: the active line first (trunk, lane 0), the rest by name so the
+        // layout is deterministic. With zero or one line everything collapses to lane 0.
+        let mut ordered: Vec<&BranchFact> = snapshot.branches.iter().collect();
+        let active = snapshot
+            .active_branch
+            .clone()
+            .filter(|a| snapshot.branches.iter().any(|b| &b.name == a));
+        ordered.sort_by(|a, b| {
+            let a_active = active.as_deref() == Some(a.name.as_str());
+            let b_active = active.as_deref() == Some(b.name.as_str());
+            b_active.cmp(&a_active).then_with(|| a.name.cmp(&b.name))
+        });
+
+        let parents: HashMap<&str, &[String]> = snapshot
+            .commits
+            .iter()
+            .map(|c| (c.id.as_str(), c.parents.as_slice()))
+            .collect();
+
+        // For each line, in trunk-first order, claim every still-unclaimed ancestor of its
+        // tip. Because the trunk is processed first, shared Stände stay on lane 0 and only
+        // the Stände unique to a later line fall to that line's lane.
+        let mut lane: HashMap<String, usize> = HashMap::new();
+        let mut labels: Vec<Option<String>> = Vec::new();
+        for (idx, branch) in ordered.iter().enumerate() {
+            labels.push(if idx == 0 { None } else { Some(branch.name.clone()) });
+            let mut stack = vec![branch.tip.clone()];
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                lane.entry(id.clone()).or_insert(idx);
+                if let Some(ps) = parents.get(id.as_str()) {
+                    for p in ps.iter() {
+                        stack.push(p.clone());
+                    }
+                }
+            }
+        }
+
+        let lane_count = if ordered.is_empty() { 1 } else { ordered.len() };
+
+        LaneLayout {
+            lane,
+            labels,
+            active_branch: active,
+            lane_count,
+        }
     }
 }
 
@@ -155,6 +299,16 @@ mod tests {
             id: id.to_string(),
             parents: vec![],
             message: msg.to_string(),
+            timestamp: ts.to_string(),
+        }
+    }
+
+    /// A commit with explicit parents, for branch/lane tests.
+    fn commit_p(id: &str, ts: &str, parents: &[&str]) -> CommitFact {
+        CommitFact {
+            id: id.to_string(),
+            parents: parents.iter().map(|s| s.to_string()).collect(),
+            message: format!("auto: x, {ts}"),
             timestamp: ts.to_string(),
         }
     }
@@ -192,12 +346,17 @@ mod tests {
             milestones: vec![],
             offloaded: vec![],
             offloaded_archive: None,
+            branches: vec![],
+            active_branch: None,
         };
         let g = project_graph(&snap);
         let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["c", "b", "a"], "newest-first by timestamp");
         assert_eq!(g.active_milestone, None, "no Meilenstein yet");
         assert!(g.nodes.iter().all(|n| n.milestone.is_none()));
+        // No branch facts => one linear lane, every Stand on the active line.
+        assert_eq!(g.lane_count, 1);
+        assert!(g.nodes.iter().all(|n| n.lane == 0 && n.on_active));
     }
 
     #[test]
@@ -222,6 +381,8 @@ mod tests {
             ],
             offloaded: vec![],
             offloaded_archive: None,
+            branches: vec![],
+            active_branch: None,
         };
         let g = project_graph(&snap);
 
@@ -258,6 +419,8 @@ mod tests {
             }],
             offloaded: vec!["old".into()],
             offloaded_archive: Some("2025-11".into()),
+            branches: vec![],
+            active_branch: None,
         };
         let g = project_graph(&snap);
 
@@ -278,9 +441,93 @@ mod tests {
             milestones: vec![],
             offloaded: vec![],
             offloaded_archive: None,
+            branches: vec![],
+            active_branch: None,
         };
         let g = project_graph(&snap);
         assert!(g.nodes.is_empty());
         assert_eq!(g.active_milestone, None);
+        assert_eq!(g.lane_count, 1);
+    }
+
+    #[test]
+    fn an_external_zweig_lands_on_its_own_lane_and_the_active_line_stays_marked() {
+        // Trunk a<-b<-c on `main`; an external Zweig `gehaeuse-v2` branched off b with d, e.
+        //   a -- b -- c        (main, active)
+        //         \-- d -- e   (gehaeuse-v2, created outside the tool)
+        let snap = RepoSnapshot {
+            commits: vec![
+                commit_p("a", "2026-05-30T09:00:00Z", &[]),
+                commit_p("b", "2026-05-30T10:00:00Z", &["a"]),
+                commit_p("c", "2026-05-30T11:00:00Z", &["b"]),
+                commit_p("d", "2026-05-30T10:30:00Z", &["b"]),
+                commit_p("e", "2026-05-30T12:00:00Z", &["d"]),
+            ],
+            milestones: vec![],
+            offloaded: vec![],
+            offloaded_archive: None,
+            branches: vec![
+                BranchFact { name: "main".into(), tip: "c".into() },
+                BranchFact { name: "gehaeuse-v2".into(), tip: "e".into() },
+            ],
+            active_branch: Some("main".into()),
+        };
+        let g = project_graph(&snap);
+
+        let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+
+        // Two lines => two lanes; shared history (a, b) stays on the trunk.
+        assert_eq!(g.lane_count, 2);
+        assert_eq!(g.active_branch.as_deref(), Some("main"));
+        for id in ["a", "b", "c"] {
+            assert_eq!(node(id).lane, 0, "{id} on trunk");
+            assert!(node(id).on_active, "{id} on the active line");
+            assert_eq!(node(id).branch, None);
+        }
+        // The external Zweig's unique Stände get their own, non-trunk lane and carry its name.
+        for id in ["d", "e"] {
+            assert_eq!(node(id).lane, 1, "{id} on the Zweig lane");
+            assert!(!node(id).on_active, "{id} not on the active line");
+            assert_eq!(node(id).branch.as_deref(), Some("gehaeuse-v2"));
+        }
+
+        // Parent links survive the projection so the UI can draw fork/Zusammenführung
+        // connectors: c folgt auf b, the Zweig's d folgt auf the shared b, e folgt auf d.
+        assert_eq!(node("a").parents, Vec::<String>::new(), "root has no predecessor");
+        assert_eq!(node("c").parents, vec!["b".to_string()]);
+        assert_eq!(node("d").parents, vec!["b".to_string()], "Zweig forks off the shared b");
+        assert_eq!(node("e").parents, vec!["d".to_string()]);
+    }
+
+    #[test]
+    fn the_active_line_is_the_trunk_even_when_it_is_not_named_first() {
+        // Same shape, but the user is *on* the external Zweig: it must become the trunk.
+        let snap = RepoSnapshot {
+            commits: vec![
+                commit_p("a", "2026-05-30T09:00:00Z", &[]),
+                commit_p("b", "2026-05-30T10:00:00Z", &["a"]),
+                commit_p("c", "2026-05-30T11:00:00Z", &["b"]),
+                commit_p("d", "2026-05-30T10:30:00Z", &["b"]),
+                commit_p("e", "2026-05-30T12:00:00Z", &["d"]),
+            ],
+            milestones: vec![],
+            offloaded: vec![],
+            offloaded_archive: None,
+            branches: vec![
+                BranchFact { name: "main".into(), tip: "c".into() },
+                BranchFact { name: "gehaeuse-v2".into(), tip: "e".into() },
+            ],
+            active_branch: Some("gehaeuse-v2".into()),
+        };
+        let g = project_graph(&snap);
+        let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+
+        // gehaeuse-v2 is active => its line is the trunk (lane 0); main's unique `c` diverges.
+        assert!(node("e").on_active && node("e").lane == 0);
+        assert!(node("d").on_active && node("d").lane == 0);
+        assert!(node("a").on_active && node("a").lane == 0, "shared history on trunk");
+        assert_eq!(node("c").lane, 1, "main's unique Stand on its own lane");
+        assert!(!node("c").on_active);
+        assert_eq!(node("c").branch.as_deref(), Some("main"));
     }
 }

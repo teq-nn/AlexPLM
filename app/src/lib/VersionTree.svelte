@@ -64,12 +64,125 @@
     const parts = path.split("/");
     return parts[parts.length - 1];
   }
+
+  // ── Graph geometry ────────────────────────────────────────────────────────
+  // The tree is laid out like a real git-graph (GitKraken/VS Code *structure*): each Stand
+  // is a node on its Bahn (lane), rows run newest-first top-to-bottom, and a connector is
+  // drawn from every Stand down to each predecessor it „folgt auf". Same lane → a straight
+  // segment; a lane change (a fork, or a Zusammenführung of two Linien) → a smooth Bézier.
+  const ROW = 60; // vertical rhythm between Stände
+  const LANE = 26; // horizontal gap between Bahnen
+  const PAD_LEFT = 20; // x of the trunk (lane 0) centre
+  const RIGHT_GUT = 18; // breathing room between the lanes and the text body
+
+  const nodes = $derived(graph?.nodes ?? []);
+  const laneCount = $derived(graph?.lane_count ?? 1);
+  const rowOf = $derived(new Map(nodes.map((n, i) => [n.id, i])));
+  const byId = $derived(new Map(nodes.map((n) => [n.id, n])));
+
+  const laneAreaWidth = $derived(PAD_LEFT + (laneCount - 1) * LANE + RIGHT_GUT);
+  const svgHeight = $derived(Math.max(nodes.length * ROW, ROW));
+
+  const rowY = (i: number) => i * ROW + ROW / 2;
+  const laneX = (lane: number) => PAD_LEFT + lane * LANE;
+
+  // Colour by Bahn, within the rationed palette: the trunk (lane 0, the active line) reads
+  // in warm grey/white; every diverging Zweig reads in the single foreign blue, brightened
+  // a step per lane so several Zweige stay distinguishable WITHOUT inventing new hues.
+  // Orange is never produced here — it is reserved for the laute Ausnahme.
+  function foreignTint(lane: number): string {
+    const l = Math.min((lane - 1) * 16, 48);
+    return `color-mix(in srgb, var(--data-foreign) ${100 - l}%, #bcd6ff ${l}%)`;
+  }
+  function wireColor(lane: number): string {
+    if (lane <= 0) return "rgba(232, 230, 225, 0.34)";
+    return foreignTint(lane);
+  }
+
+  // One connector per (Stand → predecessor present in the tree). A predecessor always sits
+  // on a lower row (it is older → larger y), so the path runs downward. Both control points
+  // ride the vertical midpoint, giving the symmetric S that reads as a fork / Zusammenführung.
+  const edges = $derived.by(() => {
+    const out: { d: string; lane: number; key: string }[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const child = nodes[i];
+      for (const pid of child.parents) {
+        const pi = rowOf.get(pid);
+        if (pi === undefined) continue;
+        const parent = byId.get(pid)!;
+        const x1 = laneX(child.lane);
+        const y1 = rowY(i);
+        const x2 = laneX(parent.lane);
+        const y2 = rowY(pi);
+        const d =
+          x1 === x2
+            ? `M${x1} ${y1} L${x2} ${y2}`
+            : `M${x1} ${y1} C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`;
+        // Colour by the deeper Bahn so a fork/merge curve takes the diverging line's tone.
+        out.push({ d, lane: Math.max(child.lane, parent.lane), key: `${child.id}>${pid}` });
+      }
+    }
+    return out;
+  });
+
+  // The active Stand to highlight: the newest Stand on the active line (its tip). With a
+  // single linear history that is simply the newest Stand.
+  const activeId = $derived(nodes.find((n) => n.on_active)?.id ?? null);
+
+  // A Zweig (off-trunk lane) is labelled once, on its newest Stand (its tip). Nodes arrive
+  // newest-first, so the first node we meet on a lane is its tip.
+  const tipOfLane = $derived.by(() => {
+    const tips = new Set<string>();
+    const seen = new Set<number>();
+    for (const n of nodes) {
+      if (n.lane > 0 && !seen.has(n.lane)) {
+        seen.add(n.lane);
+        tips.add(n.id);
+      }
+    }
+    return tips;
+  });
+
+  // More than one line present? Then the head shows the active-line marker; a single linear
+  // history keeps lane 0 throughout and reads as one quiet track.
+  const branched = $derived(laneCount > 1);
+
+  // ── Hover/focus tooltip ─────────────────────────────────────────────────────
+  // A fixed card that follows the cursor. The Versionsbaum is the right-most column, so the
+  // card opens to the LEFT of the pointer to stay on screen. Domain words only — no git, no
+  // author (the model carries none).
+  let tip = $state<{ node: StandNode; x: number; y: number } | null>(null);
+  function showTip(node: StandNode, ev: MouseEvent) {
+    tip = { node, x: ev.clientX, y: ev.clientY };
+  }
+  function moveTip(ev: MouseEvent) {
+    if (tip) tip = { ...tip, x: ev.clientX, y: ev.clientY };
+  }
+  function focusTip(node: StandNode, ev: FocusEvent) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    tip = { node, x: r.left, y: r.top + r.height / 2 };
+  }
+  function hideTip() {
+    tip = null;
+  }
+  function onNodeKey(node: StandNode, ev: KeyboardEvent) {
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      openPromote(node);
+    }
+  }
 </script>
 
 <section class="display" aria-label="Versionsbaum">
   <div class="display-head">
     <span class="label title">Versionsbaum</span>
     {#if graph}
+      {#if branched && graph.active_branch}
+        <span class="active-line label" title="Aktive Linie">
+          <span class="active-dot" aria-hidden="true"></span>
+          {graph.active_branch}
+        </span>
+      {/if}
       <span class="node-count mono">{graph.nodes.length.toString().padStart(2, "0")}</span>
     {/if}
   </div>
@@ -78,63 +191,126 @@
     {#if !graph || graph.nodes.length === 0}
       <p class="idle mono">— noch keine Stände —</p>
     {:else}
-      <ol class="tree">
-        {#each graph.nodes as n, i (n.id)}
-          {@const isMs = n.milestone !== null}
-          <li
-            class="node"
-            class:milestone={isMs}
-            class:offloaded={n.offloaded}
-            class:first={i === 0}
-            class:last={i === graph.nodes.length - 1}
-          >
-            <!-- the spine: edge above + node dot + edge below -->
-            <span class="spine" aria-hidden="true">
-              <span class="edge top"></span>
-              <span class="dot" class:ms={isMs}></span>
-              <span class="edge bottom"></span>
-            </span>
+      <div
+        class="graph"
+        style="--row: {ROW}px; --lane-area: {laneAreaWidth}px; min-height: {svgHeight}px;"
+      >
+        <!-- Connectors between Stände: drawn behind the LEDs, never interactive. -->
+        <svg
+          class="wires"
+          width={laneAreaWidth}
+          height={svgHeight}
+          viewBox="0 0 {laneAreaWidth} {svgHeight}"
+          aria-hidden="true"
+        >
+          {#each edges as e (e.key)}
+            <path class="wire" d={e.d} style="stroke: {wireColor(e.lane)};" />
+          {/each}
+        </svg>
 
-            <div class="body">
-              <div class="row">
-                <span class="path mono" title={n.path}>{leaf(n.path)}</span>
-                {#if isMs}
-                  <span class="version mono" title="Meilenstein {n.milestone}"
-                    >{n.milestone}</span
-                  >
+        <ol class="tree">
+          {#each graph.nodes as n, i (n.id)}
+            {@const isMs = n.milestone !== null}
+            {@const foreign = !n.on_active}
+            {@const isTip = tipOfLane.has(n.id)}
+            {@const isActive = n.id === activeId}
+            <li class="row" style="--lane-x: {laneX(n.lane)}px;">
+              <!-- The Stand itself: an LED on its Bahn. It is the affordance to promote, and
+                   hovering/focusing it raises the detail card. -->
+              <button
+                type="button"
+                class="led"
+                class:ms={isMs}
+                class:foreign
+                class:offloaded={n.offloaded}
+                class:active={isActive}
+                style={foreign ? `--c: ${foreignTint(n.lane)};` : ""}
+                title="Zum Meilenstein machen"
+                aria-label={isMs
+                  ? `Meilenstein ${n.milestone}, ${day(n.timestamp)}`
+                  : `Stand ${leaf(n.path)}, ${day(n.timestamp)} — zum Meilenstein machen`}
+                onclick={() => openPromote(n)}
+                onkeydown={(e) => onNodeKey(n, e)}
+                onmouseenter={(e) => showTip(n, e)}
+                onmousemove={moveTip}
+                onmouseleave={hideTip}
+                onfocus={(e) => focusTip(n, e)}
+                onblur={hideTip}
+              >
+                {#if isActive}<span class="ping" aria-hidden="true"></span>{/if}
+              </button>
+
+              <div class="body">
+                {#if foreign && isTip && n.branch}
+                  <span class="zweig-tag label" title="Zweig {n.branch}">{n.branch}</span>
                 {/if}
-              </div>
+                <div class="line">
+                  <span class="path mono" title={n.path}>{leaf(n.path)}</span>
+                  {#if isMs}
+                    <span class="version mono" title="Meilenstein {n.milestone}"
+                      >{n.milestone}</span
+                    >
+                  {/if}
+                </div>
 
-              <div class="row sub">
-                <span class="time mono">
-                  <span class="t">{clock(n.timestamp)}</span>
-                  <span class="d">{day(n.timestamp)}</span>
-                </span>
-
-                {#if n.offloaded}
-                  <span class="tag offloaded-tag label">
-                    Inhalt ausgelagert{#if graph.offloaded_archive}
-                      · {graph.offloaded_archive}{/if}
+                <div class="line sub">
+                  <span class="time mono">
+                    <span class="t">{clock(n.timestamp)}</span>
+                    <span class="d">{day(n.timestamp)}</span>
                   </span>
-                {/if}
-              </div>
 
-              {#if !isMs}
-                <button
-                  class="promote label"
-                  onclick={() => openPromote(n)}
-                  title="Diesen Stand zum Meilenstein machen"
-                >
-                  Zum Meilenstein
-                </button>
-              {/if}
-            </div>
-          </li>
-        {/each}
-      </ol>
+                  {#if n.offloaded}
+                    <span class="tag offloaded-tag label">
+                      Inhalt ausgelagert{#if graph.offloaded_archive}
+                        · {graph.offloaded_archive}{/if}
+                    </span>
+                  {/if}
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ol>
+      </div>
     {/if}
   </div>
 </section>
+
+{#if tip}
+  <!-- Detail card: domain vocabulary only, opens to the left of the pointer. -->
+  <div
+    class="tip"
+    class:foreign={!tip.node.on_active}
+    style="left: {tip.x}px; top: {tip.y}px;"
+    role="presentation"
+  >
+    <div class="tip-head">
+      <span class="tip-id mono">{tip.node.id.slice(0, 8)}</span>
+      {#if tip.node.milestone !== null}
+        <span class="tip-version mono">{tip.node.milestone}</span>
+      {/if}
+    </div>
+    <div class="tip-row mono">
+      <span class="tip-key label">Linie</span>
+      <span class="tip-val">{tip.node.branch ?? "aktive Linie"}</span>
+    </div>
+    <div class="tip-row mono">
+      <span class="tip-key label">Stand</span>
+      <span class="tip-val">{day(tip.node.timestamp)} · {clock(tip.node.timestamp)}</span>
+    </div>
+    {#if tip.node.milestone !== null}
+      <div class="tip-row mono">
+        <span class="tip-key label">Meilenstein</span>
+        <span class="tip-val">{tip.node.has_notes ? "mit Notiz" : "ohne Notiz"}</span>
+      </div>
+    {/if}
+    {#if tip.node.offloaded}
+      <div class="tip-row mono">
+        <span class="tip-key label">Inhalt</span>
+        <span class="tip-val">ausgelagert</span>
+      </div>
+    {/if}
+  </div>
+{/if}
 
 {#if promoting}
   <!-- A deliberate, quiet panel for the one place human text is written (E28). -->
@@ -248,7 +424,7 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 10px 0 18px;
+    padding: 4px 0 18px;
     position: relative;
     z-index: 1;
   }
@@ -260,66 +436,157 @@
     padding: 24px 14px;
   }
 
+  /* The graph canvas: connectors live in one SVG layer behind the rows; each row carries
+     its LED (positioned on its Bahn) and the data body to the right of the lane gutter. */
+  .graph {
+    position: relative;
+  }
+  .wires {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .wire {
+    fill: none;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+  }
+
   .tree {
     list-style: none;
     margin: 0;
     padding: 0;
-  }
-
-  /* Each node: a left spine column (edges + dot) and the data body. */
-  .node {
-    display: grid;
-    grid-template-columns: 26px 1fr;
-    gap: 10px;
-    padding: 2px 14px 2px 12px;
-    align-items: stretch;
-  }
-
-  .spine {
     position: relative;
-    display: grid;
-    grid-template-rows: 1fr auto 1fr;
-    justify-items: center;
-    align-items: center;
-  }
-  .edge {
-    width: 1px;
-    background: #2c2a27;
-    justify-self: center;
-    align-self: stretch;
-  }
-  .node.first .edge.top,
-  .node.last .edge.bottom {
-    background: transparent;
+    z-index: 1;
   }
 
-  /* Node dot = LED. A plain Stand is a small grey ring; a Meilenstein is a bright,
-     larger filled dot — the promoted node literally stands out on the spine. */
-  .dot {
-    width: 9px;
-    height: 9px;
+  .row {
+    position: relative;
+    height: var(--row);
+    display: flex;
+    align-items: center;
+    padding-left: var(--lane-area);
+    padding-right: 14px;
+  }
+
+  /* Node = LED, sitting exactly on its Bahn centre so the connectors meet it cleanly. A
+     plain Stand is a small recessed grey LED; a Meilenstein is a brighter, larger filled
+     LED with a ring — the promoted node literally stands out on its line. */
+  .led {
+    position: absolute;
+    left: var(--lane-x);
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 11px;
+    height: 11px;
+    padding: 0;
+    border: 0;
     border-radius: 50%;
+    cursor: pointer;
     background: #4a4641;
     box-shadow:
       0 0 0 1px #000,
       inset 0 1px 0.5px rgba(255, 255, 255, 0.25);
-    z-index: 1;
+    transition:
+      box-shadow var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
   }
-  .dot.ms {
-    width: 12px;
-    height: 12px;
+  .led:hover {
+    transform: translate(-50%, -50%) scale(1.18);
+  }
+  .led:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 0 3px rgba(232, 230, 225, 0.45);
+  }
+  .led.ms {
+    width: 15px;
+    height: 15px;
     background: var(--screen-fg);
     box-shadow:
       0 0 0 1px #000,
+      0 0 0 3px rgba(232, 230, 225, 0.12),
       0 0 6px 1px rgba(232, 230, 225, 0.35),
       inset 0 1px 0.5px rgba(255, 255, 255, 0.7);
   }
 
-  .body {
-    padding: 7px 0;
-    min-width: 0;
+  /* A diverging Zweig reads in the second colour (foreign blue), brightened a step per lane
+     via the inline --c. The active line stays grey — clearly the "own" one. */
+  .led.foreign {
+    background: var(--c, var(--data-foreign));
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 5px 0.5px color-mix(in srgb, var(--c, var(--data-foreign)) 55%, transparent),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.35);
   }
-  .row {
+  .led.foreign.ms {
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 0 3px color-mix(in srgb, var(--c, var(--data-foreign)) 16%, transparent),
+      0 0 7px 1px color-mix(in srgb, var(--c, var(--data-foreign)) 60%, transparent),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.6);
+  }
+
+  /* Offloaded: honestly dimmed, content gone but the node remains (E36). */
+  .led.offloaded {
+    background: #322f2c;
+    box-shadow: 0 0 0 1px #000;
+  }
+  .led.foreign.offloaded {
+    background: #1c2330;
+    box-shadow:
+      0 0 0 1px #000,
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.12);
+  }
+
+  /* The active Stand (the tip of the active line) glows: a soft halo + a slow ping ring,
+     so the eye lands on "where I am" without any colour beyond the line's own tone. */
+  .led.active {
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 0 2px rgba(232, 230, 225, 0.5),
+      0 0 10px 2px rgba(232, 230, 225, 0.4),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.7);
+  }
+  .led.active.foreign {
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 0 2px color-mix(in srgb, var(--c, var(--data-foreign)) 60%, transparent),
+      0 0 10px 2px color-mix(in srgb, var(--c, var(--data-foreign)) 55%, transparent),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.5);
+  }
+  .ping {
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    border: 1px solid rgba(232, 230, 225, 0.5);
+    animation: ping 2.4s var(--ease) infinite;
+    pointer-events: none;
+  }
+  .led.foreign .ping {
+    border-color: color-mix(in srgb, var(--c, var(--data-foreign)) 60%, transparent);
+  }
+  @keyframes ping {
+    0% {
+      transform: scale(0.8);
+      opacity: 0.7;
+    }
+    70%,
+    100% {
+      transform: scale(2.1);
+      opacity: 0;
+    }
+  }
+
+  .body {
+    min-width: 0;
+    flex: 1;
+    padding: 4px 0;
+  }
+  .line {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
@@ -333,9 +600,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .milestone .path {
-    color: var(--screen-fg);
   }
 
   /* The version label: bright Mono, a small recessed chip — the 7-segment feel. */
@@ -376,49 +640,140 @@
   .offloaded-tag {
     color: #6b6864;
   }
-  /* Offloaded: honestly dimmed, content gone but the node remains (E36). */
-  .node.offloaded .path,
-  .node.offloaded .version {
-    color: #7a766f;
+
+  /* A foreign Stand tints its path + version in the line's blue, so the body reads as part
+     of the same diverging line as its LED. */
+  .row:has(.led.foreign) .path {
+    color: color-mix(in srgb, var(--data-foreign) 70%, #cfccc5);
   }
-  .node.offloaded .dot {
-    background: #322f2c;
-    box-shadow: 0 0 0 1px #000;
+  .row:has(.led.foreign.ms) .path,
+  .row:has(.led.foreign) .version {
+    color: color-mix(in srgb, var(--data-foreign) 78%, #fff);
+  }
+  .row:has(.led.foreign) .version {
+    background: color-mix(in srgb, var(--data-foreign) 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--data-foreign) 34%, transparent);
+  }
+  .row:has(.led.foreign.offloaded) .path,
+  .row:has(.led.foreign.offloaded) .version {
+    color: #6d7585;
   }
 
-  /* Promote affordance: a quiet hairline-outline control on the dark screen. Appears on
-     hover/focus so the spine stays calm at rest. */
-  .promote {
-    margin-top: 7px;
-    appearance: none;
-    cursor: pointer;
-    color: #9a968f;
-    background: transparent;
-    border: 1px solid rgba(232, 230, 225, 0.14);
+  /* The Zweig name, shown once at the line's tip: a small foreign-blue caps tag naming the
+     line in domain vocabulary (never "branch"). */
+  .zweig-tag {
+    display: inline-block;
+    margin-bottom: 3px;
+    color: var(--data-foreign);
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
     border-radius: var(--radius-sm);
-    padding: 4px 9px;
-    opacity: 0;
-    transform: translateY(-1px);
-    transition:
-      opacity var(--dur) var(--ease),
-      color var(--dur) var(--ease),
-      border-color var(--dur) var(--ease);
+    background: color-mix(in srgb, var(--data-foreign) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--data-foreign) 30%, transparent);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .node:hover .promote,
-  .promote:focus-visible {
-    opacity: 1;
-    transform: none;
+
+  /* The active line marker in the head: a grey LED + the active Zweig name, so the user
+     always sees which line is "theirs" once more than one line is in view. */
+  .active-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    margin-right: 10px;
+    color: #8c8881;
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
   }
-  .promote:hover {
-    color: var(--screen-fg);
-    border-color: rgba(232, 230, 225, 0.4);
+  .active-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--screen-fg);
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 4px 0.5px rgba(232, 230, 225, 0.4);
   }
+
   @media (prefers-reduced-motion: reduce) {
-    .promote {
-      opacity: 1;
-      transform: none;
+    .led,
+    .led:hover {
+      transition: none;
+      transform: translate(-50%, -50%);
+    }
+    .ping {
+      animation: none;
+      display: none;
     }
   }
+
+  /* Hover/focus detail card — a small seated readout that floats over the chassis. Grey by
+     default; a foreign Stand tints its frame in the line's blue. Domain words only. */
+  .tip {
+    position: fixed;
+    z-index: 60;
+    transform: translate(calc(-100% - 14px), -50%);
+    min-width: 168px;
+    max-width: 240px;
+    padding: 9px 11px;
+    background: linear-gradient(180deg, #17150f, #0d0c0b);
+    border: 1px solid rgba(232, 230, 225, 0.16);
+    border-radius: var(--radius);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .tip.foreign {
+    border-color: color-mix(in srgb, var(--data-foreign) 45%, transparent);
+  }
+  .tip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding-bottom: 5px;
+    margin-bottom: 1px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .tip-id {
+    color: #8c8881;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+  .tip-version {
+    color: var(--screen-fg);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0 6px;
+    border-radius: var(--radius-sm);
+    background: rgba(232, 230, 225, 0.1);
+  }
+  .tip.foreign .tip-version {
+    color: color-mix(in srgb, var(--data-foreign) 78%, #fff);
+    background: color-mix(in srgb, var(--data-foreign) 16%, transparent);
+  }
+  .tip-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .tip-key {
+    color: #6b6864;
+    font-size: 9px;
+  }
+  .tip-val {
+    color: #cfccc5;
+    font-size: 11px;
+  }
+
+  /* Promote affordance lives on the node now; the dialog below is unchanged. */
 
   /* Promote dialog — a calm seated panel on the warm chassis, not an alarm. */
   .overlay {
