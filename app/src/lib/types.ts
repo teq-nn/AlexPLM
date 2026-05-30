@@ -55,6 +55,10 @@ export interface StandNode {
   branch: string | null;
   /** Whether this Stand lies on the active line — it stays clearly marked. (Issue #28) */
   on_active: boolean;
+  /** The Stände this one „folgt auf" (direct predecessors): one normally, two where two
+   *  Linien were „zusammengeführt". The UI draws a connector to each predecessor in the tree,
+   *  making forks and Zusammenführungen visible. Ids only, never shown as git. (Issue #28) */
+  parents: string[];
 }
 
 /** The version tree + active milestone the version bar shows in Mono (Issue #8 / #28).

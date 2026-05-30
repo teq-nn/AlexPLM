@@ -111,6 +111,11 @@ pub struct StandNode {
     /// `true` when this Stand lies on the active line (the user's current Zweig). The active
     /// line stays clearly marked even when other Zweige are visible.
     pub on_active: bool,
+    /// The Stände this one **folgt auf** (its direct predecessors): one for a normal Stand,
+    /// two where two Linien were **zusammengeführt**. The UI draws a connector from this Stand
+    /// down to each predecessor present in the tree, so forks and Zusammenführungen become
+    /// visible lines. Ids only — never shown as git.
+    pub parents: Vec<String>,
 }
 
 /// The dark "display" version tree the UI renders, plus the active milestone version that
@@ -180,6 +185,7 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
                 lane: layout.lane_of(&c.id),
                 branch: layout.label_of(&c.id),
                 on_active: layout.lane_of(&c.id) == 0,
+                parents: c.parents.clone(),
             }
         })
         .collect();
@@ -484,6 +490,13 @@ mod tests {
             assert!(!node(id).on_active, "{id} not on the active line");
             assert_eq!(node(id).branch.as_deref(), Some("gehaeuse-v2"));
         }
+
+        // Parent links survive the projection so the UI can draw fork/Zusammenführung
+        // connectors: c folgt auf b, the Zweig's d folgt auf the shared b, e folgt auf d.
+        assert_eq!(node("a").parents, Vec::<String>::new(), "root has no predecessor");
+        assert_eq!(node("c").parents, vec!["b".to_string()]);
+        assert_eq!(node("d").parents, vec!["b".to_string()], "Zweig forks off the shared b");
+        assert_eq!(node("e").parents, vec!["d".to_string()]);
     }
 
     #[test]
