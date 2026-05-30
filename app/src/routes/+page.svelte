@@ -92,14 +92,17 @@
   let syncQuiet = $state<"aktuell" | "gesichert" | null>(null);
   let loud = $state<LoudQuestion | null>(null);
   let syncTimer: ReturnType<typeof setInterval> | null = null;
+  // Guard so a slow networked fetch never overlaps the next 8-second sync tick (see statusInFlight).
+  let syncInFlight = false;
 
   /** Run one silent daily sync pass (E41). Best-effort: an offline/unpublished repo simply stays
    *  quiet — a raw sync error must never break the silent vocabulary. The pure Sync Decider (Rust)
    *  decides silent-merge vs. the loud exception; the UI only reflects the result. */
   async function runSync() {
-    if (!productPath) return;
+    if (!productPath || syncInFlight) return;
     // While a loud exception is unresolved, do not keep re-running into it — wait for the choice.
     if (loud) return;
+    syncInFlight = true;
     try {
       const outcome = await invoke<SyncOutcome>("sync_product", {
         path: productPath,
@@ -120,6 +123,8 @@
       }
     } catch (e) {
       // Silent by design (E41): no server / offline keeps the daily rhythm quiet, never loud.
+    } finally {
+      syncInFlight = false;
     }
   }
 
@@ -162,9 +167,14 @@
     }
   }
 
+  // Guard so a slow status read (a networked `git lfs locks` can take up to the backend bound)
+  // never overlaps the next 4-second tick. Without it, ticks pile up faster than they drain.
+  let statusInFlight = false;
+
   /** Re-read the world from git: per-artifact LED status + the foreign-locks panel. */
   async function refreshStatus() {
-    if (!productPath || !product) return;
+    if (!productPath || !product || statusInFlight) return;
+    statusInFlight = true;
     const paths = product.bausteine
       .map((b) => b.main_file)
       .filter((f): f is string => f !== null);
@@ -181,6 +191,8 @@
     } catch (e) {
       // Read-only status is best-effort; never blocks the shell (e.g. no LFS remote).
       error = String(e);
+    } finally {
+      statusInFlight = false;
     }
   }
 

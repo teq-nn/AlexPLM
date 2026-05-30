@@ -16,7 +16,6 @@
 use serde::Serialize;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
-use std::process::Command;
 
 /// The remote name the ceremony writes. A single, well-known name keeps "already configured"
 /// detection simple and the daily sync silent (it just pushes/pulls this remote, never named).
@@ -31,7 +30,9 @@ pub const REMOTE_NAME: &str = "origin";
 /// colleagues a copy-pasteable clone URL **without** leaking the owner's token/password.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RemoteConfig {
-    /// The push/fetch URL git is configured with — may embed `user[:token]@` credentials.
+    /// The push/fetch URL with any `user[:token]@` credentials embedded. Retained for validation
+    /// and tests; since Issue #22 git is **not** configured with this — credentials live in the OS
+    /// keystore and `.git/config` gets the credential-free [`clone_url`](RemoteConfig::clone_url).
     pub push_url: String,
     /// The bare `https://host/owner/repo.git` URL with NO credentials — safe to show/share and
     /// what a colleague clones (the invite). Never carries the owner's secret.
@@ -268,11 +269,30 @@ pub fn configure_remote(
     let cfg = normalize_remote(host, owner, repo, user, token)
         .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;
 
-    // Add the remote, or update its URL if a previous ceremony already set one (idempotent).
+    // Auth into the OS keystore, NOT into `.git/config` (Issue #22). When credentials were typed,
+    // store the user+token in the native keystore keyed by the host origin; git pulls them at
+    // runtime through our askpass helper. An empty user means "credentials handled elsewhere" —
+    // nothing to store, and the bare URL below carries no secret either way.
+    let user_t = user.trim();
+    let token_t = token.trim();
+    if !user_t.is_empty() || !token_t.is_empty() {
+        crate::credentials::store(&cfg.host_url, user_t, token_t).map_err(|e| match e {
+            // Tag an unreachable keystore with the shared marker so the typed frontend error comes
+            // out as `keystore` (the marker is stripped before the message is shown).
+            crate::credentials::CredentialError::Unavailable(_) => Error::other(format!(
+                "{} {e}",
+                crate::gitrunner::KEYSTORE_UNAVAILABLE_MARKER
+            )),
+            other => Error::other(other.to_string()),
+        })?;
+    }
+
+    // Add the remote, or update its URL if a previous ceremony already set one (idempotent). The
+    // URL is the **credential-free** clone URL — no `user:token@` is ever written to `.git/config`.
     if remote_get_url(root).is_some() {
-        run_git(root, &["remote", "set-url", REMOTE_NAME, &cfg.push_url])?;
+        run_git(root, &["remote", "set-url", REMOTE_NAME, &cfg.clone_url])?;
     } else {
-        run_git(root, &["remote", "add", REMOTE_NAME, &cfg.push_url])?;
+        run_git(root, &["remote", "add", REMOTE_NAME, &cfg.clone_url])?;
     }
 
     // Enable locksverify for the host (E41). Best-effort: a config write failing must not abort
@@ -295,22 +315,65 @@ pub fn configure_remote(
 /// configured remote; refuses clearly otherwise. Returns the refreshed report (now
 /// `Eingerichtet`).
 pub fn publish_product(root: &Path) -> std::io::Result<SetupReport> {
-    if remote_get_url(root).is_none() {
-        return Err(Error::new(
+    let remote = remote_get_url(root).ok_or_else(|| {
+        Error::new(
             ErrorKind::Other,
             "Kein Server angebunden — bitte zuerst den Server anbinden.",
-        ));
-    }
+        )
+    })?;
+    // Create the repository on the server *first* — the push assumes it exists, and a fresh
+    // owner/repo answers "Not found" otherwise. Idempotent: an existing repo is fine. Uses the
+    // token already in the keystore, so the user supplies nothing new here.
+    ensure_server_repo(&remote)?;
     let branch = current_branch(root)?;
     run_git(root, &["push", "--set-upstream", REMOTE_NAME, &branch])?;
     read_setup(root)
 }
 
+/// Ensure the server-side repository behind the configured remote exists (creating it via the
+/// Forgejo/Gitea API), so the first publish push has a target. Reads the credentials from the OS
+/// keystore — the same pair the push authenticates with. No stored credentials (the "handled
+/// elsewhere" connect path) or a non-API `file://` mirror → skip and let the push proceed as before.
+fn ensure_server_repo(remote_url: &str) -> std::io::Result<()> {
+    let clone = strip_credentials(remote_url);
+    if clone.starts_with("file://") {
+        return Ok(()); // local/offline mirror (and the test stand-in) has no REST API
+    }
+    let Some((host_url, owner, repo)) = crate::forgejo::parse_clone_url(&clone) else {
+        // Unrecognisable URL shape: don't block publishing — let the push surface the real error.
+        return Ok(());
+    };
+
+    use crate::credentials::CredentialError;
+    let user = match crate::credentials::username(&host_url) {
+        Ok(u) => u,
+        // No credential stored (empty-user connect): can't call the API; let the push try.
+        Err(CredentialError::NotFound) => return Ok(()),
+        Err(e) => return Err(keystore_io_error(e)),
+    };
+    let token = match crate::credentials::token(&host_url) {
+        Ok(t) => t,
+        Err(CredentialError::NotFound) => return Ok(()),
+        Err(e) => return Err(keystore_io_error(e)),
+    };
+
+    crate::forgejo::ensure_repo(&host_url, &owner, &repo, &user, &token)
+}
+
+/// Map a keystore failure to an `io::Error`, tagging an unreachable keystore with the shared marker
+/// so the typed frontend error comes out as `keystore` (mirrors the tagging in `configure_remote`).
+fn keystore_io_error(e: crate::credentials::CredentialError) -> Error {
+    match e {
+        crate::credentials::CredentialError::Unavailable(_) => {
+            Error::other(format!("{} {e}", crate::gitrunner::KEYSTORE_UNAVAILABLE_MARKER))
+        }
+        other => Error::other(other.to_string()),
+    }
+}
+
 /// The URL configured for [`REMOTE_NAME`], or `None` if no such remote exists.
 fn remote_get_url(root: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["remote", "get-url", REMOTE_NAME])
         .output()
         .ok()?;
@@ -323,9 +386,7 @@ fn remote_get_url(root: &Path) -> Option<String> {
 
 /// Whether the current branch has an upstream / remote-tracking ref — our proxy for "published".
 fn branch_has_upstream(root: &Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    crate::gitrunner::command(root)
         .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
         .output()
         .map(|o| o.status.success())
@@ -334,9 +395,7 @@ fn branch_has_upstream(root: &Path) -> bool {
 
 /// The current branch name (e.g. `main`). Falls back to `main` for a fresh repo on no branch.
 fn current_branch(root: &Path) -> std::io::Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -363,7 +422,12 @@ fn strip_credentials(url: &str) -> String {
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`. Mirrors the helper
 /// in `import.rs`; kept local so this isolated glue stays self-contained.
 fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output()?;
+    // Bounded: the publish push reaches the network, and on a rejected credential git-lfs would
+    // loop forever. Local subcommands (remote add, config) finish in milliseconds, well under the
+    // bound, so this is harmless to them.
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(args);
+    let out = crate::gitrunner::output_bounded(&mut cmd)?;
     if !out.status.success() {
         return Err(Error::new(
             ErrorKind::Other,

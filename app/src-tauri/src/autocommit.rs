@@ -151,14 +151,10 @@ impl Debouncer {
 ///
 /// Local commit only — never pushes, never touches LFS, never prompts for text (E36/E39).
 pub fn commit_all(root: &Path, rel_path: &str, now: SystemTime) -> std::io::Result<Option<Stand>> {
-    use std::process::Command;
-
     let timestamp = format_timestamp(now);
 
     // Stage everything under the product root.
-    let add = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let add = crate::gitrunner::command(root)
         .args(["add", "-A"])
         .output()?;
     if !add.status.success() {
@@ -166,9 +162,7 @@ pub fn commit_all(root: &Path, rel_path: &str, now: SystemTime) -> std::io::Resu
     }
 
     // Nothing staged -> nothing to commit; not an error, just no new Stand.
-    let diff = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let diff = crate::gitrunner::command(root)
         .args(["diff", "--cached", "--quiet"])
         .status()?;
     if diff.success() {
@@ -176,9 +170,7 @@ pub fn commit_all(root: &Path, rel_path: &str, now: SystemTime) -> std::io::Resu
     }
 
     let message = machine_message(rel_path, &timestamp);
-    let commit = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let commit = crate::gitrunner::command(root)
         .args(["commit", "-m", &message])
         .output()?;
     if !commit.status.success() {
