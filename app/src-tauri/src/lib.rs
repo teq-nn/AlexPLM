@@ -4,6 +4,7 @@ pub mod classifier;
 pub mod credentials;
 pub mod edges;
 pub mod edgestore;
+pub mod forgejo;
 pub mod gitrunner;
 pub mod graph;
 pub mod graphread;
@@ -66,6 +67,23 @@ impl AppError {
             message,
         }
     }
+}
+
+/// Run blocking git / I-O work **off the WebView main thread**. Tauri executes a *synchronous*
+/// command body on the main thread, so any networked git call — bounded to `NETWORK_TIMEOUT` (20s)
+/// by [`gitrunner::output_bounded`] — would otherwise freeze the entire UI for up to that bound. An
+/// `async` command runs on the runtime instead, and `spawn_blocking` keeps the blocking git loop
+/// (a `try_wait`/`sleep` poll) from tying up an async worker — important because the status (4s) and
+/// sync (8s) ticks can overlap a slow networked call. Returns the closure's `Result`, or a German
+/// error string if the background task itself was cancelled/panicked.
+async fn on_blocking<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("Hintergrund-Task abgebrochen: {e}"))?
 }
 
 /// Open a product folder read-only and project it for the UI Shell.
@@ -183,9 +201,15 @@ fn remove_edge(path: String, derived: String, source: String) -> Result<EdgeView
 /// `git init` if needed (existing repo left as-is), write `.gitattributes` lockable markers
 /// from the Mergeability Classifier, make the first commit, then project it for the shell.
 #[tauri::command]
-fn import_product(path: String) -> Result<ImportResult, String> {
-    let root = Path::new(&path);
-    import_folder(root).map_err(|e| e.to_string())
+async fn import_product(path: String) -> Result<ImportResult, String> {
+    // Off the main thread: `git init` + first commit of a large folder can take seconds, and a
+    // synchronous command body would block the WebView (Tauri runs sync commands on the main
+    // thread). See `on_blocking`.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        import_folder(root).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Probe a folder and run the pure Import Gate (Issue #7, E38). No mutation: returns the one
@@ -201,37 +225,54 @@ fn evaluate_gate(path: String) -> Result<GateReport, String> {
 /// crosses the "Historie anfassen" gate in the UI, and only honoured when the live repo still
 /// decides `migrate-behind-gate` (re-checked server-side; a shared repo is always refused).
 #[tauri::command]
-fn migrate_history(path: String) -> Result<ImportResult, String> {
-    let root = Path::new(&path);
-    migrate_history_behind_gate(root).map_err(|e| e.to_string())
+async fn migrate_history(path: String) -> Result<ImportResult, String> {
+    // The `git lfs migrate` rewrite is the heaviest operation in the app; never on the main thread.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        migrate_history_behind_gate(root).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Auto-acquire a `git lfs lock` for a lockable artifact being opened/edited (Issue #6, E31).
 /// Mergeable-text paths are a no-op (returns `false`); lockable paths get locked (`true`).
 /// The path is product-relative with forward slashes.
 #[tauri::command]
-fn lock_artifact(product: String, path: String) -> Result<bool, String> {
-    let root = Path::new(&product);
-    lockglue::acquire_lock(root, &path).map_err(|e| e.to_string())
+async fn lock_artifact(product: String, path: String) -> Result<bool, String> {
+    // `git lfs lock` is a networked call (bounded by `output_bounded`); keep it off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        lockglue::acquire_lock(root, &path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// The Status Reader (Issue #6): read `git lfs locks` + worktree status purely once, then
 /// derive the per-artifact LED status (green/grey/orange) for the given product-relative paths.
 /// No second source of truth — every call reads git back (E37).
 #[tauri::command]
-fn read_status(product: String, paths: Vec<String>) -> Result<Vec<ArtifactSignal>, String> {
-    let root = Path::new(&product);
-    let snap = lockglue::snapshot(root).map_err(|e| e.to_string())?;
-    Ok(derive_statuses(&paths, &snap))
+async fn read_status(product: String, paths: Vec<String>) -> Result<Vec<ArtifactSignal>, String> {
+    // `snapshot` reads `git lfs locks` (networked, bounded); off the main thread so the 4s status
+    // tick can never freeze the UI.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        let snap = lockglue::snapshot(root).map_err(|e| e.to_string())?;
+        Ok(derive_statuses(&paths, &snap))
+    })
+    .await
 }
 
 /// The live "fremde Sperren" panel (Issue #6, E37): the locks held by anyone but us, read
 /// purely from `git lfs locks`. No presence service.
 #[tauri::command]
-fn read_foreign_locks(product: String) -> Result<Vec<ForeignLock>, String> {
-    let root = Path::new(&product);
-    let snap = lockglue::snapshot(root).map_err(|e| e.to_string())?;
-    Ok(foreign_locks(&snap).into_iter().map(ForeignLock::from).collect())
+async fn read_foreign_locks(product: String) -> Result<Vec<ForeignLock>, String> {
+    // Same networked `git lfs locks` read as `read_status`; off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        let snap = lockglue::snapshot(root).map_err(|e| e.to_string())?;
+        Ok(foreign_locks(&snap).into_iter().map(ForeignLock::from).collect())
+    })
+    .await
 }
 
 /// A foreign lock as sent to the UI (serializable view of [`LockInfo`] plus the ready tooltip).
@@ -273,7 +314,7 @@ fn read_setup_state(path: String) -> Result<SetupReport, String> {
 /// keystore/auth failure surfaces as a typed [`AppError`] so the frontend can reopen the
 /// credential field instead of hanging.
 #[tauri::command]
-fn connect_server(
+async fn connect_server(
     path: String,
     host: String,
     owner: String,
@@ -281,17 +322,29 @@ fn connect_server(
     user: String,
     token: String,
 ) -> Result<SetupReport, AppError> {
-    let root = Path::new(&path);
-    configure_remote(root, &host, &owner, &repo, &user, &token).map_err(AppError::from_io)
+    // Touches the OS keystore and git config; off the main thread so the ceremony step never freezes
+    // the WebView. (Inline `spawn_blocking` rather than `on_blocking` because the error is `AppError`.)
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&path);
+        configure_remote(root, &host, &owner, &repo, &user, &token).map_err(AppError::from_io)
+    })
+    .await
+    .map_err(|e| AppError { code: "error".to_string(), message: format!("Hintergrund-Task abgebrochen: {e}") })?
 }
 
 /// Perform the **first push** that publishes the product to the connected server (Issue #5,
 /// E41), setting the upstream so the later silent daily sync has a tracking ref. Returns the
 /// refreshed ceremony state (now `eingerichtet`).
 #[tauri::command]
-fn publish_to_server(path: String) -> Result<SetupReport, AppError> {
-    let root = Path::new(&path);
-    publish_product(root).map_err(AppError::from_io)
+async fn publish_to_server(path: String) -> Result<SetupReport, AppError> {
+    // The first publish push is networked (bounded to 20s on a bad credential); off the main thread
+    // so this exact ceremony step can no longer freeze the WebView while it runs.
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&path);
+        publish_product(root).map_err(AppError::from_io)
+    })
+    .await
+    .map_err(|e| AppError { code: "error".to_string(), message: format!("Hintergrund-Task abgebrochen: {e}") })?
 }
 
 /// The Lock Warden checkpoint (Issue #9, E35): at a checkpoint for one artifact, read the world
@@ -302,10 +355,14 @@ fn publish_to_server(path: String) -> Result<SetupReport, AppError> {
 /// never raw git. The Binär-Invariante lives in the pure core: a locked binary change is never
 /// published while the lock is held.
 #[tauri::command]
-fn run_checkpoint(product: String, path: String, milestone: bool) -> Result<WardenAction, String> {
-    let root = Path::new(&product);
-    let checkpoint = if milestone { Checkpoint::Meilenstein } else { Checkpoint::Laufend };
-    pushglue::run_checkpoint(root, &path, checkpoint).map_err(|e| e.to_string())
+async fn run_checkpoint(product: String, path: String, milestone: bool) -> Result<WardenAction, String> {
+    // The Warden carries out a push (networked, bounded); off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        let checkpoint = if milestone { Checkpoint::Meilenstein } else { Checkpoint::Laufend };
+        pushglue::run_checkpoint(root, &path, checkpoint).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Run one **silent daily sync pass** (Issue #11, E41): fetch the remote stand, let the pure
@@ -316,12 +373,17 @@ fn run_checkpoint(product: String, path: String, milestone: bool) -> Result<Ward
 /// widersprechen sich — welcher gilt?"), never a git conflict marker. The daily vocabulary is
 /// "aktuell / X arbeitet an Y / gesichert"; raw git (push/pull/merge) never surfaces.
 #[tauri::command]
-fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome, String> {
-    let root = Path::new(&path);
-    if !root.is_dir() {
-        return Err(format!("Kein Ordner: {path}"));
-    }
-    run_sync(root, other).map_err(|e| e.to_string())
+async fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome, String> {
+    // The silent daily sync does a `fetch` (networked, bounded); off the main thread so the 8s
+    // sync tick can never freeze the UI.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        run_sync(root, other).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

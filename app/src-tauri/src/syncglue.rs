@@ -146,7 +146,11 @@ fn silent_merge(root: &Path) -> std::io::Result<()> {
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
 fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
-    let out = crate::gitrunner::command(root).args(args).output()?;
+    // Bounded: the fetch reaches the network. Local subcommands (merge) finish well under the
+    // bound, so this is harmless to them while a stuck connection can no longer hang the sync.
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(args);
+    let out = crate::gitrunner::output_bounded(&mut cmd)?;
     if !out.status.success() {
         return Err(Error::other(format!(
             "git {} failed: {}",

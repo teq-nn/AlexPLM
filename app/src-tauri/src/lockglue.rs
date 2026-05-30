@@ -76,16 +76,21 @@ pub fn snapshot(root: &Path) -> std::io::Result<StatusSnapshot> {
     Ok(StatusSnapshot { locks, me, dirty })
 }
 
-/// Read & parse `git lfs locks --json`. An LFS error (e.g. no remote configured) is treated as
-/// "no locks" rather than a hard failure, so the read-only shell still renders.
+/// Read & parse `git lfs locks --json`. This call reaches the LFS endpoint over the network, so it
+/// is **bounded** ([`gitrunner::output_bounded`]): a rejected credential sends git-lfs into an
+/// unbounded 401-retry loop, and this read is fired by the 4-second status loop — left unbounded,
+/// the hung children pile up until the app dies. A timeout (or any LFS error — e.g. no remote
+/// configured yet, or a 401) is treated as "no locks" rather than a hard failure, so the read-only
+/// shell still renders and the daily rhythm stays quiet.
 fn read_locks(root: &Path) -> std::io::Result<Vec<LockInfo>> {
-    let out = crate::gitrunner::command(root)
-        .args(["lfs", "locks", "--json"])
-        .output()?;
-    if !out.status.success() {
-        return Ok(Vec::new());
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(["lfs", "locks", "--json"]);
+    match crate::gitrunner::output_bounded(&mut cmd) {
+        Ok(out) if out.status.success() => {
+            Ok(parse_locks_json(&String::from_utf8_lossy(&out.stdout)))
+        }
+        _ => Ok(Vec::new()),
     }
-    Ok(parse_locks_json(&String::from_utf8_lossy(&out.stdout)))
 }
 
 /// Read the dirty paths from `git status --porcelain`.
@@ -122,9 +127,10 @@ pub fn acquire_lock(root: &Path, rel_path: &str) -> std::io::Result<bool> {
     if !is_lockable(rel_path) {
         return Ok(false);
     }
-    let out = crate::gitrunner::command(root)
-        .args(["lfs", "lock", rel_path])
-        .output()?;
+    // Reaches the LFS endpoint — bound it so a rejected credential fails fast instead of hanging.
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(["lfs", "lock", rel_path]);
+    let out = crate::gitrunner::output_bounded(&mut cmd)?;
     if out.status.success() {
         return Ok(true);
     }

@@ -315,15 +315,60 @@ pub fn configure_remote(
 /// configured remote; refuses clearly otherwise. Returns the refreshed report (now
 /// `Eingerichtet`).
 pub fn publish_product(root: &Path) -> std::io::Result<SetupReport> {
-    if remote_get_url(root).is_none() {
-        return Err(Error::new(
+    let remote = remote_get_url(root).ok_or_else(|| {
+        Error::new(
             ErrorKind::Other,
             "Kein Server angebunden — bitte zuerst den Server anbinden.",
-        ));
-    }
+        )
+    })?;
+    // Create the repository on the server *first* — the push assumes it exists, and a fresh
+    // owner/repo answers "Not found" otherwise. Idempotent: an existing repo is fine. Uses the
+    // token already in the keystore, so the user supplies nothing new here.
+    ensure_server_repo(&remote)?;
     let branch = current_branch(root)?;
     run_git(root, &["push", "--set-upstream", REMOTE_NAME, &branch])?;
     read_setup(root)
+}
+
+/// Ensure the server-side repository behind the configured remote exists (creating it via the
+/// Forgejo/Gitea API), so the first publish push has a target. Reads the credentials from the OS
+/// keystore — the same pair the push authenticates with. No stored credentials (the "handled
+/// elsewhere" connect path) or a non-API `file://` mirror → skip and let the push proceed as before.
+fn ensure_server_repo(remote_url: &str) -> std::io::Result<()> {
+    let clone = strip_credentials(remote_url);
+    if clone.starts_with("file://") {
+        return Ok(()); // local/offline mirror (and the test stand-in) has no REST API
+    }
+    let Some((host_url, owner, repo)) = crate::forgejo::parse_clone_url(&clone) else {
+        // Unrecognisable URL shape: don't block publishing — let the push surface the real error.
+        return Ok(());
+    };
+
+    use crate::credentials::CredentialError;
+    let user = match crate::credentials::username(&host_url) {
+        Ok(u) => u,
+        // No credential stored (empty-user connect): can't call the API; let the push try.
+        Err(CredentialError::NotFound) => return Ok(()),
+        Err(e) => return Err(keystore_io_error(e)),
+    };
+    let token = match crate::credentials::token(&host_url) {
+        Ok(t) => t,
+        Err(CredentialError::NotFound) => return Ok(()),
+        Err(e) => return Err(keystore_io_error(e)),
+    };
+
+    crate::forgejo::ensure_repo(&host_url, &owner, &repo, &user, &token)
+}
+
+/// Map a keystore failure to an `io::Error`, tagging an unreachable keystore with the shared marker
+/// so the typed frontend error comes out as `keystore` (mirrors the tagging in `configure_remote`).
+fn keystore_io_error(e: crate::credentials::CredentialError) -> Error {
+    match e {
+        crate::credentials::CredentialError::Unavailable(_) => {
+            Error::other(format!("{} {e}", crate::gitrunner::KEYSTORE_UNAVAILABLE_MARKER))
+        }
+        other => Error::other(other.to_string()),
+    }
 }
 
 /// The URL configured for [`REMOTE_NAME`], or `None` if no such remote exists.
@@ -377,7 +422,12 @@ fn strip_credentials(url: &str) -> String {
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`. Mirrors the helper
 /// in `import.rs`; kept local so this isolated glue stays self-contained.
 fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
-    let out = crate::gitrunner::command(root).args(args).output()?;
+    // Bounded: the publish push reaches the network, and on a rejected credential git-lfs would
+    // loop forever. Local subcommands (remote add, config) finish in milliseconds, well under the
+    // bound, so this is harmless to them.
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(args);
+    let out = crate::gitrunner::output_bounded(&mut cmd)?;
     if !out.status.success() {
         return Err(Error::new(
             ErrorKind::Other,

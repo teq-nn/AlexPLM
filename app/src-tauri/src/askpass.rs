@@ -54,10 +54,15 @@ pub fn parse_prompt(prompt: &str) -> Option<(Field, String)> {
         return None;
     };
 
-    // The URL git shows is wrapped in single quotes: `Username for 'https://host': `.
-    let open = p.find('\'')?;
+    // The URL is wrapped in quotes. **git** uses single quotes (`Username for 'https://host': `),
+    // but **git-lfs** uses double quotes (`Username for "https://host"`). We must accept either —
+    // missing the double-quote form makes every git-lfs credential request fail here, which sends
+    // git-lfs into an unbounded 401→reject→resubmit loop that hangs every LFS call. Match the
+    // closing quote to the opening one so a stray quote of the other kind can't truncate the URL.
+    let open = p.find(|c| c == '\'' || c == '"')?;
+    let quote = p.as_bytes()[open] as char;
     let rest = &p[open + 1..];
-    let close = rest.find('\'')?;
+    let close = rest.find(quote)?;
     let url = &rest[..close];
     if url.is_empty() {
         return None;
@@ -130,6 +135,11 @@ mod tests {
             ("Password for 'http://u:x@192.168.0.9:3000': ", Field::Password, "http://192.168.0.9:3000"),
             // trailing slash on the shown URL is normalized away
             ("Username for 'https://h/': ", Field::Username, "https://h"),
+            // git-lfs wraps the URL in DOUBLE quotes (regression: this used to fail to parse and
+            // hung every LFS call in a credential-retry loop).
+            ("Username for \"https://forge.example.de\"", Field::Username, "https://forge.example.de"),
+            ("Password for \"https://anna@forge.example.de\"", Field::Password, "https://forge.example.de"),
+            ("Password for \"http://u:x@192.168.0.9:3000\"", Field::Password, "http://192.168.0.9:3000"),
         ];
         for (prompt, field, host) in cases {
             let (f, h) = parse_prompt(prompt).expect("parses");

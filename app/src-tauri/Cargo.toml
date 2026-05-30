@@ -30,6 +30,11 @@ notify = "8"
 # Cross-platform OS keystore for the auth token (Issue #22). The token lives in the
 # native keystore, never in `.git/config`; git pulls it at runtime via the askpass helper.
 keyring = { version = "3", default-features = false }
+# Minimal HTTP client for the Forgejo/Gitea REST API: "Veröffentlichen" creates the repository
+# server-side before the first push (the server answers "Not found" otherwise). `rustls-tls` keeps
+# TLS pure-Rust so no system OpenSSL -dev package is needed at build time; only the blocking client
+# is used (called inside the command's `spawn_blocking`).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 # Linux: GNOME Keyring / KWallet over the Secret Service (D-Bus). `crypto-rust` keeps the
 # encrypted session pure-Rust; `vendored` statically links libdbus so no system -dev pkg is
@@ -44,4 +49,9 @@ keyring = { version = "3", default-features = false, features = [
 # Windows: the native Credential Manager (DPAPI-backed).
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+# Unix: kill a timed-out git's whole process group (gitrunner), so an orphaned git-lfs child can
+# never keep looping on a rejected credential after we give up on it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 

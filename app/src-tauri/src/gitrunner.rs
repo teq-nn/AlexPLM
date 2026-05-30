@@ -19,8 +19,18 @@
 //! behavior is unchanged except for the hardening. The failure classifier is pure and table-tested
 //! so the exact stderr markers are asserted here rather than discovered in production.
 
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+/// Wall-clock bound for a single networked git invocation. A hung credential negotiation must
+/// fail fast, not block forever. The motivating case (Issue #22 follow-up): git-lfs, handed a
+/// rejected token, loops on `401 → credential reject → resubmit` **without bound** — so a single
+/// `git lfs locks` never returns. Fired by the 4-second status loop, those hung children pile up
+/// until the app is exhausted and dies. 20s is generous for a healthy LFS round-trip yet bounds
+/// the runaway. Local-only git calls are fast and need no bound.
+pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Environment marker git propagates to the [`GIT_ASKPASS`](harden) child. The app binary checks
 /// it on startup ([`crate::askpass::is_askpass_invocation`]) to enter `--askpass` mode instead of
@@ -61,6 +71,89 @@ fn harden(c: &mut Command) {
     if let Ok(exe) = std::env::current_exe() {
         c.env("GIT_ASKPASS", exe);
     }
+}
+
+/// Run a (hardened) git `Command` to completion, but kill it and fail with [`ErrorKind::TimedOut`]
+/// if it outlives [`NETWORK_TIMEOUT`]. Use for any call that can reach the network/LFS endpoint so
+/// a stuck credential loop or a dead connection can never hang the app. stdin is closed so the
+/// child can never block waiting on input; stdout/stderr are drained on threads so a chatty child
+/// (e.g. git-lfs trace) can never deadlock on a full pipe.
+pub fn output_bounded(cmd: &mut Command) -> std::io::Result<Output> {
+    output_bounded_for(cmd, NETWORK_TIMEOUT)
+}
+
+/// [`output_bounded`] with an explicit timeout (kept separate so tests can use a short bound).
+pub fn output_bounded_for(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Put git in its OWN process group so a timeout can kill the whole tree. git spawns git-lfs,
+    // which spawns our askpass helper; killing only the direct git child would orphan git-lfs —
+    // it would keep the stdout pipe open (so our drain threads never see EOF) AND keep looping on
+    // the rejected credential. Killing the group ends all of them at once.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn()?;
+
+    // Drain both pipes on their own threads so the child can never block on a full pipe while we
+    // poll for exit.
+    let mut out_pipe = child.stdout.take().expect("piped stdout");
+    let mut err_pipe = child.stderr.take().expect("piped stderr");
+    let out_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = out_pipe.read_to_end(&mut v);
+        v
+    });
+    let err_h = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = err_pipe.read_to_end(&mut v);
+        v
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if start.elapsed() >= timeout {
+            kill_tree(&mut child);
+            // The pipes close once every process in the group is dead, so the drain threads now
+            // reach EOF and join promptly rather than leaking.
+            let _ = out_h.join();
+            let _ = err_h.join();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "git timed out after {}s (a rejected credential is looping)",
+                    timeout.as_secs()
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    Ok(Output {
+        status,
+        stdout: out_h.join().unwrap_or_default(),
+        stderr: err_h.join().unwrap_or_default(),
+    })
+}
+
+/// Kill a timed-out git and all of its descendants. On Unix, git leads its own process group (set
+/// in [`output_bounded_for`]) so we signal the whole group `-pgid`; the direct-child kill is a
+/// fallback (and the only option on Windows, where tree-kill would need a Job Object).
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // SAFETY: a plain `kill(2)` syscall with no memory effects. `child.id()` is this child's
+        // pid, which equals its process-group id because we spawned it with `process_group(0)`.
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// The kind of failure behind a non-zero git exit, judged purely from its stderr. Drives the typed
@@ -181,6 +274,29 @@ mod tests {
                 "classify_failure({stderr:?})"
             );
         }
+    }
+
+    #[test]
+    fn output_bounded_kills_a_hung_child_fast() {
+        // A child that would run far longer than the bound must be killed and surface TimedOut,
+        // not block. This is the guard that stops a looping git-lfs auth retry from hanging the app.
+        let start = Instant::now();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let err = output_bounded_for(&mut cmd, Duration::from_millis(300))
+            .expect_err("must time out");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(5), "should not wait for the child");
+    }
+
+    #[test]
+    fn output_bounded_returns_a_fast_child_normally() {
+        // A well-behaved child returns its output unharmed within the bound.
+        let mut cmd = Command::new("printf");
+        cmd.arg("hello");
+        let out = output_bounded_for(&mut cmd, Duration::from_secs(5)).expect("runs");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
     }
 
     #[test]
