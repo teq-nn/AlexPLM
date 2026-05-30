@@ -156,3 +156,18 @@ export interface SetupReport {
   /** Credential-free clone URL to hand a colleague, once a server is connected. */
   clone_url: string | null;
 }
+
+// The Lock Warden's two push types (Issue #9, E35). The pure, safety-critical core returns
+// EXACTLY ONE of these per checkpoint. The UI never speaks raw git — only the tool's own
+// vocabulary (the daily sync stays silent; this is the calm "gesichert / freigegeben" readout).
+
+/** The single action the Lock Warden decides. Mirrors `WardenAction` in src-tauri/src/warden.rs.
+ *  - `freigabe-push`   → published to the shared stand + lock released ("freigegeben");
+ *  - `sicherungs-push` → private backup only ("dein Stand ist gesichert");
+ *  - `auto-unlock`     → a held lock on a clean path was released ("Sperre gelöst");
+ *  - `refuse`          → nothing to do (surfaced as nothing). */
+export type WardenAction =
+  | "freigabe-push"
+  | "sicherungs-push"
+  | "auto-unlock"
+  | "refuse";

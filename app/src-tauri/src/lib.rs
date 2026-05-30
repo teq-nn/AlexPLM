@@ -9,7 +9,9 @@ pub mod import_gate;
 pub mod lockglue;
 pub mod locks;
 pub mod projection;
+pub mod pushglue;
 pub mod setup;
+pub mod warden;
 pub mod watcher;
 
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
@@ -19,6 +21,7 @@ use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, G
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
+use warden::{Checkpoint, WardenAction};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -249,6 +252,20 @@ fn publish_to_server(path: String) -> Result<SetupReport, String> {
     publish_product(root).map_err(|e| e.to_string())
 }
 
+/// The Lock Warden checkpoint (Issue #9, E35): at a checkpoint for one artifact, read the world
+/// (path kind, lock state, clean/dirty) purely once, let the safety-critical pure Warden decide
+/// the single action — `freigabe-push` | `sicherungs-push` | `auto-unlock` | `refuse` — and carry
+/// it out. `milestone = true` is a Meilenstein (Freigabe candidate); `false` is a laufender
+/// Checkpoint (Sicherungs at most). The action taken is returned in the tool's own vocabulary,
+/// never raw git. The Binär-Invariante lives in the pure core: a locked binary change is never
+/// published while the lock is held.
+#[tauri::command]
+fn run_checkpoint(product: String, path: String, milestone: bool) -> Result<WardenAction, String> {
+    let root = Path::new(&product);
+    let checkpoint = if milestone { Checkpoint::Meilenstein } else { Checkpoint::Laufend };
+    pushglue::run_checkpoint(root, &path, checkpoint).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -272,7 +289,8 @@ pub fn run() {
             read_foreign_locks,
             read_setup_state,
             connect_server,
-            publish_to_server
+            publish_to_server,
+            run_checkpoint
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
