@@ -92,14 +92,17 @@
   let syncQuiet = $state<"aktuell" | "gesichert" | null>(null);
   let loud = $state<LoudQuestion | null>(null);
   let syncTimer: ReturnType<typeof setInterval> | null = null;
+  // Guard so a slow networked fetch never overlaps the next 8-second sync tick (see statusInFlight).
+  let syncInFlight = false;
 
   /** Run one silent daily sync pass (E41). Best-effort: an offline/unpublished repo simply stays
    *  quiet — a raw sync error must never break the silent vocabulary. The pure Sync Decider (Rust)
    *  decides silent-merge vs. the loud exception; the UI only reflects the result. */
   async function runSync() {
-    if (!productPath) return;
+    if (!productPath || syncInFlight) return;
     // While a loud exception is unresolved, do not keep re-running into it — wait for the choice.
     if (loud) return;
+    syncInFlight = true;
     try {
       const outcome = await invoke<SyncOutcome>("sync_product", {
         path: productPath,
@@ -120,6 +123,8 @@
       }
     } catch (e) {
       // Silent by design (E41): no server / offline keeps the daily rhythm quiet, never loud.
+    } finally {
+      syncInFlight = false;
     }
   }
 
@@ -162,9 +167,14 @@
     }
   }
 
+  // Guard so a slow status read (a networked `git lfs locks` can take up to the backend bound)
+  // never overlaps the next 4-second tick. Without it, ticks pile up faster than they drain.
+  let statusInFlight = false;
+
   /** Re-read the world from git: per-artifact LED status + the foreign-locks panel. */
   async function refreshStatus() {
-    if (!productPath || !product) return;
+    if (!productPath || !product || statusInFlight) return;
+    statusInFlight = true;
     const paths = product.bausteine
       .map((b) => b.main_file)
       .filter((f): f is string => f !== null);
@@ -181,6 +191,8 @@
     } catch (e) {
       // Read-only status is best-effort; never blocks the shell (e.g. no LFS remote).
       error = String(e);
+    } finally {
+      statusInFlight = false;
     }
   }
 
@@ -327,6 +339,7 @@
     try {
       product = await invoke<ProductView>("open_product", { path: selected });
       productPath = selected;
+      loadWidths(selected); // restore this product's saved column layout
       // A fresh product starts with a fresh ledger, then watching begins silently.
       stands = [];
       await invoke("start_watching", { path: selected });
@@ -395,6 +408,7 @@
       imported = result;
       product = result.product;
       productPath = path;
+      loadWidths(path); // restore this product's saved column layout
       stands = [];
       await invoke("start_watching", { path });
       await refreshGraph();
@@ -433,6 +447,113 @@
     }
   }
 
+  // ── Spaltenbreiten (Issue #26) ──────────────────────────────────────────────
+  // The three columns (Versionsbaum + Fremde-Sperren-Schiene) carry explicit widths the
+  // user can drag; the Bausteine work area simply flexes into whatever space is left. Each
+  // width has a sensible Mindestbreite so no column can be dragged away to nothing, and the
+  // work area is protected by its own minimum so resizing the window never collapses it.
+  const TREE_MIN = 220;
+  const TREE_MAX = 640;
+  const RAIL_MIN = 200;
+  const RAIL_MAX = 520;
+  const TREE_DEFAULT = 300;
+  const RAIL_DEFAULT = 264;
+  // Keep the Bausteine work area usable even when columns grow / the window shrinks.
+  const WORK_MIN = 320;
+
+  let treeWidth = $state(TREE_DEFAULT);
+  let railWidth = $state(RAIL_DEFAULT);
+
+  const clamp = (v: number, lo: number, hi: number) =>
+    Math.min(hi, Math.max(lo, v));
+
+  // Widths persist per product (the WebView origin is already per-window), so reopening the
+  // same product restores its layout. A plain localStorage key — the app keeps no other
+  // frontend persistence, and these are pure view preferences, never domain truth.
+  function layoutKey(path: string): string {
+    return `plm.spaltenbreiten:${path}`;
+  }
+
+  function loadWidths(path: string) {
+    try {
+      const raw = localStorage.getItem(layoutKey(path));
+      if (!raw) {
+        treeWidth = TREE_DEFAULT;
+        railWidth = RAIL_DEFAULT;
+        return;
+      }
+      const saved = JSON.parse(raw) as { tree?: number; rail?: number };
+      treeWidth = clamp(saved.tree ?? TREE_DEFAULT, TREE_MIN, TREE_MAX);
+      railWidth = clamp(saved.rail ?? RAIL_DEFAULT, RAIL_MIN, RAIL_MAX);
+    } catch {
+      treeWidth = TREE_DEFAULT;
+      railWidth = RAIL_DEFAULT;
+    }
+  }
+
+  function saveWidths() {
+    if (!productPath) return;
+    try {
+      localStorage.setItem(
+        layoutKey(productPath),
+        JSON.stringify({ tree: treeWidth, rail: railWidth }),
+      );
+    } catch {
+      // View preferences are best-effort; a full/blocked storage must never break the shell.
+    }
+  }
+
+  // Drag a splitter. `which` says which seam was grabbed; we move the adjacent column's edge
+  // and clamp against both the column's own min/max and the work area's minimum so the work
+  // never collapses. Pointer capture keeps the drag alive even past the thin handle.
+  function startResize(which: "tree" | "rail", ev: PointerEvent) {
+    ev.preventDefault();
+    const handle = ev.currentTarget as HTMLElement;
+    handle.setPointerCapture(ev.pointerId);
+    const stage = handle.closest(".stage") as HTMLElement | null;
+    const startX = ev.clientX;
+    const startTree = treeWidth;
+    const startRail = railWidth;
+
+    const onMove = (e: PointerEvent) => {
+      const dx = e.clientX - startX;
+      const stageW = stage?.clientWidth ?? window.innerWidth;
+      if (which === "tree") {
+        // The tree sits left of the rail; dragging right grows it (handle is on its left edge).
+        const room = stageW - WORK_MIN - railWidth;
+        const hi = Math.min(TREE_MAX, Math.max(TREE_MIN, room));
+        treeWidth = clamp(startTree - dx, TREE_MIN, hi);
+      } else {
+        // The rail is the rightmost column; dragging left grows it (handle is on its left edge).
+        const room = stageW - WORK_MIN - treeWidth;
+        const hi = Math.min(RAIL_MAX, Math.max(RAIL_MIN, room));
+        railWidth = clamp(startRail - dx, RAIL_MIN, hi);
+      }
+    };
+    const onUp = (e: PointerEvent) => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      saveWidths();
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  }
+
+  // Keyboard nudge for accessibility: arrow keys move the grabbed seam in small steps.
+  function nudge(which: "tree" | "rail", e: KeyboardEvent) {
+    const step = e.shiftKey ? 32 : 8;
+    let delta = 0;
+    if (e.key === "ArrowLeft") delta = -step;
+    else if (e.key === "ArrowRight") delta = step;
+    else return;
+    e.preventDefault();
+    // Both handles grow their column when moved left, shrink when moved right.
+    if (which === "tree") treeWidth = clamp(treeWidth - delta, TREE_MIN, TREE_MAX);
+    else railWidth = clamp(railWidth - delta, RAIL_MIN, RAIL_MAX);
+    saveWidths();
+  }
+
   // Promote a Stand to a Meilenstein: the user writes the human VERSION_NOTES text (E28),
   // Rust persists it and labels the version durably, then returns the refreshed tree.
   async function promote(node: StandNode, version: string, notes: string) {
@@ -452,6 +573,34 @@
 
 <div class="app">
   <VersionBar {product} activeMilestone={graph?.active_milestone ?? null} />
+
+  <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
+       Bausteine pane — they aren't part of browsing Bausteine. The write-vs-read distinction
+       stays legible: "Neues Produkt" is the solid primary key (schreibt), "Produkt öffnen" the
+       quieter ghost key (liest nur). -->
+  <div class="entrybar">
+    <div class="entry-actions">
+      <button
+        class="key"
+        onclick={importProduct}
+        disabled={loading !== null}
+      >
+        <span class="label"
+          >{loading === "gate"
+            ? "prüfe …"
+            : loading === "import" || loading === "migrate"
+              ? "lege an …"
+              : "Neues Produkt"}</span
+        >
+      </button>
+      <button class="key ghost" onclick={openProduct} disabled={loading !== null}>
+        <span class="label"
+          >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
+        >
+      </button>
+      <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
+    </div>
+  </div>
 
   <div class="stage">
     <main class="work">
@@ -512,25 +661,6 @@
             {/if}
           </span>
         {/if}
-
-        <button
-          class="key"
-          onclick={importProduct}
-          disabled={loading !== null}
-        >
-          <span class="label"
-            >{loading === "gate"
-              ? "prüfe …"
-              : loading === "import" || loading === "migrate"
-                ? "lege an …"
-                : "Ordner anlegen"}</span
-          >
-        </button>
-        <button class="key" onclick={openProduct} disabled={loading !== null}>
-          <span class="label"
-            >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
-          >
-        </button>
       </div>
     </div>
 
@@ -578,7 +708,7 @@
                     ? "prüfe …"
                     : loading === "import" || loading === "migrate"
                       ? "lege an …"
-                      : "Ordner anlegen"}</span
+                      : "Neues Produkt"}</span
                 >
               </button>
               <button
@@ -599,8 +729,46 @@
     </main>
 
     {#if product}
-      <VersionTree {graph} onPromote={promote} />
-      <aside class="rail">
+      <!-- Splitter between the Bausteine work area and the Versionsbaum. A hairline seam
+           that widens its grab zone on hover; no orange — routine sizing stays grey.
+           role="separator" + focusable IS the resize-splitter ARIA pattern; the generic
+           a11y lint for <div> handlers/tabindex doesn't apply, so we silence it here. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Breite des Versionsbaums"
+        aria-valuenow={treeWidth}
+        aria-valuemin={TREE_MIN}
+        aria-valuemax={TREE_MAX}
+        tabindex="0"
+        onpointerdown={(e) => startResize("tree", e)}
+        onkeydown={(e) => nudge("tree", e)}
+      ></div>
+
+      <div class="tree-col" style="width: {treeWidth}px;">
+        <VersionTree {graph} onPromote={promote} />
+      </div>
+
+      <!-- Splitter between the Versionsbaum and the Fremde-Sperren-Schiene. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Breite der Fremde-Sperren-Schiene"
+        aria-valuenow={railWidth}
+        aria-valuemin={RAIL_MIN}
+        aria-valuemax={RAIL_MAX}
+        tabindex="0"
+        onpointerdown={(e) => startResize("rail", e)}
+        onkeydown={(e) => nudge("rail", e)}
+      ></div>
+
+      <aside class="rail" style="width: {railWidth}px;">
         <ForeignLocksPanel locks={foreignLocks} />
         <StandList {stands} />
       </aside>
@@ -640,6 +808,28 @@
     background: var(--surface-base);
   }
 
+  /* The app-level entry bar: product entry points sit here, above the work chassis, so the
+     Bausteine pane stays about Bausteine. Reads as a shelf seated under the LCD display. */
+  .entrybar {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    background: var(--surface-raised);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .entry-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  /* The read-only distinction, kept legible after the move (mirrors the empty-state sub-line). */
+  .entry-hint {
+    margin-left: 4px;
+    color: var(--ink-muted);
+    font-size: 11px;
+    opacity: 0.8;
+  }
+
   /* Work chassis + instrument rail (foreign locks + Stände) share the row below the display. */
   .stage {
     flex: 1;
@@ -654,9 +844,62 @@
     display: flex;
     flex-direction: column;
     flex: none;
+    /* width comes from an inline style (drag-set, persisted); these bound it */
     width: 264px;
+    min-width: 200px;
+    max-width: 520px;
     min-height: 0;
     border-left: 1px solid var(--hairline);
+  }
+
+  /* Wrapper that owns the Versionsbaum's drag-set width; the VersionTree's own
+     instrument display fills it edge-to-edge. */
+  .tree-col {
+    flex: none;
+    min-width: 220px;
+    max-width: 640px;
+    min-height: 0;
+    display: flex;
+  }
+  .tree-col > :global(.display) {
+    width: 100%;
+    flex: 1;
+  }
+
+  /* A splitter is a hairline seam with an invisible widened grab zone. It carries no fill of
+     its own (the columns it sits between already draw their seams); on hover/active the seam
+     brightens to the raised-surface tone. Strictly grey — orange stays reserved for the loud
+     exception, never routine layout. */
+  .splitter {
+    flex: none;
+    width: 7px;
+    margin: 0 -3px; /* overlap the neighbours' hairlines so no double seam shows */
+    position: relative;
+    z-index: 1;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .splitter::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+    background: transparent;
+    transition: background var(--dur) var(--ease);
+  }
+  .splitter:hover::before {
+    background: var(--key-mid);
+  }
+  .splitter:active::before,
+  .splitter:focus-visible::before {
+    width: 2px;
+    background: var(--ink-muted);
+  }
+  .splitter:focus-visible {
+    outline: none;
   }
   /* Children already style their own surfaces; drop their seams so only the rail's shows. */
   .rail > :global(.panel),
@@ -673,7 +916,9 @@
 
   .work {
     flex: 1;
-    min-width: 0;
+    /* Stay usable when columns grow or the window shrinks — the work area never collapses
+       below a legible width; any further squeeze is absorbed by the stage, not this column. */
+    min-width: 320px;
     min-height: 0;
     display: flex;
     flex-direction: column;

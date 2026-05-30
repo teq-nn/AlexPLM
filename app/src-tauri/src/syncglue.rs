@@ -23,7 +23,6 @@ use crate::syncdecider::{decide_sync, DivergedPath, SyncDecision};
 use serde::Serialize;
 use std::io::Error;
 use std::path::Path;
-use std::process::Command;
 
 /// The shared release branch the daily sync tracks (E34: both colleagues on `main`).
 pub const SHARED_BRANCH: &str = "main";
@@ -63,9 +62,7 @@ pub fn diverged_paths(root: &Path, other: Option<String>) -> std::io::Result<Vec
     let remote_ref = format!("{REMOTE_NAME}/{SHARED_BRANCH}");
     // Paths that differ between our HEAD and the fetched remote tip. If the remote ref is unknown
     // (never published / offline), there is nothing to diverge against → empty.
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["diff", "--name-only", "HEAD", &remote_ref])
         .output()?;
     if !out.status.success() {
@@ -149,7 +146,11 @@ fn silent_merge(root: &Path) -> std::io::Result<()> {
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
 fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output()?;
+    // Bounded: the fetch reaches the network. Local subcommands (merge) finish well under the
+    // bound, so this is harmless to them while a stuck connection can no longer hang the sync.
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(args);
+    let out = crate::gitrunner::output_bounded(&mut cmd)?;
     if !out.status.success() {
         return Err(Error::other(format!(
             "git {} failed: {}",

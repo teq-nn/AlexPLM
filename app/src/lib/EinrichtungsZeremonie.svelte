@@ -19,9 +19,26 @@
     onClose: () => void;
   } = $props();
 
+  // A typed backend error (Issue #22): `auth` means the token was missing/wrong/expired, `keystore`
+  // means the OS-Schlüsselbund was unreachable. Both must bring the user back to the credential
+  // field to re-enter the token — never leave them stuck on a step that can't recover.
+  type AppError = { code: string; message: string };
+  function asAppError(e: unknown): AppError {
+    if (e && typeof e === "object" && "code" in e && "message" in e) {
+      return e as AppError;
+    }
+    return { code: "error", message: String(e) };
+  }
+
+  // When an auth/keystore error arrives we force the connect (credential) step back open, even if
+  // the server stage says we are already past it (e.g. an auth failure during publish). Cleared on
+  // the next successful action.
+  let reauth = $state(false);
+
   // The visible step is driven by the (server-decided) stage so a reopened ceremony always lands
-  // on the right rung: connect → publish → invite.
-  let stage = $derived(report.stage);
+  // on the right rung: connect → publish → invite — unless a credential error has forced us back to
+  // the connect step to re-enter the token.
+  let stage = $derived(reauth ? "not-configured" : report.stage);
 
   // Connect-step form fields. Credentials stay in this component and go straight to Rust; the
   // returned report only ever carries the credential-free clone URL.
@@ -49,9 +66,14 @@
       });
       // Don't keep the secret around once it's been handed to git.
       token = "";
+      reauth = false;
       onUpdated(r);
     } catch (e) {
-      error = String(e);
+      // The backend returns a typed { code, message } — show the human message, and on an
+      // auth/keystore failure force the credential step back open (never "[object Object]").
+      const err = asAppError(e);
+      error = err.message;
+      if (err.code === "auth" || err.code === "keystore") reauth = true;
     } finally {
       busy = false;
     }
@@ -64,12 +86,46 @@
       const r = await invoke<SetupReport>("publish_to_server", {
         path: productPath,
       });
+      reauth = false;
       onUpdated(r);
     } catch (e) {
-      error = String(e);
+      // Same typed error handling as connect: a rejected token reopens the credential step; any
+      // other failure (e.g. the repo does not exist on the server yet) shows its real message.
+      const err = asAppError(e);
+      error = err.message;
+      if (err.code === "auth" || err.code === "keystore") reauth = true;
     } finally {
       busy = false;
     }
+  }
+
+  // Split a credential-free clone URL `scheme://host[:port]/owner/repo(.git)` back into its parts,
+  // so reopening the connect step can prefill the server fields (only the token needs re-typing).
+  // Returns null for an unexpected shape. Mirrors the backend `forgejo::parse_clone_url`.
+  function parseCloneUrl(
+    url: string | null | undefined,
+  ): { host: string; owner: string; repo: string } | null {
+    if (!url) return null;
+    const m = url.match(/^(https?:\/\/[^/]+)\/(.+)$/);
+    if (!m) return null;
+    const path = m[2].replace(/\.git$/, "").replace(/\/$/, "");
+    const slash = path.lastIndexOf("/");
+    if (slash < 1) return null;
+    return { host: m[1], owner: path.slice(0, slash), repo: path.slice(slash + 1) };
+  }
+
+  // Step back from a later rung to the credential step — to re-enter a missing/wrong token or point
+  // the product at a different server. The server fields are prefilled from the existing target so
+  // the user only re-enters Benutzer/Zugangs-Token; the (write-only) token field stays empty.
+  function reopenConnect() {
+    const parsed = parseCloneUrl(report.clone_url);
+    if (parsed) {
+      host = parsed.host;
+      owner = parsed.owner;
+      repo = parsed.repo;
+    }
+    error = null;
+    reauth = true;
   }
 
   async function copyClone() {
@@ -83,9 +139,10 @@
     }
   }
 
-  // The connect button is inert until the three URL parts are present (credentials optional).
+  // The connect button is inert until server, product name and username are present. The owner is
+  // optional — left blank it defaults to the authenticated user (the username) on the Rust side.
   let canConnect = $derived(
-    host.trim() !== "" && owner.trim() !== "" && repo.trim() !== "",
+    host.trim() !== "" && repo.trim() !== "" && user.trim() !== "",
   );
 </script>
 
@@ -144,11 +201,11 @@
           </label>
           <div class="row">
             <label class="field">
-              <span class="label fk">Besitzer / Team</span>
+              <span class="label fk">Besitzer / Team <span class="opt">(optional)</span></span>
               <input
                 class="mono in"
                 bind:value={owner}
-                placeholder="team"
+                placeholder="dein Account"
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -166,22 +223,21 @@
           </div>
           <div class="row">
             <label class="field">
-              <span class="label fk">Benutzer</span>
+              <span class="label fk">Username</span>
               <input
                 class="mono in"
                 bind:value={user}
-                placeholder="optional"
+                placeholder="anna"
                 autocomplete="off"
                 spellcheck="false"
               />
             </label>
             <label class="field">
-              <span class="label fk">Zugangs-Token</span>
+              <span class="label fk">Passwort</span>
               <input
                 class="mono in"
                 type="password"
                 bind:value={token}
-                placeholder="optional"
                 autocomplete="off"
               />
             </label>
@@ -201,6 +257,9 @@
             <span class="rv">{report.clone_url}</span>
           </div>
         {/if}
+        <button class="relink mono" onclick={reopenConnect} disabled={busy}>
+          Zugangsdaten ändern
+        </button>
       {:else}
         <!-- Step 3: invite a colleague by handing them the clone URL. Settled state. -->
         <p class="lede">
@@ -219,6 +278,9 @@
             auf demselben Stand.
           </p>
         {/if}
+        <button class="relink mono" onclick={reopenConnect} disabled={busy}>
+          Server ändern
+        </button>
       {/if}
 
       {#if error}
@@ -395,6 +457,12 @@
     color: var(--ink-muted);
     font-size: 10px;
   }
+  .fk .opt {
+    color: var(--ink-muted);
+    opacity: 0.65;
+    text-transform: none;
+    letter-spacing: 0;
+  }
   /* Recessed input wells, echoing the dark instrument readouts but light enough to type into. */
   .in {
     appearance: none;
@@ -471,6 +539,34 @@
     font-weight: 400;
     font-size: 12px;
     line-height: 1.45;
+  }
+
+  /* A quiet way back to the credential step from a later rung. Reads as an instrument micro-label
+     (mono, muted, uppercase) until hover lights its hairline — the same focus cue as the inputs. */
+  .relink {
+    appearance: none;
+    align-self: flex-start;
+    margin: 14px 0 0;
+    padding: 2px 0 3px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--ink-muted);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--hairline);
+    transition:
+      color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  .relink:hover:not(:disabled) {
+    color: var(--ink-strong);
+    border-bottom-color: var(--ink-strong);
+  }
+  .relink:disabled {
+    cursor: default;
+    opacity: 0.4;
   }
 
   .err {
