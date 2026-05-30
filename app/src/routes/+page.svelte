@@ -3,6 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { onDestroy } from "svelte";
   import type {
+    GateReport,
     ImportResult,
     ProductView,
     ArtifactSignal,
@@ -11,6 +12,7 @@
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
+  import HistorieGate from "$lib/HistorieGate.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -25,9 +27,14 @@
   let product = $state<ProductView | null>(null);
   let productPath = $state<string | null>(null);
   let error = $state<string | null>(null);
-  let loading = $state<"open" | "import" | null>(null);
+  let loading = $state<"open" | "import" | "gate" | "migrate" | null>(null);
   // Import outcome, in the tool's own vocabulary — never "git" / "commit".
   let imported = $state<ImportResult | null>(null);
+  // When the gate decides the dangerous branch, hold the chosen folder + report here so the
+  // "Historie anfassen" modal can explain the stakes before any rewrite.
+  let gate = $state<{ path: string; report: GateReport } | null>(null);
+  // A plain refusal note when the folder is shared (E38: never poison others' clones).
+  let refusal = $state<string | null>(null);
 
   // Auto-Lock & Status-Signale (Issue #6, E37). Both are *derived purely* by reading git back
   // (`git lfs locks` + worktree status); nothing is mirrored or cached as a second truth.
@@ -88,6 +95,7 @@
   function reset() {
     error = null;
     imported = null;
+    refusal = null;
     signals = {};
     foreignLocks = [];
     stopStatusLoop();
@@ -123,19 +131,68 @@
       title: "Ordner als Produkt anlegen",
     });
     if (typeof selected !== "string") return;
+
+    // First run the Import Gate (read-only): it tells us whether this folder is safe to
+    // clean-import, must go behind the "Historie anfassen" gate, or has to be refused.
+    loading = "gate";
+    let report: GateReport;
+    try {
+      report = await invoke<GateReport>("evaluate_gate", { path: selected });
+    } catch (e) {
+      error = String(e);
+      loading = null;
+      return;
+    }
+
+    if (report.decision === "refuse") {
+      // Shared clones exist — rewriting history would poison them. Refuse, clearly.
+      refusal =
+        "Dieser Ordner ist bereits geteilt. Ein Umschreiben der Historie würde fremde " +
+        "Kopien vergiften — das Werkzeug verweigert es. Bitte zuerst lokal/ungeteilt anlegen.";
+      loading = null;
+      return;
+    }
+
+    if (report.decision === "migrate-behind-gate") {
+      // Hand off to the bewusste "Historie anfassen" confirmation; do nothing destructive yet.
+      gate = { path: selected, report };
+      loading = null;
+      return;
+    }
+
+    // clean-init: the safe, non-destructive import path (#3).
+    await runCleanImport(selected);
+  }
+
+  async function runCleanImport(path: string) {
     loading = "import";
     try {
-      const result = await invoke<ImportResult>("import_product", {
-        path: selected,
-      });
+      const result = await invoke<ImportResult>("import_product", { path });
       imported = result;
       product = result.product;
-      productPath = selected;
+      productPath = path;
       startStatusLoop();
     } catch (e) {
       error = String(e);
       product = null;
       productPath = null;
+    } finally {
+      loading = null;
+    }
+  }
+
+  async function confirmMigrate() {
+    if (!gate) return;
+    const path = gate.path;
+    loading = "migrate";
+    try {
+      const result = await invoke<ImportResult>("migrate_history", { path });
+      imported = result;
+      product = result.product;
+      gate = null;
+    } catch (e) {
+      error = String(e);
+      gate = null;
     } finally {
       loading = null;
     }
@@ -175,7 +232,11 @@
           disabled={loading !== null}
         >
           <span class="label"
-            >{loading === "import" ? "lege an …" : "Ordner anlegen"}</span
+            >{loading === "gate"
+              ? "prüfe …"
+              : loading === "import" || loading === "migrate"
+                ? "lege an …"
+                : "Ordner anlegen"}</span
           >
         </button>
         <button class="key" onclick={openProduct} disabled={loading !== null}>
@@ -187,6 +248,12 @@
     </div>
 
     <div class="content">
+      {#if refusal}
+        <div class="refusal" role="alert">
+          <span class="dot warn" aria-hidden="true"></span>
+          <span class="refusal-text label">{refusal}</span>
+        </div>
+      {/if}
       {#if error}
         <p class="notice mono">{error}</p>
       {:else if product}
@@ -214,7 +281,13 @@
                 onclick={importProduct}
                 disabled={loading !== null}
               >
-                <span class="label">Ordner anlegen</span>
+                <span class="label"
+                  >{loading === "gate"
+                    ? "prüfe …"
+                    : loading === "import" || loading === "migrate"
+                      ? "lege an …"
+                      : "Ordner anlegen"}</span
+                >
               </button>
               <button
                 class="key big ghost"
@@ -238,6 +311,15 @@
     {/if}
   </div>
 </div>
+
+{#if gate}
+  <HistorieGate
+    report={gate.report}
+    busy={loading === "migrate"}
+    onConfirm={confirmMigrate}
+    onCancel={() => (gate = null)}
+  />
+{/if}
 
 <style>
   .app {
@@ -419,5 +501,36 @@
   .notice {
     color: var(--ink-muted);
     font-size: 13px;
+  }
+
+  /* Refusal banner (E38): the tool will not poison shared clones. Calm, not alarmist —
+     orange dot for attention, but no full orange fill. */
+  .refusal {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--led-attention);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+  }
+  .refusal .dot.warn {
+    margin-top: 3px;
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--led-attention);
+    box-shadow: 0 0 6px rgba(240, 66, 28, 0.4);
+  }
+  .refusal-text {
+    color: var(--ink-default);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-size: 13px;
+    line-height: 1.45;
   }
 </style>

@@ -28,6 +28,19 @@ export interface ImportResult {
   product: ProductView;
 }
 
+// The one Import Gate decision (Issue #7, E38).
+// Mirrors `GateDecision` in src-tauri/src/import_gate.rs.
+export type GateDecision = "clean-init" | "migrate-behind-gate" | "refuse";
+
+// The gate's verdict for a folder plus the facts it rests on.
+// Mirrors `GateReport` in src-tauri/src/import.rs.
+export interface GateReport {
+  decision: GateDecision;
+  has_history: boolean;
+  shared_clones_exist: boolean;
+  giant_binaries_in_history: boolean;
+}
+
 // Auto-Lock & Status-Signale (Issue #6, E37). Derived purely from `git lfs locks` +
 // worktree status — no second source of truth.
 

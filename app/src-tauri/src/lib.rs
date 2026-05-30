@@ -1,10 +1,11 @@
 pub mod classifier;
 pub mod import;
+pub mod import_gate;
 pub mod lockglue;
 pub mod locks;
 pub mod projection;
 
-use import::{import_folder, ImportResult};
+use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use std::path::Path;
@@ -27,6 +28,24 @@ fn open_product(path: String) -> Result<ProductView, String> {
 fn import_product(path: String) -> Result<ImportResult, String> {
     let root = Path::new(&path);
     import_folder(root).map_err(|e| e.to_string())
+}
+
+/// Probe a folder and run the pure Import Gate (Issue #7, E38). No mutation: returns the one
+/// decision (clean-init | migrate-behind-gate | refuse) plus the facts it rests on, so the UI
+/// can explain the stakes before any history is touched.
+#[tauri::command]
+fn evaluate_gate(path: String) -> Result<GateReport, String> {
+    let root = Path::new(&path);
+    evaluate_import_gate(root).map_err(|e| e.to_string())
+}
+
+/// Run the destructive `git lfs migrate` history rewrite — only reachable after the user
+/// crosses the "Historie anfassen" gate in the UI, and only honoured when the live repo still
+/// decides `migrate-behind-gate` (re-checked server-side; a shared repo is always refused).
+#[tauri::command]
+fn migrate_history(path: String) -> Result<ImportResult, String> {
+    let root = Path::new(&path);
+    migrate_history_behind_gate(root).map_err(|e| e.to_string())
 }
 
 /// Auto-acquire a `git lfs lock` for a lockable artifact being opened/edited (Issue #6, E31).
@@ -86,6 +105,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_product,
             import_product,
+            evaluate_gate,
+            migrate_history,
             lock_artifact,
             read_status,
             read_foreign_locks
