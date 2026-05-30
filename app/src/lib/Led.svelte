@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Small status LED. Status is read-derived elsewhere; in this read-only slice
-  // every Baustein shows a static grey "working/at-rest" dot.
+  // Small status LED — the direct translation of the lock signals (E37, Stilbeschreibung
+  // §Status-Punkt). Colour is derived purely upstream by the Status Reader; this dot only
+  // renders it. Only the orange "attention" LED glows: orange is the rationed loud exception.
   type Status = "free" | "working" | "attention" | "off";
 
   let { status = "working", title = "" }: { status?: Status; title?: string } =
@@ -19,6 +20,7 @@
   class:attention={status === "attention"}
   style:--c={colors[status]}
   {title}
+  role="img"
   aria-label={title || status}
 ></span>
 

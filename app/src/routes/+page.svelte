@@ -4,7 +4,11 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import type {
+    GateReport,
+    ImportResult,
     ProductView,
+    ArtifactSignal,
+    ForeignLock,
     Stand,
     StandEvent,
     StandNode,
@@ -12,6 +16,8 @@
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
+  import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
+  import HistorieGate from "$lib/HistorieGate.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
 
@@ -28,7 +34,81 @@
   let product = $state<ProductView | null>(null);
   let productPath = $state<string | null>(null);
   let error = $state<string | null>(null);
-  let loading = $state(false);
+  let loading = $state<"open" | "import" | "gate" | "migrate" | null>(null);
+  // Import outcome, in the tool's own vocabulary — never "git" / "commit".
+  let imported = $state<ImportResult | null>(null);
+  // When the gate decides the dangerous branch, hold the chosen folder + report here so the
+  // "Historie anfassen" modal can explain the stakes before any rewrite.
+  let gate = $state<{ path: string; report: GateReport } | null>(null);
+  // A plain refusal note when the folder is shared (E38: never poison others' clones).
+  let refusal = $state<string | null>(null);
+
+  // Auto-Lock & Status-Signale (Issue #6, E37). Both are *derived purely* by reading git back
+  // (`git lfs locks` + worktree status); nothing is mirrored or cached as a second truth.
+  let signals = $state<Record<string, ArtifactSignal>>({});
+  let foreignLocks = $state<ForeignLock[]>([]);
+  let statusTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Re-read the world from git: per-artifact LED status + the foreign-locks panel. */
+  async function refreshStatus() {
+    if (!productPath || !product) return;
+    const paths = product.bausteine
+      .map((b) => b.main_file)
+      .filter((f): f is string => f !== null);
+    try {
+      const [sigs, foreign] = await Promise.all([
+        invoke<ArtifactSignal[]>("read_status", {
+          product: productPath,
+          paths,
+        }),
+        invoke<ForeignLock[]>("read_foreign_locks", { product: productPath }),
+      ]);
+      signals = Object.fromEntries(sigs.map((s) => [s.path, s]));
+      foreignLocks = foreign;
+    } catch (e) {
+      // Read-only status is best-effort; never blocks the shell (e.g. no LFS remote).
+      error = String(e);
+    }
+  }
+
+  /** Start polling git for live status; replaces any previous loop. */
+  function startStatusLoop() {
+    stopStatusLoop();
+    void refreshStatus();
+    statusTimer = setInterval(() => void refreshStatus(), 4000);
+  }
+  function stopStatusLoop() {
+    if (statusTimer !== null) {
+      clearInterval(statusTimer);
+      statusTimer = null;
+    }
+  }
+  onDestroy(stopStatusLoop);
+
+  /** Editing/opening a lockable artifact auto-acquires a `git lfs lock` (E31), then re-reads. */
+  async function editBaustein(mainFile: string | null) {
+    if (!productPath || !mainFile) return;
+    try {
+      await invoke<boolean>("lock_artifact", {
+        product: productPath,
+        path: mainFile,
+      });
+    } catch (e) {
+      error = String(e); // a foreign-held lock is real, loud coordination — surface it
+    }
+    await refreshStatus();
+  }
+
+  function reset() {
+    error = null;
+    imported = null;
+    refusal = null;
+    signals = {};
+    foreignLocks = [];
+    stands = [];
+    graph = null;
+    stopStatusLoop();
+  }
 
   // The running ledger of Stände, newest first. Grows silently as saves settle.
   let stands = $state<Stand[]>([]);
@@ -65,14 +145,14 @@
   });
 
   async function openProduct() {
-    error = null;
+    reset();
     const selected = await open({
       directory: true,
       multiple: false,
       title: "Produkt öffnen",
     });
     if (typeof selected !== "string") return;
-    loading = true;
+    loading = "open";
     try {
       product = await invoke<ProductView>("open_product", { path: selected });
       productPath = selected;
@@ -80,13 +160,93 @@
       stands = [];
       await invoke("start_watching", { path: selected });
       await refreshGraph();
+      startStatusLoop();
     } catch (e) {
       error = String(e);
       product = null;
       productPath = null;
       graph = null;
     } finally {
-      loading = false;
+      loading = null;
+    }
+  }
+
+  async function importProduct() {
+    reset();
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Ordner als Produkt anlegen",
+    });
+    if (typeof selected !== "string") return;
+
+    // First run the Import Gate (read-only): it tells us whether this folder is safe to
+    // clean-import, must go behind the "Historie anfassen" gate, or has to be refused.
+    loading = "gate";
+    let report: GateReport;
+    try {
+      report = await invoke<GateReport>("evaluate_gate", { path: selected });
+    } catch (e) {
+      error = String(e);
+      loading = null;
+      return;
+    }
+
+    if (report.decision === "refuse") {
+      // Shared clones exist — rewriting history would poison them. Refuse, clearly.
+      refusal =
+        "Dieser Ordner ist bereits geteilt. Ein Umschreiben der Historie würde fremde " +
+        "Kopien vergiften — das Werkzeug verweigert es. Bitte zuerst lokal/ungeteilt anlegen.";
+      loading = null;
+      return;
+    }
+
+    if (report.decision === "migrate-behind-gate") {
+      // Hand off to the bewusste "Historie anfassen" confirmation; do nothing destructive yet.
+      gate = { path: selected, report };
+      loading = null;
+      return;
+    }
+
+    // clean-init: the safe, non-destructive import path (#3).
+    await runCleanImport(selected);
+  }
+
+  async function runCleanImport(path: string) {
+    loading = "import";
+    try {
+      const result = await invoke<ImportResult>("import_product", { path });
+      imported = result;
+      product = result.product;
+      productPath = path;
+      stands = [];
+      await invoke("start_watching", { path });
+      await refreshGraph();
+      startStatusLoop();
+    } catch (e) {
+      error = String(e);
+      product = null;
+      productPath = null;
+      graph = null;
+    } finally {
+      loading = null;
+    }
+  }
+
+  async function confirmMigrate() {
+    if (!gate) return;
+    const path = gate.path;
+    loading = "migrate";
+    try {
+      const result = await invoke<ImportResult>("migrate_history", { path });
+      imported = result;
+      product = result.product;
+      gate = null;
+    } catch (e) {
+      error = String(e);
+      gate = null;
+    } finally {
+      loading = null;
     }
   }
 
@@ -110,19 +270,66 @@
     <main class="work">
     <div class="toolbar">
       <span class="label section">Bausteine</span>
-      <button class="key" onclick={openProduct} disabled={loading}>
-        <span class="label">{loading ? "öffne …" : "Produkt öffnen"}</span>
-      </button>
+
+      <div class="actions">
+        {#if imported}
+          <!-- Import outcome chip: recessed instrument readout, tool vocabulary only. -->
+          <span class="readout mono" role="status">
+            <span class="dot" class:fresh={imported.git_initialized}></span>
+            <span class="readout-text">
+              {imported.git_initialized
+                ? "Produkt angelegt"
+                : "Bestehendes übernommen"}
+            </span>
+            {#if imported.locked_count > 0}
+              <span class="readout-sep">·</span>
+              <span class="readout-locks"
+                >{imported.locked_count.toString().padStart(2, "0")} gesperrt</span
+              >
+            {/if}
+          </span>
+        {/if}
+
+        <button
+          class="key"
+          onclick={importProduct}
+          disabled={loading !== null}
+        >
+          <span class="label"
+            >{loading === "gate"
+              ? "prüfe …"
+              : loading === "import" || loading === "migrate"
+                ? "lege an …"
+                : "Ordner anlegen"}</span
+          >
+        </button>
+        <button class="key" onclick={openProduct} disabled={loading !== null}>
+          <span class="label"
+            >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
+          >
+        </button>
+      </div>
     </div>
 
     <div class="content">
+      {#if refusal}
+        <div class="refusal" role="alert">
+          <span class="dot warn" aria-hidden="true"></span>
+          <span class="refusal-text label">{refusal}</span>
+        </div>
+      {/if}
       {#if error}
         <p class="notice mono">{error}</p>
       {:else if product}
         {#if product.bausteine.length > 0}
           <div class="grid">
             {#each product.bausteine as b, i (b.path)}
-              <ArtifactCard baustein={b} index={i} />
+              <ArtifactCard
+                baustein={b}
+                index={i}
+                signal={b.main_file ? (signals[b.main_file] ?? null) : null}
+                onedit={() => editBaustein(b.main_file)}
+              />
             {/each}
           </div>
         {:else}
@@ -131,10 +338,32 @@
       {:else}
         <div class="empty">
           <div class="empty-panel">
-            <span class="label empty-hint">Ordner wählen — nur lesen</span>
-            <button class="key big" onclick={openProduct}>
-              <span class="label">Produkt öffnen</span>
-            </button>
+            <span class="label empty-hint">Ordner wählen</span>
+            <div class="empty-keys">
+              <button
+                class="key big"
+                onclick={importProduct}
+                disabled={loading !== null}
+              >
+                <span class="label"
+                  >{loading === "gate"
+                    ? "prüfe …"
+                    : loading === "import" || loading === "migrate"
+                      ? "lege an …"
+                      : "Ordner anlegen"}</span
+                >
+              </button>
+              <button
+                class="key big ghost"
+                onclick={openProduct}
+                disabled={loading !== null}
+              >
+                <span class="label">Produkt öffnen</span>
+              </button>
+            </div>
+            <span class="label empty-sub"
+              >anlegen schreibt — öffnen liest nur</span
+            >
           </div>
         </div>
       {/if}
@@ -143,10 +372,22 @@
 
     {#if product}
       <VersionTree {graph} onPromote={promote} />
-      <StandList {stands} />
+      <aside class="rail">
+        <ForeignLocksPanel locks={foreignLocks} />
+        <StandList {stands} />
+      </aside>
     {/if}
   </div>
 </div>
+
+{#if gate}
+  <HistorieGate
+    report={gate.report}
+    busy={loading === "migrate"}
+    onConfirm={confirmMigrate}
+    onCancel={() => (gate = null)}
+  />
+{/if}
 
 <style>
   .app {
@@ -156,11 +397,35 @@
     background: var(--surface-base);
   }
 
-  /* Work area + Stände rail share the row below the instrument display. */
+  /* Work chassis + instrument rail (foreign locks + Stände) share the row below the display. */
   .stage {
     flex: 1;
     min-height: 0;
     display: flex;
+  }
+
+  /* The right-hand instrument rail stacks the foreign-locks panel over the Stände ledger.
+     A single hairline seam separates the rail from the work chassis; the children carry
+     their own widths, so we pin the rail to the wider of the two for a clean edge. */
+  .rail {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    width: 264px;
+    min-height: 0;
+    border-left: 1px solid var(--hairline);
+  }
+  /* Children already style their own surfaces; drop their seams so only the rail's shows. */
+  .rail > :global(.panel),
+  .rail > :global(.rail) {
+    width: 100%;
+    border-left: none;
+  }
+  /* The foreign-locks panel sits at the top at its natural height; Stände fills the rest. */
+  .rail > :global(.rail) {
+    flex: 1;
+    min-height: 0;
+    border-top: 1px solid var(--hairline);
   }
 
   .work {
@@ -183,6 +448,63 @@
   }
   .section {
     color: var(--ink-muted);
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* Import outcome: a small recessed instrument readout, same LCD language as
+     the VersionBar screen — never git/commit wording. */
+  .readout {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 5px 11px;
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, #131110, #0b0a09);
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.9),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+    color: var(--screen-fg);
+    font-size: 12px;
+    letter-spacing: 0.01em;
+    animation: readout-in 260ms var(--ease) backwards;
+  }
+  .readout .dot {
+    align-self: center;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--led-working);
+    box-shadow: 0 0 5px rgba(201, 198, 191, 0.3);
+  }
+  /* freshly created product gets the "free / done" green; taken-over stays neutral */
+  .readout .dot.fresh {
+    background: var(--led-free);
+    box-shadow: 0 0 6px rgba(60, 154, 75, 0.5);
+  }
+  .readout-text {
+    color: var(--screen-fg);
+    font-weight: 600;
+  }
+  .readout-sep {
+    color: #4a4641;
+  }
+  .readout-locks {
+    color: #b8b4ad;
+  }
+  @keyframes readout-in {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   .content {
@@ -249,9 +571,58 @@
   .empty-hint {
     color: var(--ink-muted);
   }
+  .empty-keys {
+    display: flex;
+    gap: 12px;
+  }
+  /* secondary, read-only action reads quieter than the primary "anlegen" key */
+  .key.ghost {
+    background: transparent;
+    box-shadow: none;
+    color: var(--ink-default);
+  }
+  .key.ghost:hover {
+    background: var(--surface-raised);
+  }
+  .empty-sub {
+    color: var(--ink-muted);
+    font-size: 11px;
+    opacity: 0.8;
+  }
 
   .notice {
     color: var(--ink-muted);
     font-size: 13px;
+  }
+
+  /* Refusal banner (E38): the tool will not poison shared clones. Calm, not alarmist —
+     orange dot for attention, but no full orange fill. */
+  .refusal {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--led-attention);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+  }
+  .refusal .dot.warn {
+    margin-top: 3px;
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--led-attention);
+    box-shadow: 0 0 6px rgba(240, 66, 28, 0.4);
+  }
+  .refusal-text {
+    color: var(--ink-default);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-size: 13px;
+    line-height: 1.45;
   }
 </style>
