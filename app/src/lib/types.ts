@@ -47,14 +47,26 @@ export interface StandNode {
   has_notes: boolean;
   /** Whether this node's binary content was offloaded to a cold archive (E36). */
   offloaded: boolean;
+  /** Bahn (lane) this Stand sits on: 0 is the active trunk, each diverging Zweig its own
+   *  positive index. A single linear history is all lane 0. (Issue #28) */
+  lane: number;
+  /** Domain name of this Stand's Zweig (lane), or null for the trunk / unnamed lines.
+   *  The UI shows it once per lane (at the lane's tip). (Issue #28) */
+  branch: string | null;
+  /** Whether this Stand lies on the active line — it stays clearly marked. (Issue #28) */
+  on_active: boolean;
 }
 
-/** The version tree + active milestone the version bar shows in Mono (Issue #8).
+/** The version tree + active milestone the version bar shows in Mono (Issue #8 / #28).
  *  Mirrors `VersionGraph` in src-tauri/src/graph.rs. */
 export interface VersionGraph {
   nodes: StandNode[];
   active_milestone: string | null;
   offloaded_archive: string | null;
+  /** Name of the active line (Zweig), echoed for the UI marker; null if unknown. */
+  active_branch: string | null;
+  /** Number of distinct lanes; 1 for a single linear history. */
+  lane_count: number;
 }
 
 /** A manual „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10).

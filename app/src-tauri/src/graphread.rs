@@ -10,7 +10,7 @@
 //! the version label is durable. The words "commit"/"tag" never leave this layer.
 
 use crate::autocommit::{format_timestamp, machine_message};
-use crate::graph::{CommitFact, MilestoneFact, RepoSnapshot, VersionGraph};
+use crate::graph::{BranchFact, CommitFact, MilestoneFact, RepoSnapshot, VersionGraph};
 use std::path::Path;
 use std::process::Command;
 use std::time::SystemTime;
@@ -36,20 +36,29 @@ pub fn read_graph(root: &Path) -> std::io::Result<VersionGraph> {
 pub fn read_snapshot(root: &Path) -> std::io::Result<RepoSnapshot> {
     let commits = read_commits(root)?;
     let milestones = read_milestones(root, &commits)?;
+    let branches = read_branches(root)?;
+    let active_branch = read_active_branch(root)?;
     Ok(RepoSnapshot {
         commits,
         milestones,
         offloaded: Vec::new(),
         offloaded_archive: None,
+        branches,
+        active_branch,
     })
 }
 
-/// Read every commit reachable from HEAD as a [`CommitFact`]. Empty when the repo has no
-/// commits yet (a fresh `git init`); not an error.
+/// Read every Stand **across all lines** (Zweige), not just the active one — so a Zweig
+/// created outside the tool surfaces in the Versionsbaum (Issue #28). `--all` walks every
+/// ref (local + remote branches and tags); the projection lays them out into lanes. Empty
+/// when the repo has no commits yet (a fresh `git init`); not an error.
 fn read_commits(root: &Path) -> std::io::Result<Vec<CommitFact>> {
     // Records separated by NUL; fields within a record by Unit Separator (0x1f) so commit
     // messages with newlines/commas survive intact. Format: hash, parents, ISO date, subject.
-    let out = git(root, &["log", "--pretty=format:%H%x1f%P%x1f%cI%x1f%s%x00"])?;
+    let out = git(
+        root,
+        &["log", "--all", "--pretty=format:%H%x1f%P%x1f%cI%x1f%s%x00"],
+    )?;
     if !out.status.success() {
         // No commits yet -> `git log` exits non-zero with "does not have any commits".
         return Ok(Vec::new());
@@ -94,6 +103,54 @@ fn normalize_committer_date(iso: &str) -> String {
     } else {
         iso.to_string()
     }
+}
+
+/// Collect every local line (Zweig) and its tip Stand as a [`BranchFact`]. One per local
+/// branch ref; the projection turns the set into the visible lanes. Empty when the repo has
+/// no branches yet; not an error. We read local branches only — a Zweig the user fetched
+/// from a colleague materialises as a local tracking branch once they switch to it, which is
+/// the moment it belongs in *their* Versionsbaum.
+fn read_branches(root: &Path) -> std::io::Result<Vec<BranchFact>> {
+    // `for-each-ref` is the plumbing form: stable, scriptable output, no decoration. Unlike
+    // `log --pretty`, its `--format` does NOT expand `%x1f`, so we put the fixed-width object
+    // id first and the (possibly space-free) branch name second, split on the first space.
+    let out = git(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname:short)",
+            "refs/heads",
+        ],
+    )?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut branches = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        let Some((tip, name)) = line.split_once(' ') else {
+            continue;
+        };
+        let tip = tip.trim().to_string();
+        let name = name.trim().to_string();
+        if name.is_empty() || tip.is_empty() {
+            continue;
+        }
+        branches.push(BranchFact { name, tip });
+    }
+    Ok(branches)
+}
+
+/// The active line's domain name (the current branch). `None` when HEAD is detached or the
+/// repo has no commits yet — the projection then falls back to the first line.
+fn read_active_branch(root: &Path) -> std::io::Result<Option<String>> {
+    let out = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if name.is_empty() { None } else { Some(name) })
 }
 
 /// Read version tags (`version/<label>`) and resolve each to the commit it points at,

@@ -9,7 +9,7 @@
 //!    to a Meilenstein persists `VERSION_NOTES.md` and drives the version bar — exercising
 //!    the thin git/LFS reading layer over the pure core.
 
-use app_lib::graph::{project_graph, CommitFact, MilestoneFact, RepoSnapshot};
+use app_lib::graph::{project_graph, BranchFact, CommitFact, MilestoneFact, RepoSnapshot};
 use app_lib::graphread::{promote_to_milestone, read_graph, read_snapshot, VERSION_NOTES};
 use std::path::Path;
 use std::process::Command;
@@ -48,6 +48,8 @@ fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
         }],
         offloaded: vec!["c1".into()],
         offloaded_archive: Some("2025-11".into()),
+        branches: vec![],
+        active_branch: None,
     };
 
     let g = project_graph(&snapshot);
@@ -74,6 +76,48 @@ fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
     // Path recovered from the boring auto message (never the raw git message).
     assert_eq!(node("c3").path, "elektronik/regler");
     assert_eq!(node("c1").path, "mechanik/gehaeuse/gehaeuse.f3d");
+
+    // A single linear history (no branch facts) is one lane, all on the active line.
+    assert_eq!(g.lane_count, 1);
+    assert!(g.nodes.iter().all(|n| n.lane == 0 && n.on_active));
+}
+
+#[test]
+fn an_externally_created_zweig_surfaces_as_a_distinct_line() {
+    // Acceptance #1+#2+#3 at the pure-projection layer:
+    //   c1 -- c2 -- c3          main (active)
+    //          \-- f1 -- f2     gehaeuse-v2 (made outside the tool)
+    let snapshot = RepoSnapshot {
+        commits: vec![
+            CommitFact { id: "c1".into(), parents: vec![], message: "auto: a, 2026-05-01T00:00:00Z".into(), timestamp: "2026-05-01T00:00:00Z".into() },
+            CommitFact { id: "c2".into(), parents: vec!["c1".into()], message: "auto: b, 2026-05-02T00:00:00Z".into(), timestamp: "2026-05-02T00:00:00Z".into() },
+            CommitFact { id: "c3".into(), parents: vec!["c2".into()], message: "auto: c, 2026-05-03T00:00:00Z".into(), timestamp: "2026-05-03T00:00:00Z".into() },
+            CommitFact { id: "f1".into(), parents: vec!["c2".into()], message: "auto: d, 2026-05-04T00:00:00Z".into(), timestamp: "2026-05-04T00:00:00Z".into() },
+            CommitFact { id: "f2".into(), parents: vec!["f1".into()], message: "auto: e, 2026-05-05T00:00:00Z".into(), timestamp: "2026-05-05T00:00:00Z".into() },
+        ],
+        milestones: vec![],
+        offloaded: vec![],
+        offloaded_archive: None,
+        branches: vec![
+            BranchFact { name: "main".into(), tip: "c3".into() },
+            BranchFact { name: "gehaeuse-v2".into(), tip: "f2".into() },
+        ],
+        active_branch: Some("main".into()),
+    };
+    let g = project_graph(&snapshot);
+    let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+
+    // The Zweig shows up as its own distinct line (#1), labelled in domain vocabulary.
+    assert_eq!(g.lane_count, 2);
+    assert!(node("f1").lane != 0 && node("f2").lane != 0);
+    assert_eq!(node("f2").branch.as_deref(), Some("gehaeuse-v2"));
+
+    // The active line stays clearly marked (#2): shared + main-unique Stände are on lane 0.
+    assert_eq!(g.active_branch.as_deref(), Some("main"));
+    for id in ["c1", "c2", "c3"] {
+        assert!(node(id).on_active && node(id).lane == 0, "{id} on active trunk");
+    }
+    assert!(!node("f1").on_active && !node("f2").on_active);
 }
 
 // ---- Layer 2: end-to-end over a real temp repo ----------------------------------------
@@ -199,4 +243,53 @@ fn fresh_repo_with_no_commits_projects_to_empty_tree() {
     let g = read_graph(root).unwrap();
     assert!(g.nodes.is_empty());
     assert_eq!(g.active_milestone, None);
+}
+
+#[test]
+fn an_external_branch_committed_to_outside_the_app_appears_as_a_distinct_line() {
+    // Acceptance #1+#2 over a *real* repo: build a branch the way a colleague would in their
+    // own working copy (plain git, no app), then read the graph and confirm it surfaces.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_repo(root);
+    git(root, &["checkout", "-q", "-b", "main"]);
+
+    commit_file(root, "a.txt", "1", "auto: a.txt, 2026-05-01T00:00:00Z");
+    commit_file(root, "b.txt", "2", "auto: b.txt, 2026-05-02T00:00:00Z");
+    let trunk_tip = head(root);
+
+    // A Zweig started OUTSIDE the app: a new branch + a commit on it, then back to main.
+    git(root, &["checkout", "-q", "-b", "gehaeuse-v2"]);
+    commit_file(root, "c.txt", "3", "auto: c.txt, 2026-05-03T00:00:00Z");
+    let zweig_tip = head(root);
+    git(root, &["checkout", "-q", "main"]);
+
+    let g = read_graph(root).unwrap();
+
+    // All three Stände are collected across both lines — not just the active one (#1).
+    assert_eq!(g.nodes.len(), 3, "Stände collected across all Zweige");
+    assert!(g.lane_count >= 2, "the external Zweig forms its own lane");
+
+    let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+    // The active line (main) stays marked; the Zweig's unique Stand is off the trunk (#2).
+    assert!(node(&trunk_tip).on_active && node(&trunk_tip).lane == 0);
+    assert!(!node(&zweig_tip).on_active);
+    assert_eq!(node(&zweig_tip).branch.as_deref(), Some("gehaeuse-v2"));
+    assert_eq!(g.active_branch.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_single_linear_history_still_renders_as_one_line() {
+    // Acceptance #3 over a real repo: one branch, no divergence => exactly one lane.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_repo(root);
+    git(root, &["checkout", "-q", "-b", "main"]);
+    commit_file(root, "a.txt", "1", "auto: a.txt, 2026-05-01T00:00:00Z");
+    commit_file(root, "b.txt", "2", "auto: b.txt, 2026-05-02T00:00:00Z");
+
+    let g = read_graph(root).unwrap();
+    assert_eq!(g.nodes.len(), 2);
+    assert_eq!(g.lane_count, 1, "single linear history => one lane");
+    assert!(g.nodes.iter().all(|n| n.lane == 0 && n.on_active));
 }

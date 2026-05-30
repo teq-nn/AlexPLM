@@ -64,12 +64,36 @@
     const parts = path.split("/");
     return parts[parts.length - 1];
   }
+
+  // A Zweig (off-trunk lane) is labelled once, on the newest Stand of that lane — its tip.
+  // The nodes arrive newest-first, so the first node we meet on a lane is its tip.
+  const tipOfLane = $derived.by(() => {
+    const tips = new Set<string>();
+    const seen = new Set<number>();
+    for (const n of graph?.nodes ?? []) {
+      if (n.lane > 0 && !seen.has(n.lane)) {
+        seen.add(n.lane);
+        tips.add(n.id);
+      }
+    }
+    return tips;
+  });
+
+  // More than one line present? Then we draw the lane gutter; a single linear history
+  // keeps lane 0 throughout and looks exactly as before.
+  const branched = $derived((graph?.lane_count ?? 1) > 1);
 </script>
 
 <section class="display" aria-label="Versionsbaum">
   <div class="display-head">
     <span class="label title">Versionsbaum</span>
     {#if graph}
+      {#if branched && graph.active_branch}
+        <span class="active-line label" title="Aktiver Zweig">
+          <span class="active-dot" aria-hidden="true"></span>
+          {graph.active_branch}
+        </span>
+      {/if}
       <span class="node-count mono">{graph.nodes.length.toString().padStart(2, "0")}</span>
     {/if}
   </div>
@@ -81,14 +105,19 @@
       <ol class="tree">
         {#each graph.nodes as n, i (n.id)}
           {@const isMs = n.milestone !== null}
+          {@const foreign = !n.on_active}
+          {@const isTip = tipOfLane.has(n.id)}
           <li
             class="node"
             class:milestone={isMs}
             class:offloaded={n.offloaded}
+            class:foreign
             class:first={i === 0}
             class:last={i === graph.nodes.length - 1}
+            style="--lane: {n.lane};"
           >
-            <!-- the spine: edge above + node dot + edge below -->
+            <!-- the spine: edge above + node dot + edge below. Off-trunk Zweige sit one
+                 gutter to the right and read in the foreign blue. -->
             <span class="spine" aria-hidden="true">
               <span class="edge top"></span>
               <span class="dot" class:ms={isMs}></span>
@@ -96,6 +125,9 @@
             </span>
 
             <div class="body">
+              {#if foreign && isTip && n.branch}
+                <span class="zweig-tag label" title="Zweig {n.branch}">{n.branch}</span>
+              {/if}
               <div class="row">
                 <span class="path mono" title={n.path}>{leaf(n.path)}</span>
                 {#if isMs}
@@ -266,12 +298,16 @@
     padding: 0;
   }
 
-  /* Each node: a left spine column (edges + dot) and the data body. */
+  /* Each node: a left spine column (edges + dot) and the data body. A Stand on a diverging
+     Zweig (lane > 0) is pushed one gutter to the right per lane, so the line reads as its
+     own track. A single linear history keeps --lane: 0 and sits flush like before. */
   .node {
+    --gutter: 18px;
     display: grid;
     grid-template-columns: 26px 1fr;
     gap: 10px;
     padding: 2px 14px 2px 12px;
+    padding-left: calc(12px + var(--lane, 0) * var(--gutter));
     align-items: stretch;
   }
 
@@ -384,6 +420,83 @@
   .node.offloaded .dot {
     background: #322f2c;
     box-shadow: 0 0 0 1px #000;
+  }
+
+  /* A diverging Zweig reads in the second colour (foreign blue, dark surfaces only): its
+     spine edges, its LED, and its path tint shift to --data-foreign so the line is plainly
+     distinct from the active grey trunk. The active line stays grey — clearly the "own" one. */
+  .node.foreign .edge {
+    background: color-mix(in srgb, var(--data-foreign) 42%, #0b0a09);
+  }
+  .node.foreign .dot {
+    background: var(--data-foreign);
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 5px 0.5px color-mix(in srgb, var(--data-foreign) 55%, transparent),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.35);
+  }
+  .node.foreign .dot.ms {
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 7px 1px color-mix(in srgb, var(--data-foreign) 60%, transparent),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.6);
+  }
+  .node.foreign .path {
+    color: color-mix(in srgb, var(--data-foreign) 70%, #cfccc5);
+  }
+  .node.foreign.milestone .path,
+  .node.foreign .version {
+    color: color-mix(in srgb, var(--data-foreign) 78%, #fff);
+  }
+  .node.foreign .version {
+    background: color-mix(in srgb, var(--data-foreign) 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--data-foreign) 34%, transparent);
+  }
+  .node.foreign.offloaded .path,
+  .node.foreign.offloaded .version,
+  .node.foreign.offloaded .dot {
+    color: #6d7585;
+    background: #1c1f26;
+  }
+
+  /* The Zweig name, shown once at the line's tip: a small foreign-blue caps tag that sits
+     just above the tip Stand, naming the line in domain vocabulary (never "branch"). */
+  .zweig-tag {
+    display: inline-block;
+    margin-bottom: 3px;
+    color: var(--data-foreign);
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--data-foreign) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--data-foreign) 30%, transparent);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The active line marker in the head: a grey LED + the active Zweig name, so the user
+     always sees which line is "theirs" once more than one line is in view. */
+  .active-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    margin-right: 10px;
+    color: #8c8881;
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+  }
+  .active-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--screen-fg);
+    box-shadow:
+      0 0 0 1px #000,
+      0 0 4px 0.5px rgba(232, 230, 225, 0.4);
   }
 
   /* Promote affordance: a quiet hairline-outline control on the dark screen. Appears on
