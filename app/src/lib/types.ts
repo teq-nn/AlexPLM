@@ -40,3 +40,32 @@ export interface GateReport {
   shared_clones_exist: boolean;
   giant_binaries_in_history: boolean;
 }
+
+// Auto-Lock & Status-Signale (Issue #6, E37). Derived purely from `git lfs locks` +
+// worktree status — no second source of truth.
+
+/** Derived per-artifact status. Mirrors `ArtifactStatus` in src-tauri/src/locks.rs.
+ *  free → green LED, in-progress → grey, locked-by-other → orange (loud exception). */
+export type ArtifactStatus = "free" | "in-progress" | "locked-by-other";
+
+/** One artifact's LED signal. Mirrors `ArtifactSignal` in src-tauri/src/locks.rs. */
+export interface ArtifactSignal {
+  /** Product-relative path the signal is for. */
+  path: string;
+  status: ArtifactStatus;
+  /** Foreign lock owner, present iff status === "locked-by-other". */
+  locked_by?: string;
+  /** Foreign lock timestamp, present iff status === "locked-by-other". */
+  locked_at?: string;
+  /** Ready tooltip "gesperrt von X seit …", present iff foreign-locked. */
+  tooltip?: string;
+}
+
+/** A foreign lock for the live "fremde Sperren" panel. Mirrors `ForeignLock` in lib.rs. */
+export interface ForeignLock {
+  path: string;
+  owner: string;
+  locked_at: string;
+  /** "gesperrt von X seit …" */
+  tooltip: string;
+}

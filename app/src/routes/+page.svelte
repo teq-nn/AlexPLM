@@ -1,9 +1,17 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import type { GateReport, ImportResult, ProductView } from "$lib/types";
+  import { onDestroy } from "svelte";
+  import type {
+    GateReport,
+    ImportResult,
+    ProductView,
+    ArtifactSignal,
+    ForeignLock,
+  } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
+  import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
@@ -17,6 +25,7 @@
   import "$lib/tokens.css";
 
   let product = $state<ProductView | null>(null);
+  let productPath = $state<string | null>(null);
   let error = $state<string | null>(null);
   let loading = $state<"open" | "import" | "gate" | "migrate" | null>(null);
   // Import outcome, in the tool's own vocabulary — never "git" / "commit".
@@ -27,10 +36,73 @@
   // A plain refusal note when the folder is shared (E38: never poison others' clones).
   let refusal = $state<string | null>(null);
 
-  async function openProduct() {
+  // Auto-Lock & Status-Signale (Issue #6, E37). Both are *derived purely* by reading git back
+  // (`git lfs locks` + worktree status); nothing is mirrored or cached as a second truth.
+  let signals = $state<Record<string, ArtifactSignal>>({});
+  let foreignLocks = $state<ForeignLock[]>([]);
+  let statusTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Re-read the world from git: per-artifact LED status + the foreign-locks panel. */
+  async function refreshStatus() {
+    if (!productPath || !product) return;
+    const paths = product.bausteine
+      .map((b) => b.main_file)
+      .filter((f): f is string => f !== null);
+    try {
+      const [sigs, foreign] = await Promise.all([
+        invoke<ArtifactSignal[]>("read_status", {
+          product: productPath,
+          paths,
+        }),
+        invoke<ForeignLock[]>("read_foreign_locks", { product: productPath }),
+      ]);
+      signals = Object.fromEntries(sigs.map((s) => [s.path, s]));
+      foreignLocks = foreign;
+    } catch (e) {
+      // Read-only status is best-effort; never blocks the shell (e.g. no LFS remote).
+      error = String(e);
+    }
+  }
+
+  /** Start polling git for live status; replaces any previous loop. */
+  function startStatusLoop() {
+    stopStatusLoop();
+    void refreshStatus();
+    statusTimer = setInterval(() => void refreshStatus(), 4000);
+  }
+  function stopStatusLoop() {
+    if (statusTimer !== null) {
+      clearInterval(statusTimer);
+      statusTimer = null;
+    }
+  }
+  onDestroy(stopStatusLoop);
+
+  /** Editing/opening a lockable artifact auto-acquires a `git lfs lock` (E31), then re-reads. */
+  async function editBaustein(mainFile: string | null) {
+    if (!productPath || !mainFile) return;
+    try {
+      await invoke<boolean>("lock_artifact", {
+        product: productPath,
+        path: mainFile,
+      });
+    } catch (e) {
+      error = String(e); // a foreign-held lock is real, loud coordination — surface it
+    }
+    await refreshStatus();
+  }
+
+  function reset() {
     error = null;
     imported = null;
     refusal = null;
+    signals = {};
+    foreignLocks = [];
+    stopStatusLoop();
+  }
+
+  async function openProduct() {
+    reset();
     const selected = await open({
       directory: true,
       multiple: false,
@@ -40,18 +112,19 @@
     loading = "open";
     try {
       product = await invoke<ProductView>("open_product", { path: selected });
+      productPath = selected;
+      startStatusLoop();
     } catch (e) {
       error = String(e);
       product = null;
+      productPath = null;
     } finally {
       loading = null;
     }
   }
 
   async function importProduct() {
-    error = null;
-    imported = null;
-    refusal = null;
+    reset();
     const selected = await open({
       directory: true,
       multiple: false,
@@ -97,9 +170,12 @@
       const result = await invoke<ImportResult>("import_product", { path });
       imported = result;
       product = result.product;
+      productPath = path;
+      startStatusLoop();
     } catch (e) {
       error = String(e);
       product = null;
+      productPath = null;
     } finally {
       loading = null;
     }
@@ -126,7 +202,8 @@
 <div class="app">
   <VersionBar {product} />
 
-  <main class="work">
+  <div class="stage">
+    <main class="work">
     <div class="toolbar">
       <span class="label section">Bausteine</span>
 
@@ -183,7 +260,12 @@
         {#if product.bausteine.length > 0}
           <div class="grid">
             {#each product.bausteine as b, i (b.path)}
-              <ArtifactCard baustein={b} index={i} />
+              <ArtifactCard
+                baustein={b}
+                index={i}
+                signal={b.main_file ? (signals[b.main_file] ?? null) : null}
+                onedit={() => editBaustein(b.main_file)}
+              />
             {/each}
           </div>
         {:else}
@@ -223,6 +305,11 @@
       {/if}
     </div>
   </main>
+
+    {#if product}
+      <ForeignLocksPanel locks={foreignLocks} />
+    {/if}
+  </div>
 </div>
 
 {#if gate}
@@ -242,8 +329,16 @@
     background: var(--surface-base);
   }
 
+  /* Work chassis + foreign-locks instrument rail share the row below the display. */
+  .stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
   .work {
     flex: 1;
+    min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
