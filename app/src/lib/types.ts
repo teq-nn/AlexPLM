@@ -17,6 +17,21 @@ export interface ProductView {
   bausteine: Baustein[];
 }
 
+/** A settled save, surfaced as a new Stand. Payload of the `stand-created` event.
+ *  Mirrors `Stand` in src-tauri/src/autocommit.rs. No git vocabulary. */
+export interface StandEvent {
+  /** Product-relative path that settled (forward slashes). */
+  path: string;
+  /** Machine timestamp, `YYYY-MM-DDTHH:MM:SSZ`. */
+  timestamp: string;
+}
+
+/** A Stand as held in the UI list: the event payload plus a stable client-side key
+ *  so repeated saves of the same path at the same second remain distinct rows. */
+export interface Stand extends StandEvent {
+  id: number;
+}
+
 // Outcome of the clean, non-destructive import (Issue #3, E38).
 // Mirrors `ImportResult` in src-tauri/src/import.rs.
 export interface ImportResult {

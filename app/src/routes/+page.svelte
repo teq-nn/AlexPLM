@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import type {
     GateReport,
@@ -8,11 +9,14 @@
     ProductView,
     ArtifactSignal,
     ForeignLock,
+    Stand,
+    StandEvent,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
+  import StandList from "$lib/StandList.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -98,8 +102,25 @@
     refusal = null;
     signals = {};
     foreignLocks = [];
+    stands = [];
     stopStatusLoop();
   }
+
+  // The running ledger of Stände, newest first. Grows silently as saves settle.
+  let stands = $state<Stand[]>([]);
+  let standSeq = 0;
+
+  // Single long-lived listener for settled saves. The watcher (Rust) does the
+  // debouncing and the silent local commit; we only render the resulting Stand.
+  let unlisten: UnlistenFn | null = null;
+  listen<StandEvent>("stand-created", (e) => {
+    stands = [{ ...e.payload, id: standSeq++ }, ...stands];
+  }).then((u) => (unlisten = u));
+
+  onDestroy(() => {
+    unlisten?.();
+    void invoke("stop_watching").catch(() => {});
+  });
 
   async function openProduct() {
     reset();
@@ -113,6 +134,9 @@
     try {
       product = await invoke<ProductView>("open_product", { path: selected });
       productPath = selected;
+      // A fresh product starts with a fresh ledger, then watching begins silently.
+      stands = [];
+      await invoke("start_watching", { path: selected });
       startStatusLoop();
     } catch (e) {
       error = String(e);
@@ -171,6 +195,8 @@
       imported = result;
       product = result.product;
       productPath = path;
+      stands = [];
+      await invoke("start_watching", { path });
       startStatusLoop();
     } catch (e) {
       error = String(e);
@@ -304,10 +330,13 @@
         </div>
       {/if}
     </div>
-  </main>
+    </main>
 
     {#if product}
-      <ForeignLocksPanel locks={foreignLocks} />
+      <aside class="rail">
+        <ForeignLocksPanel locks={foreignLocks} />
+        <StandList {stands} />
+      </aside>
     {/if}
   </div>
 </div>
@@ -329,11 +358,35 @@
     background: var(--surface-base);
   }
 
-  /* Work chassis + foreign-locks instrument rail share the row below the display. */
+  /* Work chassis + instrument rail (foreign locks + Stände) share the row below the display. */
   .stage {
     flex: 1;
     min-height: 0;
     display: flex;
+  }
+
+  /* The right-hand instrument rail stacks the foreign-locks panel over the Stände ledger.
+     A single hairline seam separates the rail from the work chassis; the children carry
+     their own widths, so we pin the rail to the wider of the two for a clean edge. */
+  .rail {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    width: 264px;
+    min-height: 0;
+    border-left: 1px solid var(--hairline);
+  }
+  /* Children already style their own surfaces; drop their seams so only the rail's shows. */
+  .rail > :global(.panel),
+  .rail > :global(.rail) {
+    width: 100%;
+    border-left: none;
+  }
+  /* The foreign-locks panel sits at the top at its natural height; Stände fills the rest. */
+  .rail > :global(.rail) {
+    flex: 1;
+    min-height: 0;
+    border-top: 1px solid var(--hairline);
   }
 
   .work {
