@@ -13,7 +13,6 @@ use crate::locks::{is_lockable, LockInfo, StatusSnapshot};
 use serde::Deserialize;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
-use std::process::Command;
 
 /// Shape of one entry in `git lfs locks --json`. We only read the fields we render.
 #[derive(Debug, Deserialize)]
@@ -80,9 +79,7 @@ pub fn snapshot(root: &Path) -> std::io::Result<StatusSnapshot> {
 /// Read & parse `git lfs locks --json`. An LFS error (e.g. no remote configured) is treated as
 /// "no locks" rather than a hard failure, so the read-only shell still renders.
 fn read_locks(root: &Path) -> std::io::Result<Vec<LockInfo>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["lfs", "locks", "--json"])
         .output()?;
     if !out.status.success() {
@@ -93,9 +90,7 @@ fn read_locks(root: &Path) -> std::io::Result<Vec<LockInfo>> {
 
 /// Read the dirty paths from `git status --porcelain`.
 fn read_dirty_paths(root: &Path) -> std::io::Result<Vec<String>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["status", "--porcelain"])
         .output()?;
     if !out.status.success() {
@@ -107,9 +102,7 @@ fn read_dirty_paths(root: &Path) -> std::io::Result<Vec<String>> {
 /// The current user's name as git-lfs would record it on a lock — `git config user.name`,
 /// falling back to an empty string. Used purely to split own vs. foreign locks.
 fn current_owner_name(root: &Path) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    crate::gitrunner::command(root)
         .args(["config", "user.name"])
         .output()
         .ok()
@@ -129,9 +122,7 @@ pub fn acquire_lock(root: &Path, rel_path: &str) -> std::io::Result<bool> {
     if !is_lockable(rel_path) {
         return Ok(false);
     }
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["lfs", "lock", rel_path])
         .output()?;
     if out.status.success() {

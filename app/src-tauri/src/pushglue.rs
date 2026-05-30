@@ -28,7 +28,6 @@ use crate::warden::{
 };
 use std::io::Error;
 use std::path::Path;
-use std::process::Command;
 
 /// The shared release branch the Freigabe-Push publishes to (E35: „geteilter `main`-Stand").
 pub const SHARED_BRANCH: &str = "main";
@@ -87,9 +86,7 @@ pub fn snapshot_for(
 /// `git config user.name`. Best-effort: an LFS error (no remote, etc.) reads back as Unlocked.
 fn read_lock_state(root: &Path, rel_path: &str) -> LockState {
     let me = git_stdout(root, &["config", "user.name"]).unwrap_or_default();
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["lfs", "locks", "--json"])
         .output();
     let json = match out {
@@ -106,9 +103,7 @@ fn read_lock_state(root: &Path, rel_path: &str) -> LockState {
 
 /// Whether `rel_path` has open local work — uncommitted changes in the worktree/index.
 fn is_path_dirty(root: &Path, rel_path: &str) -> std::io::Result<bool> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["status", "--porcelain", "--", rel_path])
         .output()?;
     if !out.status.success() {
@@ -181,9 +176,7 @@ pub fn auto_unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
 /// Release one `git lfs lock`. Treats an already-unlocked path as success (idempotent), so a
 /// double checkpoint never surfaces a scary error.
 fn unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args(["lfs", "unlock", rel_path])
         .output()?;
     if out.status.success() {
@@ -211,7 +204,7 @@ fn current_branch(root: &Path) -> std::io::Result<String> {
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
 fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output()?;
+    let out = crate::gitrunner::command(root).args(args).output()?;
     if !out.status.success() {
         return Err(Error::other(format!(
             "git {} failed: {}",
@@ -224,7 +217,7 @@ fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
 
 /// Trimmed stdout of a successful git subcommand, or `None` on failure.
 fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+    let out = crate::gitrunner::command(root).args(args).output().ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())

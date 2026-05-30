@@ -19,9 +19,26 @@
     onClose: () => void;
   } = $props();
 
+  // A typed backend error (Issue #22): `auth` means the token was missing/wrong/expired, `keystore`
+  // means the OS-Schlüsselbund was unreachable. Both must bring the user back to the credential
+  // field to re-enter the token — never leave them stuck on a step that can't recover.
+  type AppError = { code: string; message: string };
+  function asAppError(e: unknown): AppError {
+    if (e && typeof e === "object" && "code" in e && "message" in e) {
+      return e as AppError;
+    }
+    return { code: "error", message: String(e) };
+  }
+
+  // When an auth/keystore error arrives we force the connect (credential) step back open, even if
+  // the server stage says we are already past it (e.g. an auth failure during publish). Cleared on
+  // the next successful action.
+  let reauth = $state(false);
+
   // The visible step is driven by the (server-decided) stage so a reopened ceremony always lands
-  // on the right rung: connect → publish → invite.
-  let stage = $derived(report.stage);
+  // on the right rung: connect → publish → invite — unless a credential error has forced us back to
+  // the connect step to re-enter the token.
+  let stage = $derived(reauth ? "not-configured" : report.stage);
 
   // Connect-step form fields. Credentials stay in this component and go straight to Rust; the
   // returned report only ever carries the credential-free clone URL.

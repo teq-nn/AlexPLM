@@ -20,7 +20,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
-use std::process::Command;
 
 /// Heavy-binary threshold: a blob this size or larger, already committed into history, is a
 /// "Riesen-Binary" (E38) that warrants the `git lfs migrate` rewrite. 50 MiB — well above
@@ -214,7 +213,7 @@ fn write_gitattributes(root: &Path, body: &str) -> std::io::Result<()> {
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
 fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output()?;
+    let out = crate::gitrunner::command(root).args(args).output()?;
     if !out.status.success() {
         return Err(Error::new(
             ErrorKind::Other,
@@ -233,9 +232,7 @@ fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
 fn commit(root: &Path, message: &str) -> std::io::Result<()> {
     // Local identity fallback (never overwrites a configured global one in practice for the
     // commit, since -c only applies to this invocation).
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let out = crate::gitrunner::command(root)
         .args([
             "-c",
             "user.name=PLM-Werkzeug",
@@ -368,9 +365,7 @@ fn repo_has_history(root: &Path) -> bool {
     if !is_git_repo(root) {
         return false;
     }
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    crate::gitrunner::command(root)
         .args(["rev-parse", "--verify", "HEAD"])
         .output()
         .map(|o| o.status.success())
@@ -380,9 +375,7 @@ fn repo_has_history(root: &Path) -> bool {
 /// Whether shared clones exist — proxied by any configured remote. A repo with a remote may
 /// have clones we would poison by rewriting history, so its mere presence forces refuse (E38).
 fn repo_has_shared_clones(root: &Path) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
+    crate::gitrunner::command(root)
         .args(["remote"])
         .output()
         .map(|o| o.status.success() && !o.stdout.is_empty())
@@ -392,9 +385,7 @@ fn repo_has_shared_clones(root: &Path) -> bool {
 /// Whether any blob reachable from history is at or above the giant-binary threshold.
 fn repo_has_giant_binaries_in_history(root: &Path) -> bool {
     // List every (type, oid, size) of all objects across all refs; scan for a giant blob.
-    let rev = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let rev = crate::gitrunner::command(root)
         .args(["rev-list", "--objects", "--all"])
         .output();
     let Ok(rev) = rev else { return false };
@@ -408,9 +399,7 @@ fn repo_has_giant_binaries_in_history(root: &Path) -> bool {
         .filter_map(|l| l.split_whitespace().next())
         .map(|oid| format!("{oid}\n"))
         .collect();
-    let batch = Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let batch = crate::gitrunner::command(root)
         .args(["cat-file", "--batch-check=%(objecttype) %(objectsize)"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

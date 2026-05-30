@@ -1,7 +1,10 @@
+pub mod askpass;
 pub mod autocommit;
 pub mod classifier;
+pub mod credentials;
 pub mod edges;
 pub mod edgestore;
+pub mod gitrunner;
 pub mod graph;
 pub mod graphread;
 pub mod import;
@@ -30,6 +33,40 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 use tauri::{Emitter, Manager};
 use watcher::{watch_product, WatchHandle};
+
+/// A typed error for the auth-bearing ceremony commands (Issue #22). The `code` lets the frontend
+/// react precisely — `"auth"` reopens the credential field, `"keystore"` reports the OS keystore is
+/// unreachable — while `message` carries the human German text. Serialised to the frontend as
+/// `{ code, message }`.
+#[derive(serde::Serialize)]
+struct AppError {
+    code: String,
+    message: String,
+}
+
+impl AppError {
+    /// Classify an `io::Error` (whose message embeds the failed git's stderr, or a keystore error)
+    /// into a typed frontend error. The internal keystore marker is stripped from the visible
+    /// message so the user never sees it.
+    fn from_io(e: std::io::Error) -> Self {
+        let raw = e.to_string();
+        let code = match gitrunner::classify_failure(&raw) {
+            gitrunner::GitFailure::Auth => "auth",
+            gitrunner::GitFailure::KeystoreUnavailable => "keystore",
+            gitrunner::GitFailure::Other => "error",
+        };
+        let message = raw
+            .replace(gitrunner::KEYSTORE_UNAVAILABLE_MARKER, "")
+            .trim()
+            .trim_start_matches(':')
+            .trim()
+            .to_string();
+        AppError {
+            code: code.to_string(),
+            message,
+        }
+    }
+}
 
 /// Open a product folder read-only and project it for the UI Shell.
 /// No commits, no pushes, no locks — pure read path (Issue #2).
@@ -230,9 +267,11 @@ fn read_setup_state(path: String) -> Result<SetupReport, String> {
 }
 
 /// Connect the self-hosted Forgejo/Gitea server (Issue #5, E41): validate + normalize the typed
-/// host/owner/repo/credentials (pure core), configure the git remote, and enable `locksverify`
-/// for the host. Credentials are embedded in the push URL but never echoed back — the returned
-/// report carries only the credential-free clone URL. Returns the refreshed ceremony state.
+/// host/owner/repo/credentials (pure core), store the credentials in the **OS keystore** (Issue
+/// #22, never in `.git/config`), configure the git remote with the credential-free URL, and enable
+/// `locksverify` for the host. The returned report carries only the credential-free clone URL. A
+/// keystore/auth failure surfaces as a typed [`AppError`] so the frontend can reopen the
+/// credential field instead of hanging.
 #[tauri::command]
 fn connect_server(
     path: String,
@@ -241,18 +280,18 @@ fn connect_server(
     repo: String,
     user: String,
     token: String,
-) -> Result<SetupReport, String> {
+) -> Result<SetupReport, AppError> {
     let root = Path::new(&path);
-    configure_remote(root, &host, &owner, &repo, &user, &token).map_err(|e| e.to_string())
+    configure_remote(root, &host, &owner, &repo, &user, &token).map_err(AppError::from_io)
 }
 
 /// Perform the **first push** that publishes the product to the connected server (Issue #5,
 /// E41), setting the upstream so the later silent daily sync has a tracking ref. Returns the
 /// refreshed ceremony state (now `eingerichtet`).
 #[tauri::command]
-fn publish_to_server(path: String) -> Result<SetupReport, String> {
+fn publish_to_server(path: String) -> Result<SetupReport, AppError> {
     let root = Path::new(&path);
-    publish_product(root).map_err(|e| e.to_string())
+    publish_product(root).map_err(AppError::from_io)
 }
 
 /// The Lock Warden checkpoint (Issue #9, E35): at a checkpoint for one artifact, read the world
