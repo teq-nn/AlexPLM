@@ -45,6 +45,7 @@
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
   import ProduktSuche from "$lib/ProduktSuche.svelte";
+  import Produktliste from "$lib/Produktliste.svelte";
   import AufgabenListe from "$lib/AufgabenListe.svelte";
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
   import DiagnoseLog from "$lib/DiagnoseLog.svelte";
@@ -228,6 +229,25 @@
   // lives in its own instrument screen reachable from the entry bar — not tied to the open
   // product. The registry it searches stores only paths (never content).
   let sucheOpen = $state(false);
+
+  // The Produktliste / Verlauf switcher (Issue #73). The Produkt-Registry is app-level, so the
+  // switcher lives in the app-level entry bar next to the Suche. A ref so opening/importing/
+  // switching can refresh its registry view and stamp the local "zuletzt geöffnet" Verlauf.
+  let produktliste = $state<Produktliste | undefined>(undefined);
+
+  /** Auto-register a freshly opened/imported product into the app-level Registry and stamp the
+   *  local Verlauf, so opened products fill the Produktliste even without ever using the search
+   *  (Issue #73). The registry stays path-only; the order lives locally per path. Best-effort —
+   *  a registry write hiccup must never break the open sequence. */
+  async function rememberProduct(path: string) {
+    produktliste?.markOpened(path);
+    try {
+      await invoke("register_product", { path });
+    } catch (e) {
+      // The Verlauf is a convenience over the read-only shell; a registry hiccup is not fatal.
+    }
+    await produktliste?.refresh();
+  }
 
   // Issue #54-Folge — the diagnostic log panel. Off by default (the silent rhythm is untouched);
   // a quiet toggle in the toolbar opens it so a push that does nothing can be inspected.
@@ -722,21 +742,33 @@
   });
 
   async function openProduct() {
-    reset();
     const selected = await open({
       directory: true,
       multiple: false,
       title: "Produkt öffnen",
     });
     if (typeof selected !== "string") return;
+    await loadProduct(selected);
+  }
+
+  /** Open a product by an explicit path, reused by the folder dialog (openProduct) and by the
+   *  Produktliste switcher (Issue #73). Always tears the previous product fully down first
+   *  (reset(): stops the status/sync loops, clears all per-product state), then opens the target —
+   *  so it is safe to call while another product is open. Exactly ONE product stays open. */
+  async function loadProduct(path: string) {
+    // Sauberer Wechsel: stop the old product's watcher + status/sync loops and clear its state,
+    // THEN open the target. reset() stops both loops; the watcher is released explicitly below
+    // before re-arming it for the new path (so a switch can never leak a watcher/loop).
+    reset();
+    await invoke("stop_watching").catch(() => {});
     loading = "open";
     try {
-      product = await invoke<ProductView>("open_product", { path: selected });
-      productPath = selected;
-      loadWidths(selected); // restore this product's saved column layout
+      product = await invoke<ProductView>("open_product", { path });
+      productPath = path;
+      loadWidths(path); // restore this product's saved column layout
       // A fresh product starts with a fresh ledger, then watching begins silently.
       stands = [];
-      await invoke("start_watching", { path: selected });
+      await invoke("start_watching", { path });
       await refreshGraph();
       await refreshEdges();
       await refreshTasks();
@@ -746,6 +778,8 @@
       startStatusLoop();
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
       startSyncLoop();
+      // Opened products fill the Verlauf even without the search (Issue #73): register + stamp.
+      void rememberProduct(path);
     } catch (e) {
       error = String(e);
       product = null;
@@ -755,6 +789,16 @@
     } finally {
       loading = null;
     }
+  }
+
+  /** Switch the open product from the Produktliste (Issue #73) — no file dialog. loadProduct()
+   *  already tears the current product fully down (Watcher/Loops/State) before opening the target,
+   *  so this is just a guarded delegate: ignore a switch to the already-open product or while busy.
+   *  Exactly ONE product stays open. */
+  async function switchProduct(path: string) {
+    if (loading !== null) return;
+    if (path === productPath) return;
+    await loadProduct(path);
   }
 
   async function importProduct() {
@@ -818,6 +862,8 @@
       if (setup && setup.stage === "not-configured") ceremonyOpen = true;
       startStatusLoop();
       startSyncLoop();
+      // A freshly created product joins the Verlauf too (Issue #73): register + stamp.
+      void rememberProduct(path);
     } catch (e) {
       error = String(e);
       product = null;
@@ -837,7 +883,10 @@
       const result = await invoke<ImportResult>("migrate_history", { path });
       imported = result;
       product = result.product;
+      productPath = path;
       gate = null;
+      // The migrated product joins the Verlauf too (Issue #73): register + stamp.
+      void rememberProduct(path);
     } catch (e) {
       error = String(e);
       gate = null;
@@ -1131,6 +1180,16 @@
       </button>
       <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
     </div>
+
+    <!-- Produktliste / Verlauf (Issue #73): the app-level switcher for zuletzt geöffnete Produkte.
+         Sits with the entry keys (same warm chassis), lets you wechseln ohne Datei-Dialog. The
+         registry is app-level — so is this — matching the cross-product Suche at the right edge. -->
+    <Produktliste
+      bind:this={produktliste}
+      currentPath={productPath}
+      onSwitch={switchProduct}
+      disabled={loading !== null}
+    />
 
     {#if product}
       <!-- Raum-Schalter (Issue #55, E45): Werkbank (Jetzt) und Graph-Raum (Verlauf) sind zwei
