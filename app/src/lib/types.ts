@@ -83,6 +83,31 @@ export interface VersionGraph {
   lane_count: number;
 }
 
+/** One of the three Graph-Raum node verbs (Issue #55, E27).
+ *  Mirrors `KnotenVerb` in src-tauri/src/knotenverben.rs (kebab-case). */
+export type KnotenVerb =
+  | "als-ordner-oeffnen"
+  | "von-hier-abzweigen"
+  | "zurueckwerfen";
+
+/** The pure Graph-Raum display filter (Issue #55, E45). Hides nodes only — never rewrites.
+ *  Mirrors `GraphFilter` in src-tauri/src/knotenverben.rs. */
+export interface GraphFilter {
+  /** Show variant lines (non-active Zweige)? Default true. */
+  varianten: boolean;
+  /** Show only Meilensteine (promoted Stände)? Default false. */
+  nur_meilensteine: boolean;
+}
+
+/** Result of „Als Ordner öffnen" (Issue #55): the materialised read-only worktree path.
+ *  Mirrors `GeoeffneterOrdner` in src-tauri/src/worktreeglue.rs. */
+export interface GeoeffneterOrdner {
+  /** Absolute path of the materialised folder, forward-slash display. */
+  pfad: string;
+  /** Whether the folder was freshly created (vs. already present). */
+  neu: boolean;
+}
+
 /** A manual „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10).
  *  Both are product-relative artifact paths. Mirrors `Edge` in src-tauri/src/edges.rs. */
 export interface Edge {

@@ -20,6 +20,7 @@ pub mod graphread;
 pub mod import;
 pub mod import_gate;
 pub mod kartenstatus;
+pub mod knotenverben;
 pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
@@ -38,6 +39,7 @@ pub mod tasks;
 pub mod warden;
 pub mod watcher;
 pub mod werkbank;
+pub mod worktreeglue;
 pub mod zuordnung;
 pub mod zuordnungstore;
 
@@ -63,6 +65,7 @@ use taskstore::{create_task, delete_task, read_tasks, set_task_status, update_ta
 use tasks::{NewTask, Task, TaskEdit, TaskKind, TaskLink, TaskStatus};
 use warden::{Checkpoint, WardenAction};
 use werkbank::{read_werkbank, WerkbankView};
+use worktreeglue::{als_ordner_oeffnen, von_hier_abzweigen, zurueckwerfen, GeoeffneterOrdner};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -221,6 +224,64 @@ fn toggle_milestone_art(path: String, version: String) -> Result<VersionGraph, S
         return Err(format!("Kein Ordner: {path}"));
     }
     toggle_milestone_freigabe(root, &version).map_err(|e| e.to_string())
+}
+
+/// **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
+/// den Stand `stand_id` als *separaten, schreibgeschützten* Ordner neben dem Produkt (ein detached
+/// `git worktree`). Die Werkbank (Jetzt-Zustand) bleibt unberührt — ein Klick auf einen alten Knoten
+/// bewegt sie nie still. Idempotent: ein schon materialisierter Ordner wird nur zurückgegeben. Die
+/// UI übergibt den zurückgegebenen Pfad dem OS zum Öffnen.
+#[tauri::command]
+async fn knoten_als_ordner(
+    path: String,
+    stand_id: String,
+    label: String,
+) -> Result<GeoeffneterOrdner, String> {
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        als_ordner_oeffnen(root, &stand_id, &label).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Von hier abzweigen** (Issue #55, E27/E8/E43): ein bewusster neuer Branch ab dem Stand
+/// `stand_id`. Bevor die Werkbank bewegt wird, sichert das Werkzeug jede laufende Arbeit als
+/// gewöhnlichen Stand (E8) — kein `stash`, nichts geht verloren —, dann `checkout -b`. Gibt den
+/// frisch projizierten Versionsbaum zurück, damit die neue Linie sofort erscheint.
+#[tauri::command]
+async fn knoten_abzweigen(
+    path: String,
+    stand_id: String,
+    branch: String,
+) -> Result<VersionGraph, String> {
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        von_hier_abzweigen(root, &stand_id, &branch, SystemTime::now()).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Zurückwerfen** (Issue #55, E27 — destruktiv, hinter der schwarzen „Historie anfassen"-Gate,
+/// nie der Default): springt auf den alten Stand `stand_id`, aber **sicher** — keine versteckte
+/// `reset --hard`/`rebase`-Mechanik (E43). Es sichert erst die laufende Arbeit (E8), holt dann den
+/// alten Inhalt in die Werkbank und schreibt ihn als **neuen, vorwärts gerichteten Stand** fest
+/// („behalten, nie umschreiben", E9 — voll reversibel). Gibt den frischen Versionsbaum zurück.
+#[tauri::command]
+async fn knoten_zurueckwerfen(path: String, stand_id: String) -> Result<VersionGraph, String> {
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        zurueckwerfen(root, &stand_id, SystemTime::now()).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Read the product's manual „abgeleitet von" edges and their Stale-Warnungen (Issue #10).
@@ -980,6 +1041,9 @@ pub fn run() {
             read_version_graph,
             promote_milestone,
             toggle_milestone_art,
+            knoten_als_ordner,
+            knoten_abzweigen,
+            knoten_zurueckwerfen,
             read_edges,
             add_edge,
             remove_edge,

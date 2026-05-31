@@ -18,6 +18,7 @@
     StandNode,
     VersionGraph,
     GateVerdict,
+    GeoeffneterOrdner,
     WardenAction,
     SyncOutcome,
     LoudQuestion,
@@ -31,6 +32,7 @@
     ProduktStack,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
+  import GraphRaum from "$lib/GraphRaum.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
   import ArtefaktKarte from "$lib/ArtefaktKarte.svelte";
   import UnzugeordnetFach from "$lib/UnzugeordnetFach.svelte";
@@ -386,6 +388,7 @@
     werkbank = null;
     stack = null;
     stackOpen = false;
+    room = "werkbank";
     stopStatusLoop();
     stopSyncLoop();
   }
@@ -556,6 +559,64 @@
       // The tree is a read-only view; a transient read failure must not break the shell.
       error = String(e);
     }
+  }
+
+  // ── Räume: Werkbank vs. Graph-Raum (Issue #55, E45) ─────────────────────────
+  // Two separate, equal rooms. The Werkbank (Jetzt-Zustand) is the start; the Graph-Raum
+  // (Verlauf) is something the user *sucht auf* — never the start screen. The switch lives in
+  // the app-level entry bar. Opening a product always lands in the Werkbank.
+  let room = $state<"werkbank" | "graph">("werkbank");
+
+  // ── Knoten-Verben (Issue #55, E27) ──────────────────────────────────────────
+  // A click on an old node never silently moves the Werkbank; the Graph-Raum offers three verbs.
+  // The dangerous git mechanics stay hidden — these route through the safe backend glue.
+
+  /** „Als Ordner öffnen" (Default): materialise a read-only worktree next to the product and hand
+   *  its path to the OS to open. The Werkbank is untouched (a worktree is a second checkout). */
+  async function openAsFolder(node: StandNode) {
+    if (!productPath) return;
+    const label = node.milestone ?? node.id.slice(0, 8);
+    const result = await invoke<GeoeffneterOrdner>("knoten_als_ordner", {
+      path: productPath,
+      standId: node.id,
+      label,
+    });
+    // Open the materialised folder via the OS default file browser.
+    try {
+      await openPath(result.pfad);
+    } catch (e) {
+      // The folder exists either way; a failure to launch the browser is not fatal to the verb.
+      error = String(e);
+    }
+  }
+
+  /** „Von hier abzweigen": save current work (E8), then create the named branch. This deliberately
+   *  moves the Werkbank, so afterwards we refresh the quiet views to reflect the new active line. */
+  async function branchFrom(node: StandNode, branch: string) {
+    if (!productPath) return;
+    graph = await invoke<VersionGraph>("knoten_abzweigen", {
+      path: productPath,
+      standId: node.id,
+      branch,
+    });
+    await refreshGraph();
+    await refreshWerkbank();
+    await refreshStatus();
+    await refreshEdges();
+  }
+
+  /** „Zurückwerfen" (destructive, behind the black gate): the SAFE restore — the backend lays the
+   *  old Stand on top as a new forward Stand (no reset/rebase/stash), then re-projects. */
+  async function throwBack(node: StandNode) {
+    if (!productPath) return;
+    graph = await invoke<VersionGraph>("knoten_zurueckwerfen", {
+      path: productPath,
+      standId: node.id,
+    });
+    await refreshGraph();
+    await refreshWerkbank();
+    await refreshStatus();
+    await refreshEdges();
   }
 
   async function refreshEdges() {
@@ -1033,6 +1094,33 @@
       </button>
       <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
     </div>
+
+    {#if product}
+      <!-- Raum-Schalter (Issue #55, E45): Werkbank (Jetzt) und Graph-Raum (Verlauf) sind zwei
+           gleichwertige, getrennte Räume. Ein seated „Instrument-Schalter": die aktive Seite ist
+           eingedrückt + lit. Der Graph ist kein Startbildschirm — man sucht ihn hier auf. -->
+      <div class="roomswitch" role="group" aria-label="Raum">
+        <button
+          type="button"
+          class="rs-key"
+          class:on={room === "werkbank"}
+          aria-pressed={room === "werkbank"}
+          onclick={() => (room = "werkbank")}
+        >
+          <span class="label">Werkbank</span>
+        </button>
+        <button
+          type="button"
+          class="rs-key"
+          class:on={room === "graph"}
+          aria-pressed={room === "graph"}
+          onclick={() => (room = "graph")}
+        >
+          <span class="label">Verlauf · Graph</span>
+        </button>
+      </div>
+    {/if}
+
     <!-- Produktübergreifende Suche: an app-level instrument, reachable independent of an open
          product (the registry spans products). Quiet ghost key — it only reads. -->
     <button
@@ -1045,6 +1133,18 @@
   </div>
 
   <div class="stage">
+    {#if product && room === "graph"}
+      <!-- Graph-Raum (Issue #55): a SEPARATE, full-width room — the Verlauf the user sucht auf.
+           It carries the filters + the three Knoten-Verben; a node click never moves the Werkbank. -->
+      <GraphRaum
+        {graph}
+        onPromote={promote}
+        onToggleArt={toggleArt}
+        onOpenAsFolder={openAsFolder}
+        onBranchFrom={branchFrom}
+        onThrowBack={throwBack}
+      />
+    {:else}
     <main class="work">
     <div class="toolbar">
       <span class="label section">Bausteine</span>
@@ -1295,6 +1395,7 @@
         <StandList {stands} />
       </aside>
     {/if}
+    {/if}
   </div>
 </div>
 
@@ -1379,6 +1480,51 @@
   /* The app-level cross-product search trigger sits at the right edge of the entry bar. */
   .key.suche {
     flex: none;
+  }
+
+  /* Raum-Schalter (Issue #55): a seated two-position instrument switch. The two rooms are equal;
+     the active one is pressed-in (sunken) and lit, the other a calm raised key. Strictly grey —
+     routine navigation, never the orange exception. Centred between the entry keys and search. */
+  .roomswitch {
+    display: inline-flex;
+    flex: none;
+    margin: 0 auto;
+    padding: 3px;
+    gap: 3px;
+    border-radius: var(--radius);
+    background: var(--surface-sunken);
+    box-shadow: inset 0 1px 2px rgba(28, 26, 25, 0.14);
+  }
+  .rs-key {
+    appearance: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-muted);
+    padding: 6px 14px;
+    transition:
+      background var(--dur) var(--ease),
+      color var(--dur) var(--ease),
+      box-shadow var(--dur) var(--ease);
+  }
+  .rs-key .label {
+    color: inherit;
+  }
+  .rs-key:hover:not(.on) {
+    color: var(--ink-default);
+  }
+  .rs-key.on {
+    background: var(--surface-raised);
+    color: var(--ink-strong);
+    border-color: var(--hairline);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.6) inset,
+      0 1px 2px rgba(28, 26, 25, 0.12);
+  }
+  .rs-key:focus-visible {
+    outline: none;
+    border-color: var(--ink-muted);
   }
   .entry-actions {
     display: flex;
