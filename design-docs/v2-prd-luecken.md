@@ -18,13 +18,13 @@ Freigabe-Block**, die **UI-Wirbelsäule** (Werkbank vs. Graph-Raum, Navigation),
 **produktübergreifende Suche**, die **Waisen/Vollständigkeit** — fehlt in der PRD oder ist auf ein,
 zwei Sätze reduziert. Das ist keine kleine Politur: es ist die halbe Domäne.
 
-> **Zweite, tiefere Lücke:** Das `plm_software_konzept.md`, auf das **jede** Entscheidung per
-> §-Nummer verweist (§3.2, §6, §12, §13, §18.2, §22, §23–§26, §28, §30 …), ist **nie ins Repo
-> committet worden** (in der gesamten Historie nicht vorhanden). Die meisten §-Stellen sind durch
-> E-Entscheidungen überholt, aber einige noch lebende (Öffnen-Aktion/Tool-Start §13, Haupt-/
-> Zusatzdateien §12, Layout-Details §23.2, Suche/Tags §26) sind nur teilweise in den E-Logs
-> aufgefangen. **Empfehlung: dieses Dokument auffinden und committen** (oder die noch lebenden
-> §-Verweise rekonstruieren), bevor die unten genannten Flächen gebaut werden.
+> **Zweite, tiefere Lücke (jetzt geschlossen):** Das `plm_software_konzept.md`, auf das **jede**
+> Entscheidung per §-Nummer verweist, war lange nicht im Repo. Es ist jetzt als
+> `design-docs/plm_software_konzept.md` committet (Original-Seed, **E1–E33 sind die Ergebnisse der
+> fünf Grill-Sitzungen darüber**). Damit lassen sich alle §-Verweise auflösen — die präzise
+> §-für-§-Abrechnung steht in **Abschnitt 5**. Wichtigster Befund daraus: ein paar §-Features wurden
+> **nie nachgegrillt** (Tags §26.2, Filter §26.1, Haupt-/Zusatzdatei-Aktionsmodell §12) und fehlen
+> dadurch sowohl in den E-Logs als auch in der PRD.
 
 Was die PRD **gut** abdeckt (nicht erneut verhandeln): die sechs reinen Kerne, die Binär-Invariante,
 die zwei Push-Arten, stiller Sync + laute Ausnahme, Import-Gate, Auslagern, die UI-Design-Tokens.
@@ -230,12 +230,59 @@ Abstammung/Status; `VERSION_NOTES.md` als Tag-Ergebnis.
 **Leitregel ergänzen:** E6-Nuance (Konzepte in Domänensprache sichtbar, git-Wörter versteckt) neben
 die fünf bestehenden Leitregeln stellen. *(3.2)*
 
-**Doku-Schuld:** `plm_software_konzept.md` auffinden/committen oder lebende §-Verweise
-rekonstruieren. *(§0)*
+**Doku-Schuld:** ✅ erledigt — `plm_software_konzept.md` ist committet. Die noch nie nachgegrillten
+§-Features (Tags, Filter, Haupt-/Zusatzdatei-Aktionen) bewusst für/gegen v2 entscheiden. *(Abschnitt 5)*
 
 ---
 
-## 5. Verhältnis zur bestehenden `v2-gap-analyse.md` (Reihenfolge)
+## 5. §-für-§-Abrechnung: Original-Konzept ↔ E1–E41 ↔ v1-PRD
+
+Jetzt, da `plm_software_konzept.md` vorliegt, lässt sich jedes §-Feature einsortieren. Drei Verdikte:
+**ÜBERHOLT** (eine E-Entscheidung hat es ersetzt — nicht zurückholen), **LEBT, fehlt in PRD** (gilt
+weiter, aber die PRD hat es nicht aufgegriffen → v2), **NIE NACHGEGRILLT** (weder E-Log noch PRD
+haben es angefasst → bewusste v2-Entscheidung nötig).
+
+| Original-§ | Verdikt | Wodurch / Was v2 tun muss |
+|---|---|---|
+| §1 Ziel „PLM-ähnlich, Rollen später" | ÜBERHOLT | E1 (Werkzeug, kein Produkt); Rollen bleiben draußen, Sperre = Koordination, nicht Autorisierung (E31). |
+| §3.2 „Modul" / modulare Produktstruktur | ÜBERHOLT | E24: „Modul" = **Eltern-Ordner ohne Regeln**, kein eigenes Objekt. v2-Nav (1.6) bildet das ab. |
+| §5 globale Vollkopie-Versionen | ÜBERHOLT | E2/E8: Git-Tag statt Vollkopie; Auto-Commit-Netz darunter. |
+| §6 Branch/Versionsnummer-Datenmodell | ÜBERHOLT | E2: Git trägt Branch/Version/Abstammung; §6.1-Aktionen → Branch behalten/mergen/taggen (E7). |
+| §7 physische Versionsordner | ÜBERHOLT | E2/E3: Worktree/Export **on demand**, nicht N volle Ordner. |
+| §8 Speicherort + **„Projektordner neu verknüpfen"** | LEBT, fehlt in PRD | E29 (lokale App, Cloud nur Remote) deckt den Ort; die **Reconnect-Funktion** für verschobene Produkte fehlt der PRD → gehört zur Produkt-Registry (1.8). |
+| §9 gemeinsame Workspace-Config | ÜBERHOLT (Rest) | E1 geparkt; nur die **Produkt-Registry** (Pfadliste) überlebt (E30/1.8). |
+| §10 `_plm`-Metadaten (`product/branches/tasks.json`) | TEILS ÜBERHOLT | `branches.json` tot (Git weiß das, E18/E26); `product`/`tasks` bleiben, aber `_plm` hält **nur, was Git nicht kennt** → verbindliches Schema in v2 (1.5). |
+| §11 mehrere Artefakte teilen Arbeitsbereich (KiCad) | LEBT | Trägt die Pattern→Glob-Zuordnung (E10) und die Baustein-Heimat (E16). v2 baut es in 1.1. |
+| **§12 Hauptdatei / Zusatzdateien / primäre Aktion** (Datei öffnen / Ordner öffnen / Exportpaket öffnen) | **NIE NACHGEGRILLT** | Nur die „Öffnen-Aktion" des Bausteins (E16) streift es; das **Aktionsmodell der Artefakt-Karte** (welche Datei ist Haupt-, welche Aktion ist primär) ist **nirgends** spezifiziert. **v2-Artefakt-Karte (1.6) braucht es.** |
+| §13 Datei öffnen via OS-Handover | LEBT | = die „Öffnen-Aktion" eines Bausteins (E16). In v2 Teil von 1.1/1.6. |
+| §14 Datei-Erkennung / Hand-Zuordnung | ÜBERHOLT | E5 (= `git status`), E10 (Pattern statt Hand). §14.1 „Datei nicht mehr gefunden" teils via Waisen (E11/1.4). |
+| §15 Änderungsnotiz pro Dateiwechsel | ÜBERHOLT | E13: Notiz nur am Meilenstein, gruppiert. |
+| §16 `VERSION_NOTES.md` / `version.json` | TEILS ÜBERHOLT | E8/E26: `version.json` **ohne** Abstammung/`status`; `VERSION_NOTES`-Felder leben als **Tag-Ergebnis** (E28). v2-Schema in 1.5. |
+| §17 Versionsstatus & Schreibschutz | LEBT | Tag = unveränderlich → Schreibschutz geschenkt (E8). Statuswerte umgeformt (E26). |
+| §18.2 zehn Artefakt-Status | ÜBERHOLT | E26: **abgeleitet**; „Prüfung/Datei-Bestätigung erforderlich" und „Nicht zugeordnet" gestrichen. v2 in 1.5. |
+| §19 Workflows (Startvorlage) | ÜBERHOLT | E16: ersetzt durch **Bausteine/Stacks** (lebender Regelsatz, nicht Einmalvorlage). v2-Säule 1.1. |
+| §20.1 Aufgabenfelder (Priorität, Kanban, Person) | TEILS ÜBERHOLT | E15: **Priorität + Kanban raus** (Jira-Ballast); Minimum = Titel/Status/Typ/Verknüpfung/Fälligkeit. v2-Säule 1.2. |
+| §21 Aufgaben-Abschluss-Zeremonie + Artefaktprüfung | ÜBERHOLT | E15: ersatzlos gestrichen; Prüfung liegt im Meilenstein-Check. |
+| §22 Freigabedialog (flacher §22.1-Knopf) | ÜBERHOLT | E19/E28: **dreistufiger Block**, kontextabhängiger Knopf; „VERSION_NOTES erzeugt?" als zirkuläre Vorbedingung raus. v2-Säule 1.3. |
+| §23.1 Top-Nav (Produkte/Workflows/Aufgaben/Vorlagen/Einstellungen) | ÜBERHOLT | E25: **Produkte · Bibliothek · Einstellungen**. v2-Säule 1.6. |
+| §23.2 Dashboard-Layout (links Nav, Mitte Karten, rechts Aufgaben, Tabs) | TEILS LEBT | E23/E24: Werkbank (Mitte/links) bleibt, **Tabs → getrennter Graph-Raum**; **rechtes Aufgaben-/Hinweis-Panel lebt**, fehlt der PRD → v2 (1.6). |
+| §24 Versionsleiste / Versionsbaum | LEBT (in PRD/Bau) | Über `ui-stilbeschreibung` + Bau #28 abgedeckt. Graph-**Verben** fehlen aber (1.7). |
+| §25 Artefakt-Karten-Felder | TEILS LEBT | E26: „Änderungsnotiz vorhanden"-Indikator weg; sonst lebt die Karte. v2 verbindet mit §12-Aktionsmodell (oben) + abgeleitetem Status. |
+| **§26.1 Filter** (Status/Aufgaben/Branch/Artefakt-Typ) | **NIE NACHGEGRILLT** | Weder E-Log noch PRD. Billig, aber **bewusst entscheiden**: welche Filter in v2? |
+| **§26.2 Tags** (manuell/Workflow-vorgeschlagen, auf Produkt/Branch/Version/Artefakt/Aufgabe) | **NIE NACHGEGRILLT** | Komplett offen — in **keiner** E-Entscheidung, **nicht** in der PRD. **v2 muss entscheiden: Tags rein oder raus?** (Wenn rein: passen sie zu „nur, was Git nicht kennt" → `_plm`.) |
+| §26 Suche | ÜBERHOLT/erweitert | E30: **Live-Fan-out**, kein Index. v2-Säule 1.8. |
+| §27/§28 Datenmodell + JSON-Beispiele | TEILS ÜBERHOLT | Git trägt Branch/Version/Abstammung; `branches.json`/`created_from`/`version.json.status` tot. v2: `_plm`-Schema neu (1.5). |
+| §30 „nicht im MVP: Git-Integration" / §31 „später: Git-Integration" | INVERTIERT | E2 macht **Git zum Fundament** — das ehemalige „später" ist jetzt der Motor. Nur als historische Notiz relevant. |
+
+**Die drei wirklich offenen §-Punkte für v2** (nie nachgegrillt, in keiner Quelle entschieden):
+1. **Tags (§26.2)** — rein oder raus? Tragende Frage, weil Tags quer über alle Objekte lägen.
+2. **Filter (§26.1)** — welche Filtermenge, wo (Werkbank/Suche)?
+3. **Haupt-/Zusatzdatei-Aktionsmodell (§12)** — die Artefakt-Karte braucht „primäre Aktion"
+   (Datei/Ordner/Exportpaket öffnen); nur halb in der Baustein-„Öffnen-Aktion" gefangen.
+
+---
+
+## 6. Verhältnis zur bestehenden `v2-gap-analyse.md` (Reihenfolge)
 
 `v2-gap-analyse.md` priorisiert die **Bau-Lücken** im *vorhandenen* (Sitzung-5-)Umfang: #35 Publish-
 Bug, laute Ausnahme auflösbar machen (§2.1 = hier 1.9/E7), Auto-Lock beim ersten dirty Pfad,
