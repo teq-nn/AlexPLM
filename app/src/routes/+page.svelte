@@ -134,7 +134,8 @@
   let resolving = $state(false);
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   // Guard so a slow networked fetch never overlaps the next 8-second sync tick (see statusInFlight).
-  let syncInFlight = false;
+  // `$state` so the manual „Holen"-Knopf (Issue #54) can reflect its brief in-flight state.
+  let syncInFlight = $state(false);
 
   /** Run one silent daily sync pass (E41). Best-effort: an offline/unpublished repo simply stays
    *  quiet — a raw sync error must never break the silent vocabulary. The pure Sync Decider (Rust)
@@ -985,6 +986,41 @@
     }
   }
 
+  // Manueller Sync (Issue #54): the daily net-sync becomes MANUAL and VISIBLE, while Auto-Commit
+  // stays silent. Two deliberate, human gestures sit in the toolbar: „Sichern" (the Sicherungs-
+  // Push — a personal backup into the user's own ref/namespace, incl. half-finished binaries, that
+  // can NEVER reach the shared `main`) and „Holen" (the pull — fetch the colleagues' shared stand).
+  // The Freigabe-Push (publish to `main` + release the lock) is NOT here: it stays bound to the
+  // Meilenstein-Freigabe-Toggle (E42), reached through `freigeben()` above. Each button shows a
+  // brief in-flight state, then settles back into the calm Sicherungsstatus / Sync readout.
+  let securing = $state(false);
+
+  /** „Sichern" — the visible manual Sicherungs-Push (Issue #54): back the current work up to the
+   *  personal namespace on the remote. A private backup; it never publishes to the shared `main`
+   *  and never releases a lock (the backend `sichern` command obeys the Lock Warden's Sicherungs-
+   *  Push carry-out). Best-effort: a push failure is captured by the Diagnose-Log, not surfaced as
+   *  raw git, so the daily vocabulary stays intact. */
+  async function sichern() {
+    if (!productPath || securing) return;
+    securing = true;
+    try {
+      const action = await invoke<WardenAction>("sichern", { product: productPath });
+      if (action !== "refuse") wardenAction = action;
+    } catch (e) {
+      // Stays out of the silent vocabulary; the Diagnose-Log records why a backup failed.
+    } finally {
+      securing = false;
+    }
+  }
+
+  /** „Holen" — the visible manual pull (Issue #54): run one sync pass on demand instead of waiting
+   *  for the 8-second tick. Reuses the exact same silent Sync Decider path (`runSync`) — a free,
+   *  mergeable divergence lands „gesichert", a real contradiction raises the single loud exception.
+   *  The background loop keeps running; this is just the user's deliberate „jetzt holen". */
+  async function holen() {
+    await runSync();
+  }
+
   // Toggle a Meilenstein's Art (E42): Prototyp → Freigabe ("Releasen", write-protects the
   // tag) or back ("Un-Release"). Rust persists the Art per tag and flips the write-protect,
   // then returns the refreshed tree. The dreistufige Freigabe-Gate block-check is a separate
@@ -1187,10 +1223,53 @@
       <span class="label section">Bausteine</span>
 
       <div class="actions">
-        <!-- The stiller Sync's quiet status (Issue #11, E41): "aktuell" / "gesichert" only —
-             never push/pull/merge. The loud exception is NOT shown here; it takes the screen. -->
-        {#if syncQuiet}
-          <span class="readout mono sync" role="status" aria-live="polite">
+        <!-- Manueller Sync (Issue #54): the net-sync is MADE manual + visible while Auto-Commit
+             stays silent. A push/pull key pair the user presses deliberately. Git-honest words
+             are allowed here (Sichern = backup push, Holen = pull); the dangerous mechanics stay
+             hidden behind the Lock Warden. The Freigabe-Push lives on the Meilenstein-Toggle. -->
+        {#if product}
+          <div class="syncpair" role="group" aria-label="Manueller Sync">
+            <button
+              class="key sync-key"
+              onclick={sichern}
+              disabled={securing}
+              title="Sicherung: persönliches Backup deiner Arbeit (auch halbfertig) — erreicht NIE den geteilten Stand"
+            >
+              <span class="glyph" aria-hidden="true">↑</span>
+              <span class="label">{securing ? "sichere …" : "Sichern"}</span>
+            </button>
+            <button
+              class="key sync-key"
+              onclick={holen}
+              disabled={syncInFlight || resolving}
+              title="Holen: den geteilten Stand der Kolleg·innen hereinholen"
+            >
+              <span class="glyph" aria-hidden="true">↓</span>
+              <span class="label">{syncInFlight ? "hole …" : "Holen"}</span>
+            </button>
+          </div>
+        {/if}
+
+        <!-- Die Alltags-Statuszeile (Issue #54): "aktuell / X arbeitet an Y / gesichert" — the one
+             calm readout of where the shared stand stands. A foreign lock („X arbeitet an Y")
+             takes precedence: it is the live coordination fact the user most needs. Otherwise the
+             stiller-Sync state shows „aktuell" / „gesichert". The loud exception is NOT shown here;
+             it takes the whole screen. -->
+        {#if foreignLocks.length > 0}
+          <span class="readout mono syncline busy" role="status" aria-live="polite">
+            <span class="dot working"></span>
+            <span class="readout-text"
+              >{foreignLocks[0].owner} arbeitet an {foreignLocks[0].path}</span
+            >
+            {#if foreignLocks.length > 1}
+              <span class="readout-sep">·</span>
+              <span class="readout-locks"
+                >+{(foreignLocks.length - 1).toString()} weitere</span
+              >
+            {/if}
+          </span>
+        {:else if syncQuiet}
+          <span class="readout mono syncline" role="status" aria-live="polite">
             <span class="dot" class:fresh={syncQuiet === "aktuell"}></span>
             <span class="readout-text"
               >{syncQuiet === "aktuell" ? "aktuell" : "gesichert"}</span
@@ -1713,6 +1792,73 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+
+  /* Manueller Sync (Issue #54): the push/pull pair reads as ONE tactile instrument segment — two
+     raised keys butted together with a hairline seam, so they feel like the up/down controls of
+     a single sync module rather than two stray buttons. Same key material as elsewhere. */
+  .syncpair {
+    display: inline-flex;
+    align-items: stretch;
+    border-radius: var(--radius);
+    box-shadow: 0 1px 0 rgba(28, 26, 25, 0.12);
+  }
+  .syncpair .sync-key {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 13px;
+    box-shadow: none;
+    border-radius: 0;
+  }
+  .syncpair .sync-key:first-child {
+    border-top-left-radius: var(--radius);
+    border-bottom-left-radius: var(--radius);
+  }
+  /* the seam: collapse the doubled border so the two keys share one hairline */
+  .syncpair .sync-key:last-child {
+    border-left: none;
+    border-top-right-radius: var(--radius);
+    border-bottom-right-radius: var(--radius);
+  }
+  .syncpair .sync-key:active {
+    /* keep the pair's outer shadow steady; only the pressed key dips via the shared transform */
+    box-shadow: none;
+  }
+  /* the directional micro-glyph: ↑ backs up (Sichern), ↓ pulls down (Holen). Mono, recessed,
+     the same instrument-etched feel as the LCD readouts — it carries the push/pull meaning. */
+  .sync-key .glyph {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1;
+    color: var(--ink-muted);
+    transition: color var(--dur) var(--ease);
+  }
+  .sync-key:hover .glyph {
+    color: var(--ink-strong);
+  }
+  .sync-key:disabled .glyph {
+    color: var(--ink-muted);
+  }
+
+  /* Die Alltags-Statuszeile (Issue #54): same recessed LCD as the other readouts. The „X arbeitet
+     an Y" (busy) variant glows the working amber-grey LED and tints its text, so a live foreign
+     lock reads as the gentle „someone's hands are on this" coordination note — never an alarm. */
+  .readout.syncline {
+    max-width: 320px;
+  }
+  .readout.syncline .readout-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .readout.syncline.busy .dot {
+    background: var(--led-working);
+    box-shadow: 0 0 6px rgba(201, 198, 191, 0.45);
+  }
+  .readout.syncline.busy .readout-text {
+    color: #d8d4cd;
+    font-weight: 500;
   }
 
   /* Import outcome: a small recessed instrument readout, same LCD language as

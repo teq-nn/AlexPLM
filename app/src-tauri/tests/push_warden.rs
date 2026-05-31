@@ -10,7 +10,9 @@
 //! verified at the snapshot/decision boundary rather than by driving a real LFS lock.
 
 use app_lib::pushglue::{personal_backup_ref, run_checkpoint, sicherungs_push, SHARED_BRANCH};
-use app_lib::warden::{Checkpoint, WardenAction};
+use app_lib::warden::{
+    decide, Checkpoint, Cleanliness, LockState, PathKind, WardenAction, WardenSnapshot,
+};
 use std::path::Path;
 use std::process::Command;
 
@@ -191,4 +193,73 @@ fn clean_unlocked_path_refuses_and_touches_nothing() {
         !git_ok(&bare, &["rev-parse", "--verify", &personal_backup_ref("anna", "main")]),
         "Refuse creates no backup ref"
     );
+}
+
+// --------------------------------------------------------------------------------------------
+// Issue #54 — the two visible, manual push types: Sicherung never publishes; Freigabe does.
+// --------------------------------------------------------------------------------------------
+
+/// Issue #54 AC: the manual **Sicherungs-Push** (the toolbar „Sichern"-Knopf, backed by
+/// `pushglue::sicherungs_push`) is the explicit personal backup. Even with a half-finished binary
+/// edit in the worktree (the case the issue calls out — „inkl. halbfertiger Binärdateien"), it
+/// backs the branch up into the personal namespace and **NEVER** moves the shared `main`.
+#[test]
+fn manual_sicherung_backs_up_half_finished_binary_and_never_publishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let product = tmp.path().join("product");
+    let bare = tmp.path().join("remote.git");
+    std::fs::create_dir_all(&product).unwrap();
+    seed_product_with_remote(&product, &bare);
+
+    let shared_before = git_out(&bare, &["rev-parse", SHARED_BRANCH]);
+
+    // A half-finished binary, committed locally (the autocommit rhythm captures it as a Stand) —
+    // exactly the kind of unfinished work a personal backup is meant to safeguard.
+    std::fs::write(product.join("gehaeuse.f3d"), b"\x00\x01halffinished").unwrap();
+    git(&product, &["add", "-A"]);
+    git(&product, &["commit", "-m", "auto: gehaeuse.f3d, t"]);
+    let local_main = git_out(&product, &["rev-parse", "main"]);
+
+    // The visible manual backup press.
+    sicherungs_push(&product).unwrap();
+
+    // The personal backup ref now carries the half-finished binary…
+    let backup_ref = personal_backup_ref("anna", "main");
+    assert_eq!(
+        git_out(&bare, &["rev-parse", &backup_ref]),
+        local_main,
+        "Sicherung backs the half-finished work up to the personal namespace"
+    );
+    // …but the shared main NEVER moved — others can never receive unfinished work as shared state.
+    let shared_after = git_out(&bare, &["rev-parse", SHARED_BRANCH]);
+    assert_eq!(shared_after, shared_before, "Sicherung must NEVER reach shared main");
+    assert_ne!(shared_after, local_main, "the half-finished binary is NOT on shared main");
+}
+
+/// Issue #54 AC: the **Freigabe** publishes AND releases the lock — proven via the Warden's
+/// decision (the safety-critical core). A held, dirty binary at a Meilenstein is the only state
+/// that yields a Freigabe-Push, and that one action both publishes to shared `main` AND releases
+/// the lock. Asserted at the decision boundary because `git lfs` is not assumed installed; the pure
+/// `WardenAction` flags encode the exact carry-out the glue obeys.
+#[test]
+fn freigabe_decision_publishes_and_releases_the_lock_via_warden() {
+    // A held binary with open work, at a Meilenstein → Freigabe-Push (the release).
+    let snap = WardenSnapshot {
+        kind: PathKind::Binary,
+        lock: LockState::HeldByMe,
+        clean: Cleanliness::Dirty,
+        checkpoint: Checkpoint::Meilenstein,
+    };
+    let action = decide(snap);
+    assert_eq!(action, WardenAction::FreigabePush, "held dirty binary at a Meilenstein -> Freigabe");
+    // The one action that publishes to shared main AND, by the same decision, releases the lock.
+    assert!(action.publishes_to_shared_main(), "Freigabe publishes to the shared main");
+    assert!(action.releases_lock(), "Freigabe releases the lock (unlock-at-push)");
+
+    // Conversely, the manual Sicherung (the laufend choice for the same held binary) NEVER does
+    // either — it is the private backup, bound by the Binär-Invariante.
+    let sicherung = decide(WardenSnapshot { checkpoint: Checkpoint::Laufend, ..snap });
+    assert_eq!(sicherung, WardenAction::SicherungsPush, "laufend held binary -> Sicherung");
+    assert!(!sicherung.publishes_to_shared_main(), "Sicherung must never publish");
+    assert!(!sicherung.releases_lock(), "Sicherung must never release the lock");
 }
