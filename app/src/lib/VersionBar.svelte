@@ -1,15 +1,24 @@
 <script lang="ts">
-  import type { ProductView } from "./types";
+  import type { MilestoneArt, ProductView } from "./types";
 
   let {
     product,
     activeMilestone = null,
-  }: { product: ProductView | null; activeMilestone?: string | null } = $props();
+    activeMilestoneArt = null,
+  }: {
+    product: ProductView | null;
+    activeMilestone?: string | null;
+    activeMilestoneArt?: MilestoneArt | null;
+  } = $props();
 
   // The version bar's largest, brightest element is the active Meilenstein (E28/§24):
   // the durable human version. Until a Stand is promoted there is none — say so honestly
   // rather than invent a number.
   let version = $derived(activeMilestone ?? null);
+  // The Art rides next to the version (E42): a released Meilenstein reads as a calm,
+  // muted "Freigabe · schreibgeschützt" — never orange (the toggle is a considered act,
+  // not the laute Ausnahme). A Prototyp is the lax, quiet default.
+  let isFreigabe = $derived(activeMilestoneArt === "freigabe");
 </script>
 
 <header class="bar">
@@ -22,6 +31,21 @@
         <span class="sep">·</span>
         {#if version}
           <span class="version">{version}</span>
+          {#if activeMilestoneArt}
+            <span
+              class="art label"
+              class:freigabe={isFreigabe}
+              title={isFreigabe
+                ? "Freigabe — schreibgeschützt"
+                : "Prototyp — lax"}
+            >
+              {#if isFreigabe}
+                <span class="lock" aria-hidden="true"></span>Freigabe
+              {:else}
+                Prototyp
+              {/if}
+            </span>
+          {/if}
         {:else}
           <span class="version none">— kein Meilenstein —</span>
         {/if}
@@ -117,6 +141,57 @@
     font-weight: 500;
     letter-spacing: 0;
     text-shadow: none;
+  }
+
+  /* Meilenstein-Art chip (E42): a small recessed caps tag next to the version. Prototyp is
+     the quiet, lax default (dim grey). Freigabe reads brighter + a tiny lock glyph — the
+     calm "schreibgeschützt" signal, NOT orange (the toggle is a considered act, never the
+     laute Ausnahme). */
+  .art {
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 9px;
+    color: #7a766f;
+    padding: 2px 7px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  }
+  .art.freigabe {
+    color: var(--screen-fg);
+    background: rgba(232, 230, 225, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(232, 230, 225, 0.22);
+  }
+  /* A tiny padlock drawn in CSS — a shackle arc over a body — so the write-protect reads
+     instantly without a glyph font. */
+  .lock {
+    position: relative;
+    width: 8px;
+    height: 9px;
+    flex: none;
+  }
+  .lock::before {
+    content: "";
+    position: absolute;
+    left: 1px;
+    top: 3px;
+    width: 6px;
+    height: 5px;
+    border-radius: 1px;
+    background: currentColor;
+  }
+  .lock::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 0;
+    width: 4px;
+    height: 5px;
+    border: 1.2px solid currentColor;
+    border-bottom: 0;
+    border-radius: 3px 3px 0 0;
   }
   .idle {
     color: #6b6660;

@@ -32,6 +32,12 @@ export interface Stand extends StandEvent {
   id: number;
 }
 
+/** The Art (kind) of a Meilenstein (Issue #41, E42). A new Meilenstein is "prototyp" (lax)
+ *  by default; the toggle raises it to "freigabe" (streng + write-protected / schreibgeschützt),
+ *  and toggling back is a deliberate reversible "Un-Release". Mirrors `MilestoneArt` in
+ *  src-tauri/src/graph.rs (serde kebab-case). */
+export type MilestoneArt = "prototyp" | "freigabe";
+
 /** A node in the dark "display" version tree (Issue #8).
  *  Mirrors `StandNode` in src-tauri/src/graph.rs. */
 export interface StandNode {
@@ -43,6 +49,8 @@ export interface StandNode {
   path: string;
   /** Human version label if this Stand was promoted to a Meilenstein, else null. */
   milestone: string | null;
+  /** The Meilenstein-Art (Prototyp/Freigabe — E42); null for a plain Stand. (Issue #41) */
+  milestone_art: MilestoneArt | null;
   /** Whether VERSION_NOTES.md text exists for this Meilenstein. */
   has_notes: boolean;
   /** Whether this node's binary content was offloaded to a cold archive (E36). */
@@ -66,6 +74,8 @@ export interface StandNode {
 export interface VersionGraph {
   nodes: StandNode[];
   active_milestone: string | null;
+  /** Art of the active Meilenstein (Prototyp/Freigabe — E42); null if none. (Issue #41) */
+  active_milestone_art: MilestoneArt | null;
   offloaded_archive: string | null;
   /** Name of the active line (Zweig), echoed for the UI marker; null if unknown. */
   active_branch: string | null;
