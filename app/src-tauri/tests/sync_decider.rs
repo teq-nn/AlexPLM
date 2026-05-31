@@ -131,6 +131,36 @@ fn unmergeable_divergence_stops_loudly_without_merging() {
     assert!(no_conflict_markers_in_tree(&anna), "no conflict markers were written");
 }
 
+/// Issue #54-Folge — the „trapped on the orange screen" bug: Anna is strictly AHEAD of the shared
+/// stand (local commits the remote lacks, incl. a new binary) while the remote has changed NOTHING.
+/// There is no real divergence — Anna just needs to publish. A plain `diff HEAD origin/main` would
+/// list her unpushed binary and falsely trip a laute Ausnahme that can never resolve (the merge is
+/// „already up to date"). The sync must stay calm: status „aktuell", NO loud exception, NO merge.
+#[test]
+fn local_strictly_ahead_with_binary_is_aktuell_not_loud() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_bare, anna, _ben) = seed_two_clones(tmp.path());
+
+    // Anna adds local commits the remote does not have — including a brand-new binary — but never
+    // pushes. The remote tip stays the baseline (an ancestor of Anna's HEAD).
+    std::fs::write(anna.join("teil.step"), b"BINARYstep-anna").unwrap();
+    std::fs::write(anna.join("readme.txt"), b"annas notiz\n").unwrap();
+    git(&anna, &["add", "-A"]);
+    git(&anna, &["commit", "-m", "auto: lokal voraus"]);
+    let anna_head_before = head(&anna);
+
+    let outcome = run_sync(&anna, Some("Ben".to_string())).unwrap();
+    assert_eq!(
+        outcome.status,
+        SyncStatus::Aktuell,
+        "local-ahead (remote is an ancestor) must be 'aktuell', never a loud exception: {:?}",
+        outcome.status
+    );
+    // And nothing was merged — Anna's HEAD and her binary are untouched.
+    assert_eq!(head(&anna), anna_head_before, "no merge when there is nothing to pull");
+    assert_eq!(std::fs::read(anna.join("teil.step")).unwrap(), b"BINARYstep-anna");
+}
+
 /// Issue #43, E41 — KiCad source (`.kicad_pcb`): a nominally-textual but factually unmergeable
 /// file that BOTH sides changed must (a) stop loudly, never silently merge into „Missing („
 /// corruption, then (b) once the user answers the loud question, `resolve_sync` must FINISH the

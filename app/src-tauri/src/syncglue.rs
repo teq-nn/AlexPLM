@@ -73,6 +73,16 @@ pub struct SyncOutcome {
 /// the lock owner upstream); `None` falls back to a neutral domain phrase.
 pub fn diverged_paths(root: &Path, other: Option<String>) -> std::io::Result<Vec<DivergedPath>> {
     let remote_ref = format!("{REMOTE_NAME}/{}", resolved_branch(root));
+    // Local strictly ahead (or equal): the remote tip is an ANCESTOR of our HEAD, so it carries
+    // nothing we lack — there is nothing to pull and nothing to contest (Issue #54-Folge). A plain
+    // `diff HEAD <remote>` would still list every file our unpushed local commits added, which the
+    // pure Sync Decider then reads as an unmergeable contradiction → a FALSE laute Ausnahme that can
+    // never resolve (the resolve-merge is „already up to date", leaves no MERGE_HEAD, so the user is
+    // trapped on the orange screen). An ancestor remote is provably conflict-free: treat as no
+    // divergence. The genuine-divergence cases (remote ahead / both ahead) fall through unchanged.
+    if is_ancestor(root, &remote_ref, "HEAD") {
+        return Ok(Vec::new());
+    }
     // Paths that differ between our HEAD and the fetched remote tip. If the remote ref is unknown
     // (never published / offline), there is nothing to diverge against → empty.
     let out = crate::gitrunner::command(root)
@@ -143,6 +153,17 @@ pub fn run_sync(root: &Path, other: Option<String>) -> std::io::Result<SyncOutco
 /// so it can never corrupt a file. Best-effort: an offline/unpublished repo is not an error here.
 fn fetch(root: &Path) -> std::io::Result<()> {
     run_git(root, &["fetch", REMOTE_NAME, &resolved_branch(root)])
+}
+
+/// Whether `ancestor` is an ancestor of `descendant` (so `descendant` already contains every commit
+/// of `ancestor`). Used to detect „local strictly ahead" — an ancestor remote has nothing to pull.
+/// Reads only; a git error (unknown ref, unrelated histories) safely reads back as `false`.
+fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
+    crate::gitrunner::command(root)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Carry out the **silent merge** of the fetched remote stand into the local branch. Only reached
