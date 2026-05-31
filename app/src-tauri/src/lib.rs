@@ -16,6 +16,8 @@ pub mod import;
 pub mod import_gate;
 pub mod lockglue;
 pub mod locks;
+pub mod markerblock;
+pub mod onboardglue;
 pub mod projection;
 pub mod pushglue;
 pub mod registry;
@@ -529,7 +531,11 @@ fn create_product_stack_cmd(
     if !root.is_dir() {
         return Err(format!("Kein Ordner: {product}"));
     }
-    create_product_stack(root, &lib, &baustein_ids, toolstack).map_err(|e| e.to_string())
+    let stack = create_product_stack(root, &lib, &baustein_ids, toolstack).map_err(|e| e.to_string())?;
+    // Tag-1-Pflicht (Issue #48, adressiert #63): idempotente Ignore/LFS-Marker-Blöcke in die
+    // Dotfiles hängen, BEVOR ein Tool seine erste Binärdatei/Müll erzeugt — kein späteres lfs migrate.
+    onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
+    Ok(stack)
 }
 
 /// Read a product's copied Produkt-Stack from `_plm/stack.json` (Issue #39). Pure read; a product
