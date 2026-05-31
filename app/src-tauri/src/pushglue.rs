@@ -131,8 +131,26 @@ pub fn run_checkpoint(
 ) -> std::io::Result<WardenAction> {
     let snap = snapshot_for(root, rel_path, checkpoint)?;
     let action = decide(snap);
-    carry_out(root, rel_path, action)?;
-    Ok(action)
+    // Diagnose (Issue #54-Folge): GENAU hier wird sichtbar, ob überhaupt gepusht werden soll. Ein
+    // `Refuse` bedeutet, dass kein einziges git-Kommando läuft — der häufigste Grund, dass „nichts
+    // gepusht wird", obwohl die Credentials stimmen. Snapshot + Entscheidung werden festgehalten.
+    crate::gitlog::record(
+        "warden",
+        format!(
+            "Checkpoint {rel_path:?} [{checkpoint:?}] kind={:?} lock={:?} clean={:?} -> {action:?}",
+            snap.kind, snap.lock, snap.clean
+        ),
+    );
+    match carry_out(root, rel_path, action) {
+        Ok(()) => {
+            crate::gitlog::record("warden", format!("{action:?} {rel_path:?}: OK"));
+            Ok(action)
+        }
+        Err(e) => {
+            crate::gitlog::record("warden", format!("{action:?} {rel_path:?}: FEHLER — {e}"));
+            Err(e)
+        }
+    }
 }
 
 /// Carry out one already-decided [`WardenAction`] against git/LFS. Pure dispatch over the action;

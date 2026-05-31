@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod edges;
 pub mod edgestore;
 pub mod forgejo;
+pub mod gitlog;
 pub mod gitrunner;
 pub mod graph;
 pub mod graphread;
@@ -830,12 +831,41 @@ fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Das Git-/Sync-Diagnose-Log lesen (Issue #54-Folge) — das In-App-Diagnose-Panel pollt das, um
+/// zu zeigen, **ob und warum** ein Push lief oder nicht (Warden-Entscheidung + reale git-Exits).
+/// Älteste Zeile zuerst, jüngste zuletzt.
+#[tauri::command]
+fn read_git_log() -> Vec<String> {
+    gitlog::snapshot()
+}
+
+/// Den In-Memory-Ring des Diagnose-Logs leeren (die Logdatei bleibt als dauerhaftes Protokoll).
+#[tauri::command]
+fn clear_git_log() {
+    gitlog::clear();
+}
+
+/// Der absolute Pfad der Diagnose-Logdatei, damit das Panel „`tail -f <pfad>`" anbieten kann.
+#[tauri::command]
+fn git_log_path() -> Option<String> {
+    gitlog::file_path().map(|p| p.display().to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState::default())
         .setup(|app| {
+            // Diagnose-Log (Issue #54-Folge) auf den App-Log-Ordner zeigen lassen, damit ein
+            // still scheiternder Push nachvollziehbar wird — im In-App-Panel ODER per `tail -f`.
+            // Best-effort: kein Log-Ordner ⇒ nur In-Memory-Ring, die App startet trotzdem.
+            if let Ok(dir) = app.path().app_log_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                let file = dir.join("git-diagnose.log");
+                eprintln!("Git-Diagnose-Log: {}", file.display());
+                gitlog::set_file(file);
+            }
             // Idempotent, version-gated seeding of the bundled default Bausteine on startup
             // (ADR 0003). A seeding failure must not stop the app from launching — it only means
             // the Bibliothek starts empty/stale; surface it on stderr and carry on.
@@ -864,6 +894,9 @@ pub fn run() {
             connect_server,
             publish_to_server,
             run_checkpoint,
+            read_git_log,
+            clear_git_log,
+            git_log_path,
             sweep_clean_locks,
             sync_product,
             list_bibliothek,

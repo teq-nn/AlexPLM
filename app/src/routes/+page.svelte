@@ -43,6 +43,7 @@
   import ProduktSuche from "$lib/ProduktSuche.svelte";
   import AufgabenListe from "$lib/AufgabenListe.svelte";
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
+  import DiagnoseLog from "$lib/DiagnoseLog.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -218,6 +219,10 @@
   // lives in its own instrument screen reachable from the entry bar — not tied to the open
   // product. The registry it searches stores only paths (never content).
   let sucheOpen = $state(false);
+
+  // Issue #54-Folge — the diagnostic log panel. Off by default (the silent rhythm is untouched);
+  // a quiet toggle in the toolbar opens it so a push that does nothing can be inspected.
+  let diagnoseOpen = $state(false);
 
   /** Read the ceremony state from git (server connected? published?). Best-effort. */
   async function refreshSetup() {
@@ -928,6 +933,18 @@
         <!-- The Lock Warden's two push types in the tool's own vocabulary (Issue #9). -->
         <Sicherungsstatus action={wardenAction} />
 
+        <!-- Diagnose toggle (Issue #54-Folge): a recessed key that opens the git/sync log so a
+             silent push can be inspected. Stays out of the rhythm — closed by default. -->
+        <button
+          class="readout mono diagnose"
+          class:on={diagnoseOpen}
+          title="Diagnose: Sync- & Sicherungs-Protokoll ein-/ausblenden"
+          onclick={() => (diagnoseOpen = !diagnoseOpen)}
+        >
+          <span class="dot" class:fresh={diagnoseOpen}></span>
+          <span class="readout-text">Diagnose</span>
+        </button>
+
         {#if setup}
           <!-- One-time ceremony trigger / settled readout. Git-near wording lives ONLY here. -->
           {#if setup.stage === "eingerichtet"}
@@ -1191,6 +1208,9 @@
   />
 {/if}
 
+<!-- Diagnose-Log (Issue #54-Folge): toggleable git/sync trace so a silent push can be inspected. -->
+<DiagnoseLog open={diagnoseOpen} onClose={() => (diagnoseOpen = false)} />
+
 <style>
   .app {
     display: flex;
@@ -1368,6 +1388,12 @@
     box-shadow:
       inset 0 1px 2px rgba(0, 0, 0, 0.9),
       inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  }
+  /* Diagnose toggle in its open (pressed) state — a recessed, lit readout. */
+  button.readout.diagnose.on {
+    box-shadow:
+      inset 0 1px 3px rgba(0, 0, 0, 0.9),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   }
   /* The "Teilen einrichten" / "Veröffentlichen" key: dark, deliberate — a one-time act. */
   .key.share {
