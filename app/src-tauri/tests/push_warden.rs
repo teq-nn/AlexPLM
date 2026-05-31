@@ -50,6 +50,61 @@ fn seed_product_with_remote(product: &Path, bare: &Path) {
     git(product, &["push", "--set-upstream", "origin", "main"]);
 }
 
+/// A product repo with one commit on `master` (NOT `main`), wired to a bare "remote" whose default
+/// branch is `master` — the imported / fresh-`git init` case from Issue #64. The remote HEAD is
+/// recorded locally (`git remote set-head -a`) just as a real `git clone` would, so the push glue
+/// can resolve the actually-shared branch.
+fn seed_product_with_remote_on_master(product: &Path, bare: &Path) {
+    let out = Command::new("git").args(["init", "--bare", "-b", "master"]).arg(bare).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    git(product, &["init", "-b", "master"]);
+    git(product, &["config", "user.name", "anna"]);
+    git(product, &["config", "user.email", "anna@example.com"]);
+    std::fs::write(product.join("README.md"), b"produkt").unwrap();
+    git(product, &["add", "-A"]);
+    git(product, &["commit", "-m", "init"]);
+    let url = format!("file://{}", bare.display());
+    git(product, &["remote", "add", "origin", &url]);
+    git(product, &["push", "--set-upstream", "origin", "master"]);
+    // Record the remote default branch locally, as a real clone would, so refs/remotes/origin/HEAD
+    // resolves to origin/master.
+    git(product, &["remote", "set-head", "origin", "-a"]);
+}
+
+/// Issue #64: on a repo whose shared branch is `master` (not `main`), a Freigabe-Push must land on
+/// the actually-shared `master` — never a silent `master:main` split — and create no stray `main`.
+#[test]
+fn freigabe_push_lands_on_shared_master_not_main() {
+    let tmp = tempfile::tempdir().unwrap();
+    let product = tmp.path().join("product");
+    let bare = tmp.path().join("remote.git");
+    std::fs::create_dir_all(&product).unwrap();
+    seed_product_with_remote_on_master(&product, &bare);
+
+    // A finished, committed change to publish.
+    std::fs::write(product.join("docs.md"), b"# done").unwrap();
+    git(&product, &["add", "-A"]);
+    git(&product, &["commit", "-m", "auto: docs.md, t"]);
+    let local_master = git_out(&product, &["rev-parse", "master"]);
+
+    // Dirty the text path so the snapshot decides Freigabe at a Meilenstein.
+    std::fs::write(product.join("docs.md"), b"# done, edited").unwrap();
+
+    let action = run_checkpoint(&product, "docs.md", Checkpoint::Meilenstein).unwrap();
+    assert_eq!(action, WardenAction::FreigabePush, "dirty text at a Meilenstein -> Freigabe-Push");
+
+    // The shared branch is `master`, and it advanced to the published commit.
+    let shared_after = git_out(&bare, &["rev-parse", "master"]);
+    assert_eq!(shared_after, local_master, "Freigabe-Push publishes to the shared master");
+
+    // CRUCIAL: no stray `main` was created on the remote — there is no silent master/main split.
+    assert!(
+        !git_ok(&bare, &["rev-parse", "--verify", "main"]),
+        "Freigabe-Push must not create a stray `main` on a master-repo"
+    );
+}
+
 /// A laufender Checkpoint on a dirty text file → Sicherungs-Push: lands in the personal namespace
 /// on the remote and leaves the shared `main` untouched (E35: backup yes, release no).
 #[test]
