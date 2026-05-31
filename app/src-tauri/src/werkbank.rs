@@ -39,6 +39,10 @@ pub struct ArtefaktKarte {
     /// Das Ziel der primären Aktion, **absolut** auf der Platte (Datei- oder Ordnerpfad), damit
     /// die UI es direkt im OS-Standardprogramm öffnen kann. `None` nur im degenerierten Fall.
     pub ziel: Option<String>,
+    /// Der **abgeleitete Karten-Status** + Stale-Flag (Issue #53, E26): live aus Git (Status)
+    /// und Kanten (Stale) berechnet, nie gespeichert. Vom Falten zunächst auf den ruhigen
+    /// Default gesetzt; die Glue [`read_werkbank`] füllt ihn aus echten Git-/Kanten-Fakten.
+    pub projektion: crate::kartenstatus::KartenProjektion,
 }
 
 /// Ein **Unzugeordnet-Fach pro Arbeitsbereich**: die Waisen eines Arbeitsbereichs (oberster
@@ -225,6 +229,8 @@ pub fn build_werkbank_with_overrides(
                 dateien,
                 primaer,
                 ziel,
+                // Ruhiger Default; die Glue ([`enrich_status`]) füllt Status + Stale aus Git/Kanten.
+                projektion: crate::kartenstatus::KartenProjektion::default(),
             }
         })
         .collect();
@@ -239,6 +245,30 @@ pub fn build_werkbank_with_overrides(
         .collect();
 
     WerkbankView { karten, unzugeordnet }
+}
+
+/// **Reiner Kern (Issue #53)**: reichere jede Karte einer [`WerkbankView`] um ihre
+/// [`KartenProjektion`] an — gefalteter Git-Status (E26) + Stale-Flag (E26/E40). `git_states`
+/// ist die produkt-relative Pfad→[`GitFileState`]-Karte (Default `Vorhanden` für unbekannte,
+/// also ruhig erfasste Dateien); `stale_derived` ist die Menge der `derived`-Pfade aller fired
+/// Stale-Warnungen aus [`crate::edges::stale_warnings`]. Total, deterministisch, kein I/O —
+/// dieselbe „lies zurück statt spiegeln"-Haltung wie der ganze Karten-Status (E26).
+pub fn enrich_status(
+    mut view: WerkbankView,
+    git_states: &BTreeMap<String, crate::kartenstatus::GitFileState>,
+    stale_derived: &[String],
+) -> WerkbankView {
+    use crate::kartenstatus::{derive_karten_projektion, GitFileState};
+    for karte in &mut view.karten {
+        // Unbekannte Dateien sind erfasst und ruhig (Vorhanden) — nie lauter als gewusst (E26).
+        let file_states: Vec<GitFileState> = karte
+            .dateien
+            .iter()
+            .map(|d| git_states.get(d).copied().unwrap_or(GitFileState::Vorhanden))
+            .collect();
+        karte.projektion = derive_karten_projektion(&file_states, &karte.dateien, stale_derived);
+    }
+    view
 }
 
 /// Den Glob-Satz aus dem Produkt-Stack ziehen (ADR 0003): je kopiertem Baustein eine Regel + seine
@@ -268,7 +298,58 @@ pub fn read_werkbank(root: &Path) -> std::io::Result<WerkbankView> {
     let regeln = stack_regeln(&stack);
     let tracked = list_tracked_files(root)?;
     let overrides = crate::zuordnungstore::read_overrides(root);
-    Ok(build_werkbank_with_overrides(root, &tracked, &regeln, &overrides))
+    let view = build_werkbank_with_overrides(root, &tracked, &regeln, &overrides);
+
+    // Issue #53: den abgeleiteten Karten-Status + Stale live auflegen — aus Git (Datei-Zustand)
+    // und Kanten (Stale, E26/E40). Beides nur gelesen, nie gespeichert (E26).
+    let git_states = read_git_states(root)?;
+    let stale_derived: Vec<String> = crate::edgestore::read_edge_view(root)
+        .warnings
+        .into_iter()
+        .map(|w| w.derived)
+        .collect();
+    Ok(enrich_status(view, &git_states, &stale_derived))
+}
+
+/// Den **Git-Zustand je erfasster/ignorierter Datei** lesen (`git status --porcelain --ignored`),
+/// produkt-relativ mit Vorwärts-Slashes → [`crate::kartenstatus::GitFileState`]. Das `_plm/`-
+/// Werkzeugverzeichnis (ADR 0002) wird ausgeklammert. Reine Lese-Glue; die Ableitung lebt im
+/// Kern [`crate::kartenstatus`]. Ohne git / sauberes Repo: leere Karte (jede Datei dann ruhig
+/// `Vorhanden`), nie ein Fehler.
+pub fn read_git_states(
+    root: &Path,
+) -> std::io::Result<BTreeMap<String, crate::kartenstatus::GitFileState>> {
+    use crate::kartenstatus::GitFileState;
+    let out = crate::gitrunner::command(root)
+        .args(["status", "--porcelain", "--ignored", "-z"])
+        .output()?;
+    let mut states: BTreeMap<String, GitFileState> = BTreeMap::new();
+    if !out.status.success() {
+        return Ok(states);
+    }
+    // `-z`-Records sind NUL-getrennt; ein Rename-Record hängt den alten Pfad als eigenen
+    // NUL-getrennten Eintrag an. Jeder Record beginnt mit dem 2-Zeichen-XY-Code, dann ein
+    // Leerzeichen, dann der Pfad. Wir lesen XY + Pfad; etwaige Rename-Altpfade ignorieren wir.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut records = stdout.split('\0').peekable();
+    while let Some(record) = records.next() {
+        if record.len() < 3 {
+            continue;
+        }
+        let code = &record[..2];
+        let path = record[3..].replace('\\', "/");
+        // Rename/Copy: der nächste NUL-Record ist der Quellpfad — überspringen.
+        if code.starts_with('R') || code.starts_with('C') {
+            records.next();
+        }
+        if path == crate::stackstore::PLM_DIR
+            || path.starts_with(&format!("{}/", crate::stackstore::PLM_DIR))
+        {
+            continue;
+        }
+        states.insert(path, GitFileState::from_porcelain(code));
+    }
+    Ok(states)
 }
 
 /// Die erfassten Dateien des Produkts, produkt-relativ mit Vorwärts-Slashes. Das committete
@@ -503,5 +584,52 @@ mod tests {
         let mut sb = bereiche.clone();
         sb.sort();
         assert_eq!(bereiche, sb);
+    }
+
+    /// Issue #53: `enrich_status` attaches the derived Karten-Status (folded from per-file Git
+    /// states, E26) and the orthogonal Stale flag (from edges, E26/E40) onto each card. A card
+    /// with no Git facts stays the ruhige `Vorhanden`; a louder file makes the whole card loud;
+    /// stale rides alongside and needs an edge (no edge → not stale).
+    #[test]
+    fn enrich_status_folds_git_and_stale_onto_each_card() {
+        use crate::kartenstatus::{GitFileState, KartenStatus};
+        let tracked: Vec<String> = [
+            "elektronik/regler/regler.kicad_pro",
+            "elektronik/regler/regler.kicad_pcb",
+            "mechanik/g/g.f3d",
+            "doku/handbuch.md",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let view = build_werkbank(root(), &tracked, &stack());
+
+        // One kicad file is geändert → the kicad card is loud; the .f3d is gone → mechanik fehlt;
+        // doku has no git fact → ruhig Vorhanden. mechanik's g.f3d is the derived end of an edge.
+        let mut git = BTreeMap::new();
+        git.insert("elektronik/regler/regler.kicad_pcb".to_string(), GitFileState::Geaendert);
+        git.insert("mechanik/g/g.f3d".to_string(), GitFileState::Fehlt);
+        let stale_derived = vec!["mechanik/g/g.f3d".to_string()];
+
+        let enriched = enrich_status(view, &git, &stale_derived);
+        let karte = |id_prefix: &str| {
+            enriched
+                .karten
+                .iter()
+                .find(|k| k.artefakt_id.starts_with(id_prefix))
+                .unwrap_or_else(|| panic!("no card {id_prefix}"))
+        };
+
+        // kicad: one geänderte Datei makes the whole card laut; no edge → not stale.
+        assert_eq!(karte("kicad:").projektion.status, KartenStatus::Geaendert);
+        assert!(!karte("kicad:").projektion.stale);
+
+        // mechanik: file fehlt → Fehlt; AND it sits at the derived end of an edge → stale.
+        assert_eq!(karte("fusion:").projektion.status, KartenStatus::Fehlt);
+        assert!(karte("fusion:").projektion.stale, "edge present + flagged → stale");
+
+        // doku: no git fact at all → ruhig Vorhanden, not stale.
+        assert_eq!(karte("doku:").projektion.status, KartenStatus::Vorhanden);
+        assert!(!karte("doku:").projektion.stale);
     }
 }

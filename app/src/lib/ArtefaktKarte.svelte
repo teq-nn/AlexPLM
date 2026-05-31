@@ -52,12 +52,46 @@
   const opensFile = $derived(karte.primaer === "datei");
   const actionLabel = $derived(opensFile ? "öffnen" : "Ordner öffnen");
   const extra = $derived(Math.max(0, karte.dateien.length - 1));
+
+  // Derived Karten-Status + Stale (Issue #53, E26): live from Git + Kanten, never stored. The
+  // card is "im Alltag fast stumm, laut erst am Meilenstein-Check" — so routine stays grey and
+  // orange is NOT spent here. `vorhanden` is silent (no line). The louder "prüf-mich" cases
+  // (geaendert/fehlt) earn a quiet status line; `uebernommen` is a faint hint, `ignoriert` dims.
+  const projektion = $derived(karte.projektion);
+  // The German status word, stated honestly (the tool says only what it knows — E26/E30).
+  const statusWort = $derived(
+    {
+      vorhanden: "vorhanden",
+      geaendert: "geändert",
+      fehlt: "fehlt",
+      uebernommen: "neu",
+      ignoriert: "ignoriert",
+    }[projektion.status],
+  );
+  // Only the "prüf-mich" cases get a visible status line; vorhanden is the silent normal case.
+  const showStatus = $derived(
+    projektion.status === "geaendert" || projektion.status === "fehlt",
+  );
+  // A quiet, recessed hint chip for the soft states — never a line, never loud.
+  const hintChip = $derived(
+    projektion.status === "uebernommen"
+      ? "neu"
+      : projektion.status === "ignoriert"
+        ? "ignoriert"
+        : null,
+  );
 </script>
 
 <article class="card" class:locked={lockedByOther} style:--i={index}>
   <div class="head">
     <Led status={led} title={ledTitle} />
     <h2 class="label name">{karte.baustein}</h2>
+    {#if hintChip}
+      <!-- Soft state hint: a quiet, recessed Mono chip. "neu" = übernommen, dimmed = ignoriert. -->
+      <span class="mono hint" class:dimmed={projektion.status === "ignoriert"} title={statusWort}>
+        {hintChip}
+      </span>
+    {/if}
     {#if extra > 0}
       <span class="mono count" title={`${karte.dateien.length} Dateien in diesem Artefakt`}>
         +{extra}
@@ -79,6 +113,23 @@
         gesperrt von <span class="who">{signal.locked_by}</span>
         {#if signal.locked_at}
           <span class="since">seit {signal.locked_at}</span>
+        {/if}
+      </div>
+    {/if}
+
+    {#if showStatus || projektion.stale}
+      <!-- The derived "prüf-mich" line (Issue #53, E26): grey in daily use — routine is grey,
+           orange stays rationed for the Meilenstein-check. A card can be vorhanden AND stale. -->
+      <div class="statusline mono">
+        {#if showStatus}
+          <span class="dot" aria-hidden="true"></span>
+          <span class="word">{statusWort}</span>
+        {/if}
+        {#if projektion.stale}
+          <span class="dot" aria-hidden="true"></span>
+          <span class="word stale" title="Quelle neuer als die Ableitung — am Meilenstein prüfen">
+            veraltet?
+          </span>
         {/if}
       </div>
     {/if}
@@ -158,6 +209,19 @@
     border-radius: 99px;
     padding: 1px 7px;
   }
+  /* Soft-state hint chip ("neu" / "ignoriert") — same recessed shape as .count, never loud. */
+  .hint {
+    flex: none;
+    font-size: 10px;
+    color: var(--ink-muted);
+    background: var(--surface-sunken);
+    border-radius: 99px;
+    padding: 1px 7px;
+  }
+  /* Ignored is the silent out-of-band case — dim it further so it recedes from the eye. */
+  .hint.dimmed {
+    opacity: 0.6;
+  }
 
   .body {
     display: flex;
@@ -197,6 +261,34 @@
   }
   .lockline .since {
     color: var(--ink-muted);
+  }
+
+  /* Derived "prüf-mich" status line (Issue #53): a quiet grey readout under the body. Routine
+     is grey — orange is rationed for the Meilenstein-check, NOT spent on a card in daily use. */
+  .statusline {
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+  /* A small "active" LED dot, grey like the in-progress lock LED — present but never alarming. */
+  .statusline .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--led-working);
+    flex: none;
+  }
+  .statusline .word {
+    color: var(--ink-default);
+  }
+  /* "veraltet?" rides alongside the git status; same calm grey, a touch quieter (a question,
+     not an alarm — the loud moment is the Meilenstein-check, out of this slice's scope). */
+  .statusline .word.stale {
+    color: var(--ink-muted);
+    font-style: italic;
   }
 
   .foot {

@@ -331,6 +331,28 @@ export interface ProduktStack {
  *  program; `ordner` → open the folder. Mirrors `PrimaerAktion` in src-tauri/src/zuordnung.rs. */
 export type PrimaerAktion = "datei" | "ordner";
 
+/** The live, derived Artefakt-Karten-Status from Git (Issue #53, E26) — never stored, always
+ *  read back. Mirrors `KartenStatus` in src-tauri/src/kartenstatus.rs (serde kebab-case). The
+ *  card is "im Alltag fast stumm": `vorhanden` is the quiet normal case, `geaendert`/`fehlt` are
+ *  the loud "prüf-mich" cases, `uebernommen` a quiet hint, `ignoriert` the silent out-of-band one.
+ *  Note the misspelling-free tokens follow the Rust enum names (ä → ae). */
+export type KartenStatus =
+  | "vorhanden"
+  | "geaendert"
+  | "fehlt"
+  | "uebernommen"
+  | "ignoriert";
+
+/** The derived card projection (Issue #53): the folded Git status PLUS the orthogonal Stale flag.
+ *  `status` comes from Git, `stale` from Kanten (E26/E40: no edge ⇒ never stale). A quiet
+ *  "vorhanden" card can still be stale. Mirrors `KartenProjektion` in src-tauri/src/kartenstatus.rs.
+ *  This is the shape #55 (filters) and #56 (edges) consume. */
+export interface KartenProjektion {
+  status: KartenStatus;
+  /** True iff a Hand-Kante exists and a source is newer than this derivation (E26/E40). */
+  stale: boolean;
+}
+
 /** An Artefakt-Karte built by convention from tracked files. Mirrors `ArtefaktKarte` in
  *  src-tauri/src/werkbank.rs. */
 export interface ArtefaktKarte {
@@ -348,6 +370,8 @@ export interface ArtefaktKarte {
   primaer: PrimaerAktion;
   /** Absolute on-disk target of the primary action (file or folder), for OS-default open. */
   ziel: string | null;
+  /** Live, derived Karten-Status + Stale flag (Issue #53, E26) — from Git + Kanten, never stored. */
+  projektion: KartenProjektion;
 }
 
 /** An Unzugeordnet-Fach per Arbeitsbereich: the Waisen (tracked files lacking a label). Nothing is

@@ -17,6 +17,7 @@ pub mod graph;
 pub mod graphread;
 pub mod import;
 pub mod import_gate;
+pub mod kartenstatus;
 pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
