@@ -177,29 +177,24 @@ in eine v2-PRD übernommen werden.
 
 ---
 
-## 3. Echte Reconciliations (nicht nur Hinzufügen — hier widersprechen sich Sitzungen)
+## 3. Echte Reconciliations — **entschieden in Sitzung 6 (E42–E43)**
 
-### 3.1 Branch-Strenge (E15) ⟂ „beide auf `main`" (E34) — *muss gegrillt werden*
-E15s Aufgaben-Strenge ist an **Branch-Typen** (Prototyp lasch / Production streng) verankert; E34/E32
-verlegen den Alltag auf **ein gemeinsames `main`** ohne personengebundene Branches und machen den
-**Meilenstein** zum strengen Akt. Im `main`-Modell gibt es kein „Production-Branch" mehr als Träger
-der Strenge. **Offene Frage für v2:** Strenge an den **Freigabe-Akt** (E28/E32) statt an den
-Branch-Typ hängen; „Prototyp vs. Production" wird zur Eigenschaft des **Meilensteins/Tags**, nicht
-des Branches. Branches bleiben nur noch bewusste Varianten (E27). Das ist eine bewusste Entscheidung,
-kein reines Übernehmen.
+### 3.1 Branch-Strenge (E15) ⟂ „beide auf `main`" (E34) — ✅ **E42**
+Strenge wandert vom **Branch-Typ** auf die **Meilenstein-Art**: neuer Meilenstein = Prototyp (lax),
+ein **Toggle** hebt ihn auf Freigabe (streng, feuert dann den dreistufigen Block E19 und
+schreibschützt). Der „Merge nach Production"-Auslöser entfällt; der Meilenstein ist der **einzige**
+strenge Checkpoint. Details in `entscheidungslog-5.md` E42.
 
-### 3.2 „Git darf durchscheinen" (E6) ⟂ „git nie sichtbar" (E33/E39/E41)
-E6 (Sitzung 2): Gits **Denkmodell** — Commit, Branch, Tag, History-Graph, Abstammung — **darf**
-sichtbar sein; nur das gefährliche „Wie" (stash/reset/rebase/migrate) wird versteckt. Sitzung 4/5
-(E33/E39/E41) verschärft: **keine git-Substantive** (push/pull/commit/merge) im Alltag. Die PRD
-übernimmt die **strenge** Linie — korrekt für den *täglichen* Fluss (E41: einen täglichen Reflex
-versteckt man nicht nachträglich). **Aber E6s Nuance darf nicht verloren gehen:** die *Konzepte*
-Graph/Meilenstein/Variante/Abstammung **bleiben sichtbar** — in **Domänensprache** (Stand,
-Meilenstein, Variante, „abgeleitet von"), nur die git-**Wörter und -Beschwörungen** verschwinden.
-Sonst „überversteckt" v2 (z. B. Varianten-Branches aus E27/E32 unsichtbar machen). **In die v2-PRD
-als ausdrückliche Leitregel aufnehmen.**
+### 3.2 Git-Sichtbarkeit — ✅ **E43 (Revision: zurück zu E6)**
+**Umgekehrt zur ursprünglichen Empfehlung dieses Dokuments.** Basis-Git-Vokabular (commit, branch,
+tag, merge, push, pull, Graph) ist **sichtbar**; versteckt bleibt nur die **gefährliche Mechanik**
+(reset/rebase/stash/migrate/Konfliktmarker/Lock-Plumberei). E33 wird umgeschrieben (kein „Git-Client"-
+Verbot mehr, sondern „ehrlich auf git, nur die gefährliche Mechanik verstecken"); E39/E41-Vokabular,
+`ui-stilbeschreibung` §7/§125 und PRD-US #21/#43–#49 werden entsprechend revidiert. **Täglicher Sync
+wird manuell (Push-/Pull-Button)**; Auto-Commit bleibt still; die zwei Push-Arten bleiben (Sicherung =
+Button, Freigabe = Meilenstein-Toggle). Details in E43.
 
-### 3.3 Kanten dreistufig (E20) ⟂ „v1 rein manuell" (E40)
+### 3.3 Kanten dreistufig (E20) ⟂ „v1 rein manuell" (E40) — bestätigt
 Die PRD wählt für v1 **korrekt** E40 (nur Hand-Kanten). **Aber** die **Baustein-Default-** und
 **Baustein-Paar-Default-Kanten** (E20) sind Teil des Baustein-Modells (1.1). **Sobald Bausteine in
 v2 kommen, kommen diese Kanten-Herkünfte mit** — die `Edge Logic` muss dann Default-/Paar-Kanten aus
@@ -274,11 +269,12 @@ haben es angefasst → bewusste v2-Entscheidung nötig).
 | §27/§28 Datenmodell + JSON-Beispiele | TEILS ÜBERHOLT | Git trägt Branch/Version/Abstammung; `branches.json`/`created_from`/`version.json.status` tot. v2: `_plm`-Schema neu (1.5). |
 | §30 „nicht im MVP: Git-Integration" / §31 „später: Git-Integration" | INVERTIERT | E2 macht **Git zum Fundament** — das ehemalige „später" ist jetzt der Motor. Nur als historische Notiz relevant. |
 
-**Die drei wirklich offenen §-Punkte für v2** (nie nachgegrillt, in keiner Quelle entschieden):
-1. **Tags (§26.2)** — rein oder raus? Tragende Frage, weil Tags quer über alle Objekte lägen.
-2. **Filter (§26.1)** — welche Filtermenge, wo (Werkbank/Suche)?
-3. **Haupt-/Zusatzdatei-Aktionsmodell (§12)** — die Artefakt-Karte braucht „primäre Aktion"
-   (Datei/Ordner/Exportpaket öffnen); nur halb in der Baustein-„Öffnen-Aktion" gefangen.
+**Die drei zuvor offenen §-Punkte — ✅ entschieden in Sitzung 6:**
+1. **Tags (§26.2)** — **gestrichen (E44).** Lösen sich in Meilenstein-Art / Task / Artefakt /
+   Variante / Produktbeschreibung auf; nur ein dünnes produkt-only Label bleibt geparkt.
+2. **Filter (§26.1)** — **minimal (E45).** Graph-Raum + Suche in v2; Werkbank-Status-Filter vertagt.
+3. **Haupt-/Zusatzdatei-Aktionsmodell (§12)** — **abgeleitet (E46).** Hauptdatei aus Glob-Priorität
+   des Bausteins, Aktion abgeleitet (Datei → öffnen, sonst Ordner), kein gespeicherter Rollen-Status.
 
 ---
 
