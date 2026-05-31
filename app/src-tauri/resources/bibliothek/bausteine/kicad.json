@@ -1,0 +1,24 @@
+{
+  "id": "kicad",
+  "version": 1,
+  "name": "KiCad",
+  "heimat": "elektronik",
+  "globs": [
+    "*.kicad_pro",
+    "*.kicad_sch",
+    "*.kicad_pcb"
+  ],
+  "ignore": [
+    "*-backups/",
+    "*.kicad_pcb-bak",
+    "*.kicad_sch-bak",
+    "*.kicad_pro-bak",
+    "*.autosave",
+    "fp-info-cache"
+  ],
+  "lfs": [],
+  "oeffnen": "auto",
+  "startaufgaben": [],
+  "default_kanten": [],
+  "stillgelegt": false
+}

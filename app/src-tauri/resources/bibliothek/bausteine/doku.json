@@ -1,0 +1,18 @@
+{
+  "id": "doku",
+  "version": 1,
+  "name": "Doku",
+  "heimat": "doku",
+  "globs": [
+    "*.md",
+    "*.pdf"
+  ],
+  "ignore": [],
+  "lfs": [
+    "*.pdf"
+  ],
+  "oeffnen": "auto",
+  "startaufgaben": [],
+  "default_kanten": [],
+  "stillgelegt": false
+}

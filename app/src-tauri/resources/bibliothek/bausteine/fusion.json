@@ -1,0 +1,30 @@
+{
+  "id": "fusion",
+  "version": 1,
+  "name": "Fusion 360",
+  "heimat": "mechanik",
+  "globs": [
+    "*.f3d",
+    "*.f3z",
+    "*.step",
+    "*.stp",
+    "*.stl"
+  ],
+  "ignore": [],
+  "lfs": [
+    "*.f3d",
+    "*.f3z",
+    "*.step",
+    "*.stp",
+    "*.stl"
+  ],
+  "oeffnen": "auto",
+  "startaufgaben": [],
+  "default_kanten": [
+    {
+      "derived_glob": "*.stl",
+      "source_glob": "*.f3d"
+    }
+  ],
+  "stillgelegt": false
+}

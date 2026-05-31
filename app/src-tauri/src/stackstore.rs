@@ -1,0 +1,204 @@
+//! Produkt-Stack-Speicher — die Anti-Drift-Vollkopie in `_plm/stack.json` (Issue #39, ADR 0002/0003).
+//!
+//! Beim Anlegen/Konfigurieren eines Produkts wird der gewählte Toolstack als **vollständige,
+//! selbsttragende Kopie** nach `<produkt>/_plm/stack.json` geschrieben. Jede Kopie trägt einen
+//! Herkunfts-Stempel `{from: id, version}` — **nur** für Anzeige/„Update verfügbar", **kein**
+//! Live-Link. Eine spätere Bibliotheks-Änderung erreicht das Produkt **nie** (harte Anti-Drift).
+//!
+//! Glue wie `edgestore.rs`: alles I/O hier, das Modell ist rein (`baustein.rs`). Lesemuster:
+//! fehlende/leere/korrupte Datei ⇒ leerer Stack, nie Fehler; geschrieben wird pretty-printed JSON.
+
+use crate::baustein::Baustein;
+use crate::bibliothek::Bibliothek;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// `_plm`-Verzeichnis (committet, geteilt — ADR 0002). `projection.rs` überspringt es.
+pub const PLM_DIR: &str = "_plm";
+/// Datei für den Produkt-Stack innerhalb von `_plm/`.
+pub const STACK_FILE: &str = "stack.json";
+
+/// Herkunfts-Stempel einer kopierten Baustein-Definition: aus welchem Bibliotheks-Baustein
+/// (`from`) und in welcher `version` sie kopiert wurde. Nur Anzeige; kein Live-Link (ADR 0003).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Herkunft {
+    /// Bibliotheks-`id`, aus der kopiert wurde.
+    pub from: String,
+    /// Version zum Zeitpunkt des Kopierens.
+    pub version: u32,
+}
+
+/// Eine Baustein-Vollkopie im Produkt-Stack: die ganze Definition **plus** Herkunfts-Stempel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackBaustein {
+    /// Herkunfts-Stempel (Anzeige/„Update verfügbar"); kein Live-Link.
+    pub herkunft: Herkunft,
+    /// Die vollständige, selbsttragende Kopie der Baustein-Definition.
+    #[serde(flatten)]
+    pub baustein: Baustein,
+}
+
+impl StackBaustein {
+    /// Eine selbsttragende Kopie eines Bibliotheks-Bausteins mit Herkunfts-Stempel.
+    pub fn copy_of(b: &Baustein) -> Self {
+        StackBaustein {
+            herkunft: Herkunft { from: b.id.clone(), version: b.version },
+            baustein: b.clone(),
+        }
+    }
+}
+
+/// Der Produkt-Stack: die kopierten Bausteine eines Produkts. Vollständig selbsttragend; das
+/// Produkt funktioniert auch ohne Bibliothek (ADR 0003).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProduktStack {
+    /// Optionaler Herkunfts-Name des gewählten Toolstacks (Anzeige).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolstack: Option<String>,
+    /// Die kopierten Bausteine (Vollkopie je + Stempel).
+    pub bausteine: Vec<StackBaustein>,
+}
+
+/// Pfad von `_plm/stack.json` für ein Produkt `root`.
+fn stack_path(root: &Path) -> PathBuf {
+    root.join(PLM_DIR).join(STACK_FILE)
+}
+
+/// Den Produkt-Stack lesen. Fehlende/leere/korrupte Datei ⇒ **leerer Stack**, nie Fehler.
+pub fn read_stack(root: &Path) -> ProduktStack {
+    let raw = std::fs::read_to_string(stack_path(root)).unwrap_or_default();
+    if raw.trim().is_empty() {
+        return ProduktStack::default();
+    }
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// Den Produkt-Stack pretty-printed nach `_plm/stack.json` schreiben (legt `_plm/` an).
+pub fn write_stack(root: &Path, stack: &ProduktStack) -> std::io::Result<()> {
+    std::fs::create_dir_all(root.join(PLM_DIR))?;
+    let json = serde_json::to_string_pretty(stack).map_err(std::io::Error::other)?;
+    std::fs::write(stack_path(root), json)
+}
+
+/// Einen Produkt-Stack aus gewählten Bibliotheks-Bausteinen als **Vollkopie** in das Produkt
+/// schreiben (ADR 0003). Die Bausteine werden aus der `lib` gelesen und vollständig kopiert; eine
+/// unbekannte `id` wird übersprungen (das Produkt trägt nur, was real existiert). `toolstack` ist
+/// der Anzeige-Name des gewählten Stacks (optional). Gibt den geschriebenen Stack zurück.
+pub fn create_product_stack(
+    root: &Path,
+    lib: &Bibliothek,
+    baustein_ids: &[String],
+    toolstack: Option<String>,
+) -> std::io::Result<ProduktStack> {
+    let bausteine = baustein_ids
+        .iter()
+        .filter_map(|id| lib.read_baustein(id))
+        .map(|b| StackBaustein::copy_of(&b))
+        .collect();
+    let stack = ProduktStack { toolstack, bausteine };
+    write_stack(root, &stack)?;
+    Ok(stack)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::baustein::{Baustein, Oeffnen, Toolstack};
+
+    fn baustein(id: &str, version: u32, heimat: &str) -> Baustein {
+        Baustein {
+            id: id.to_string(),
+            version,
+            name: id.to_string(),
+            heimat: heimat.to_string(),
+            globs: vec!["*.x".to_string()],
+            ignore: vec![],
+            lfs: vec![],
+            oeffnen: Oeffnen::Auto,
+            startaufgaben: vec![],
+            default_kanten: vec![],
+            stillgelegt: false,
+        }
+    }
+
+    fn tmp() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "plm-stack-ut-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn missing_stack_reads_as_empty() {
+        let dir = tmp();
+        assert!(read_stack(&dir).bausteine.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_stack_degrades_to_empty() {
+        let dir = tmp();
+        std::fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
+        std::fs::write(stack_path(&dir), "{ not json ]").unwrap();
+        assert!(read_stack(&dir).bausteine.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_carries_full_definition_and_provenance() {
+        let b = baustein("kicad", 3, "elektronik");
+        let copy = StackBaustein::copy_of(&b);
+        assert_eq!(copy.herkunft, Herkunft { from: "kicad".to_string(), version: 3 });
+        assert_eq!(copy.baustein, b);
+
+        // round-trips through JSON (flatten keeps the Baustein fields at top level next to herkunft)
+        let json = serde_json::to_string_pretty(&copy).unwrap();
+        assert!(json.contains("\"herkunft\""));
+        assert!(json.contains("\"globs\""));
+        let back: StackBaustein = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, copy);
+    }
+
+    #[test]
+    fn create_product_stack_copies_chosen_bausteine() {
+        let dir = tmp();
+        let libdir = tmp();
+        let lib = Bibliothek::new(&libdir);
+        lib.seed_from(
+            &[baustein("kicad", 1, "elektronik"), baustein("fusion", 1, "mechanik")],
+            &[Toolstack {
+                id: "standard-hw".to_string(),
+                name: "Standard".to_string(),
+                baustein_ids: vec!["kicad".to_string(), "fusion".to_string()],
+            }],
+        )
+        .unwrap();
+
+        let stack = create_product_stack(
+            &dir,
+            &lib,
+            &["kicad".to_string(), "fusion".to_string(), "ghost".to_string()],
+            Some("standard-hw".to_string()),
+        )
+        .unwrap();
+
+        // unknown "ghost" id skipped; the two real ones copied in order
+        assert_eq!(stack.bausteine.len(), 2);
+        assert_eq!(stack.bausteine[0].baustein.id, "kicad");
+        assert_eq!(stack.bausteine[1].baustein.id, "fusion");
+        assert_eq!(stack.toolstack.as_deref(), Some("standard-hw"));
+
+        // re-read from disk equals what we wrote
+        assert_eq!(read_stack(&dir), stack);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&libdir);
+    }
+}

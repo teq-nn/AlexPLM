@@ -227,3 +227,87 @@ export type SyncStatus =
 export interface SyncOutcome {
   status: SyncStatus;
 }
+
+// Baustein-Modell & Bibliothek (Issue #39, ADR 0002/0003). A Baustein bundles per-tool knowledge;
+// the Bibliothek is the shared template source; a Produkt-Stack is a self-contained ANTI-DRIFT
+// copy in `_plm/stack.json`. Lockability is NOT a Baustein field (it lives in the classifier).
+
+/** Öffnen-Aktion of an artifact card. Mirrors `Oeffnen` in src-tauri/src/baustein.rs.
+ *  `auto` → dominant file else folder (PRD §14). */
+export type Oeffnen = "auto" | "datei" | "ordner";
+
+/** Art of a Startaufgabe: Aufgabe (mandatory, can block) vs Hinweis (never blocks) — PRD §27.
+ *  Mirrors `AufgabenTyp` in src-tauri/src/baustein.rs. */
+export type AufgabenTyp = "aufgabe" | "hinweis";
+
+/** A Startaufgabe seeded when a Baustein is onboarded. Mirrors `Startaufgabe` in baustein.rs. */
+export interface Startaufgabe {
+  titel: string;
+  typ: AufgabenTyp;
+  /** Whether this hard-blocks the Freigabe-Gate. Always false for a Hinweis. */
+  blockiert: boolean;
+}
+
+/** An internal Default-Kante: a derived glob „stammt aus" a source glob. Pattern-based (PRD §13).
+ *  Mirrors `DefaultKante` in src-tauri/src/baustein.rs. */
+export interface DefaultKante {
+  derived_glob: string;
+  source_glob: string;
+}
+
+/** A reusable per-tool Baustein. Mirrors `Baustein` in src-tauri/src/baustein.rs. */
+export interface Baustein {
+  /** Stable kebab id, e.g. "kicad". */
+  id: string;
+  /** Monotone integer version; carries the version-gated seeding (ADR 0003). */
+  version: number;
+  name: string;
+  /** Default Heimat-Ordner (Arbeitsbereich), e.g. "elektronik". */
+  heimat: string;
+  /** Artefakt-Globs, ORDERED: [0] is the Hauptdatei rule. */
+  globs: string[];
+  /** Ignore presets (marker-block lines for .gitignore). */
+  ignore: string[];
+  /** LFS patterns (marker-block lines for .gitattributes). */
+  lfs: string[];
+  oeffnen: Oeffnen;
+  startaufgaben: Startaufgabe[];
+  default_kanten: DefaultKante[];
+  /** Label-only stillgelegt (PRD §10). */
+  stillgelegt: boolean;
+}
+
+/** A named, ordered selection of Baustein ids. Mirrors `Toolstack` in src-tauri/src/baustein.rs. */
+export interface Toolstack {
+  id: string;
+  name: string;
+  baustein_ids: string[];
+}
+
+/** The local Bibliothek as returned by `list_bibliothek`. Mirrors `BibliothekView` in lib.rs. */
+export interface BibliothekView {
+  bausteine: Baustein[];
+  toolstacks: Toolstack[];
+}
+
+/** Provenance stamp of a copied Baustein: from which Bibliothek id + version it was copied.
+ *  Display only — NO live link (ADR 0003). Mirrors `Herkunft` in src-tauri/src/stackstore.rs. */
+export interface Herkunft {
+  from: string;
+  version: number;
+}
+
+/** A Baustein full-copy inside the Produkt-Stack: the whole definition (flattened) plus its
+ *  provenance stamp. Mirrors `StackBaustein` in src-tauri/src/stackstore.rs. */
+export interface StackBaustein extends Baustein {
+  herkunft: Herkunft;
+}
+
+/** A product's copied Produkt-Stack in `_plm/stack.json` — the anti-drift copy (ADR 0002/0003).
+ *  Self-contained; a later Bibliothek edit never reaches it. Mirrors `ProduktStack` in
+ *  src-tauri/src/stackstore.rs. */
+export interface ProduktStack {
+  /** Optional display name of the chosen standard Toolstack. */
+  toolstack?: string;
+  bausteine: StackBaustein[];
+}
