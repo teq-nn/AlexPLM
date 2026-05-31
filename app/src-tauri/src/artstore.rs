@@ -14,14 +14,14 @@ use crate::graph::MilestoneArt;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// File that holds the per-tag Meilenstein-Art map, in the product root. Dotfile so the
-/// `projection.rs` walk (which skips hidden entries) never mistakes it for a Baustein, and
-/// prefixed `.plm-` like the sibling edge store.
-pub const ART_FILE: &str = ".plm-meilenstein-art.json";
+/// The tool's committed, shared store directory (ADR 0002). `projection.rs` skips it by name.
+pub const PLM_DIR: &str = "_plm";
+/// File that holds the per-tag Meilenstein-Art map, inside `_plm/` (ADR 0002).
+pub const ART_FILE: &str = "meilensteine.json";
 
-/// Absolute path of the Art store for a product `root`.
+/// Absolute path of the `_plm/meilensteine.json` Art store for a product `root`.
 fn art_path(root: &Path) -> PathBuf {
-    root.join(ART_FILE)
+    root.join(PLM_DIR).join(ART_FILE)
 }
 
 /// Read the whole version-label -> Art-token map. A missing/empty/corrupt file means an
@@ -37,6 +37,7 @@ fn read_map(root: &Path) -> BTreeMap<String, String> {
 /// Persist the map, pretty-printed for an honest, diffable on-disk record (BTreeMap keeps the
 /// keys ordered so the file stays stable across writes).
 fn write_map(root: &Path, map: &BTreeMap<String, String>) -> std::io::Result<()> {
+    std::fs::create_dir_all(root.join(PLM_DIR))?;
     let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
     std::fs::write(art_path(root), json)
 }
@@ -104,8 +105,20 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_prototyp() {
         let dir = tmp();
+        fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
         fs::write(art_path(&dir), "{ not json ]").unwrap();
         assert_eq!(read_art(&dir, "v1.0"), MilestoneArt::Prototyp);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_to_the_new_plm_location() {
+        let dir = tmp();
+        set_art(&dir, "v1.0", MilestoneArt::Freigabe).unwrap();
+        assert!(
+            dir.join(PLM_DIR).join(ART_FILE).is_file(),
+            "milestone art lives in _plm/meilensteine.json"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
