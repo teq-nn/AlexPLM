@@ -1,0 +1,3 @@
+# Build-Abhängigkeiten für das Handbuch (MkDocs Material).
+# Installieren mit:  pip install -r docs-tooling/requirements.txt
+mkdocs-material>=9.5,<10
