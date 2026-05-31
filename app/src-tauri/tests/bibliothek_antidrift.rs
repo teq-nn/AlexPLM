@@ -26,6 +26,7 @@ fn baustein(id: &str, version: u32, heimat: &str, glob: &str) -> Baustein {
         oeffnen: Oeffnen::Auto,
         startaufgaben: vec![],
         default_kanten: vec![],
+        paar_default_kanten: vec![],
         stillgelegt: false,
     }
 }
