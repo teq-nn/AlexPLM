@@ -14,6 +14,17 @@ use serde::Deserialize;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 
+/// One held-by-me lock that an auto-unlock sweep examined, with the action the Warden decided and
+/// whether the lock was actually released. Surfaced so the caller (and a test) can see exactly
+/// which clean paths were freed at a checkpoint without re-deriving the decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweptLock {
+    /// Product-relative path the lock was on.
+    pub path: String,
+    /// True iff the path was locally clean and the lock was released by this sweep.
+    pub released: bool,
+}
+
 /// Shape of one entry in `git lfs locks --json`. We only read the fields we render.
 #[derive(Debug, Deserialize)]
 struct RawLock {
@@ -131,18 +142,95 @@ pub fn acquire_lock(root: &Path, rel_path: &str) -> std::io::Result<bool> {
     let mut cmd = crate::gitrunner::command(root);
     cmd.args(["lfs", "lock", rel_path]);
     let out = crate::gitrunner::output_bounded(&mut cmd)?;
-    if out.status.success() {
-        return Ok(true);
-    }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    // "already created lock" / "already locked" by us is fine — the file is locked, job done.
-    if stderr.contains("already") {
+    let acquired = out.status.success() || {
+        // "already created lock" / "already locked" by us is fine — the file is locked, job done.
+        String::from_utf8_lossy(&out.stderr).contains("already")
+    };
+    if acquired {
+        // The lock is ours now → the file becomes writable *for me* (read-only = free, Issue #42).
+        // Best-effort: a permission flip failing must never turn a successful lock into an error.
+        let _ = set_writable(root, rel_path);
         return Ok(true);
     }
     Err(Error::new(
         ErrorKind::Other,
-        format!("git lfs lock {rel_path} failed: {}", stderr.trim()),
+        format!(
+            "git lfs lock {rel_path} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
     ))
+}
+
+/// Make a lockable artifact **writable for me** — the on-disk side of taking the lock (Issue #42:
+/// "the act of editing/locking makes the file writable for me"). No-op for a non-lockable path or
+/// a missing file; best-effort, never fails loudly (the lock, not the bit, is the source of truth).
+pub fn set_writable(root: &Path, rel_path: &str) -> std::io::Result<()> {
+    set_read_only_bit(root, rel_path, false)
+}
+
+/// Make a lockable artifact **read-only** — the resting state of a free binary (Issue #42:
+/// "read-only = free"). No-op for a non-lockable path or a missing file.
+pub fn set_read_only(root: &Path, rel_path: &str) -> std::io::Result<()> {
+    set_read_only_bit(root, rel_path, true)
+}
+
+/// Flip the read-only bit on a lockable artifact. Pure plumbing over `std::fs` permissions; a
+/// non-lockable path or a path that does not exist on disk is silently ignored so the caller can
+/// fire this for every save without guarding.
+fn set_read_only_bit(root: &Path, rel_path: &str, read_only: bool) -> std::io::Result<()> {
+    if !is_lockable(rel_path) {
+        return Ok(());
+    }
+    let abs = root.join(rel_path);
+    let meta = match std::fs::metadata(&abs) {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // not on disk (e.g. a deletion) — nothing to flip
+    };
+    let mut perms = meta.permissions();
+    if perms.readonly() == read_only {
+        return Ok(()); // already in the wanted state
+    }
+    perms.set_readonly(read_only);
+    std::fs::set_permissions(&abs, perms)
+}
+
+/// At a checkpoint, **auto-unlock every held-by-me lock whose path is locally clean** (E31/E35
+/// self-healing, Issue #42). Reuses the pure [`crate::warden::decide`] for each held lock — the
+/// lock policy is decided in exactly one place, never duplicated here. For each of *our* locks
+/// this reads whether the path is dirty, asks the Warden, and (when the Warden says
+/// [`crate::warden::WardenAction::AutoUnlock`]) releases the lock and lets the freed binary rest
+/// read-only again. A clean text lock is released too (text is never really locked, but the
+/// Warden's rule is uniform). Foreign locks are never touched.
+pub fn auto_unlock_clean_paths(root: &Path) -> std::io::Result<Vec<SweptLock>> {
+    use crate::warden::{decide, Checkpoint, Cleanliness, LockState, PathKind, WardenAction, WardenSnapshot};
+
+    let snap = self::snapshot(root)?;
+    let me = &snap.me;
+    let mut swept = Vec::new();
+
+    for lock in snap.locks.iter().filter(|l| l.owner == *me) {
+        let path = &lock.path;
+        let dirty = snap.dirty.iter().any(|d| d == path);
+        let warden_snap = WardenSnapshot {
+            kind: if is_lockable(path) { PathKind::Binary } else { PathKind::Text },
+            lock: LockState::HeldByMe,
+            clean: if dirty { Cleanliness::Dirty } else { Cleanliness::Clean },
+            // Auto-unlock is checkpoint-kind-independent (E35: "at EVERY checkpoint"); a laufender
+            // Checkpoint is the conservative choice and never yields a Freigabe for a clean path.
+            checkpoint: Checkpoint::Laufend,
+        };
+        let release = decide(warden_snap) == WardenAction::AutoUnlock;
+        if release {
+            crate::pushglue::auto_unlock(root, path)?;
+            // The lock is gone → the binary rests read-only again (read-only = free, Issue #42).
+            let _ = set_read_only(root, path);
+        }
+        swept.push(SweptLock {
+            path: path.clone(),
+            released: release,
+        });
+    }
+    Ok(swept)
 }
 
 #[cfg(test)]
@@ -199,5 +287,31 @@ mod tests {
     fn parse_porcelain_is_total_on_blank() {
         assert!(parse_porcelain_paths("").is_empty());
         assert!(parse_porcelain_paths("\n\n").is_empty());
+    }
+
+    #[test]
+    fn set_read_only_flips_lockable_files_and_ignores_text_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("mechanik/gehaeuse")).unwrap();
+        let bin = "mechanik/gehaeuse/gehaeuse.f3d";
+        let txt = "firmware/main.c";
+        std::fs::write(root.join(bin), b"v1").unwrap();
+        std::fs::create_dir_all(root.join("firmware")).unwrap();
+        std::fs::write(root.join(txt), b"int main(){}").unwrap();
+
+        // A lockable binary toggles read-only / writable.
+        set_read_only(root, bin).unwrap();
+        assert!(std::fs::metadata(root.join(bin)).unwrap().permissions().readonly());
+        set_writable(root, bin).unwrap();
+        assert!(!std::fs::metadata(root.join(bin)).unwrap().permissions().readonly());
+
+        // Mergeable text is never made read-only by us.
+        set_read_only(root, txt).unwrap();
+        assert!(!std::fs::metadata(root.join(txt)).unwrap().permissions().readonly());
+
+        // A missing path is a silent no-op (e.g. a deletion).
+        set_read_only(root, "mechanik/gone.f3d").unwrap();
+        set_writable(root, "mechanik/gone.f3d").unwrap();
     }
 }

@@ -78,9 +78,14 @@ fn rapid_saves_coalesce_into_one_commit_with_boring_message() {
 
     // Short window so the test is fast but still exercises real debouncing.
     let window = Duration::from_millis(600);
-    let _handle = watch_product_with_window(root, window, move |s| {
-        sink.lock().unwrap().push(s);
-    })
+    let _handle = watch_product_with_window(
+        root,
+        window,
+        move |s| {
+            sink.lock().unwrap().push(s);
+        },
+        |_path| {},
+    )
     .unwrap();
 
     // A burst of rapid saves to the same Baustein, faster than the quiet window.
@@ -130,9 +135,14 @@ fn two_separated_bursts_produce_two_commits() {
     let stands: Arc<Mutex<Vec<Stand>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = stands.clone();
     let window = Duration::from_millis(500);
-    let _handle = watch_product_with_window(root, window, move |s| {
-        sink.lock().unwrap().push(s);
-    })
+    let _handle = watch_product_with_window(
+        root,
+        window,
+        move |s| {
+            sink.lock().unwrap().push(s);
+        },
+        |_path| {},
+    )
     .unwrap();
 
     let seen = |n: usize| stands.lock().unwrap().len() >= n;

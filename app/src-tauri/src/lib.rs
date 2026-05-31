@@ -1,6 +1,7 @@
 pub mod artstore;
 pub mod askpass;
 pub mod autocommit;
+pub mod autolock;
 pub mod baustein;
 pub mod bibliothek;
 pub mod classifier;
@@ -109,9 +110,12 @@ fn open_product(path: String) -> Result<ProductView, String> {
 #[derive(Default)]
 struct WatcherState(Mutex<Option<WatchHandle>>);
 
-/// Begin silently watching the product folder for settled saves (Issue #4). Each settled
-/// save produces a new **Stand**, emitted to the UI as a `stand-created` event. Replaces any
-/// previous watch. The user is never prompted; no git vocabulary surfaces.
+/// Begin silently watching the product folder for settled saves (Issue #4) and watcher-side
+/// Auto-Lock (Issue #42). Each settled save produces a new **Stand**, emitted as a `stand-created`
+/// event; the first save to a lockable path auto-acquires its lock (closing the
+/// Binär-Invarianten-Fenster before any checkpoint) and emits a `lock-acquired` event carrying the
+/// product-relative path so the UI re-reads the LED signal. Replaces any previous watch. The user
+/// is never prompted; no git vocabulary surfaces.
 #[tauri::command]
 fn start_watching(path: String, app: tauri::AppHandle) -> Result<(), String> {
     let root = Path::new(&path);
@@ -119,11 +123,20 @@ fn start_watching(path: String, app: tauri::AppHandle) -> Result<(), String> {
         return Err(format!("Kein Ordner: {path}"));
     }
 
-    let emit_app = app.clone();
-    let handle = watch_product(root, move |stand| {
-        // The only thing that leaves the auto-commit layer: a new Stand. No "commit".
-        let _ = emit_app.emit("stand-created", stand);
-    })
+    let stand_app = app.clone();
+    let lock_app = app.clone();
+    let handle = watch_product(
+        root,
+        move |stand| {
+            // The only thing that leaves the auto-commit layer: a new Stand. No "commit".
+            let _ = stand_app.emit("stand-created", stand);
+        },
+        move |locked_path| {
+            // The watcher took a lock on the first dirty lockable path — tell the UI to re-read
+            // the per-artifact LED signals so the card reflects it. Just the path; no git word.
+            let _ = lock_app.emit("lock-acquired", locked_path);
+        },
+    )
     .map_err(|e| e.to_string())?;
 
     let state = app.state::<WatcherState>();
@@ -389,6 +402,22 @@ async fn run_checkpoint(product: String, path: String, milestone: bool) -> Resul
     .await
 }
 
+/// At a checkpoint, **auto-unlock every held lock whose path is locally clean** (Issue #42,
+/// E31/E35 self-healing). Reuses the pure Lock Warden decision per held lock — the lock policy is
+/// decided in one place, never duplicated. Returns the product-relative paths that were freed so
+/// the UI can re-read the LED signals; a freed binary rests read-only (frei) again. Best-effort:
+/// an LFS/network hiccup must never break the silent rhythm.
+#[tauri::command]
+async fn sweep_clean_locks(product: String) -> Result<Vec<String>, String> {
+    // Reads `git lfs locks` + status and may release locks (networked, bounded); off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        let swept = lockglue::auto_unlock_clean_paths(root).map_err(|e| e.to_string())?;
+        Ok(swept.into_iter().filter(|s| s.released).map(|s| s.path).collect())
+    })
+    .await
+}
+
 /// Run one **silent daily sync pass** (Issue #11, E41): fetch the remote stand, let the pure
 /// Sync Decider judge the divergence, and carry out the result. Free, mergeable divergence is
 /// merged silently with NO prompt (status `gesichert`); a contradiction over an unmergeable file
@@ -565,6 +594,7 @@ pub fn run() {
             connect_server,
             publish_to_server,
             run_checkpoint,
+            sweep_clean_locks,
             sync_product,
             list_bibliothek,
             list_toolstacks,
