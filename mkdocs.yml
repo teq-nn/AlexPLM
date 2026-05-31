@@ -4,7 +4,7 @@ site_description: >-
   Produktdaten-Management für kleine Hardware- und Firmware-Teams.
 site_author: teqsas
 # Projekt-Pages-URL (wird beim Merge nach main veröffentlicht).
-site_url: https://teq-nn.github.io/alexplm/
+site_url: https://teq-nn.github.io/AlexPLM/
 
 repo_url: https://github.com/teq-nn/alexplm
 repo_name: teq-nn/alexplm
