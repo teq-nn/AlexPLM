@@ -524,3 +524,55 @@ export interface BlockDecision {
   /** Ids of the open Aufgaben that block this checkpoint, in input order. Empty ⇔ not blocked. */
   blocking_task_ids: string[];
 }
+
+// -------------------------------------------------------------------------------------------------
+// Freigabe-Gate (Issue #52, E19/E19.3). The dreistufige Block in ONE context-dependent button:
+// open points are collected from open Aufgaben (#49), Waisen/Pflicht (#47) and Stale-Kanten (#10),
+// staffed nach Härte (hardest first), and the one button changes label + severity. Surfaced by the
+// `evaluate_freigabe_gate` command. Mirrors `GateVerdict` & co in src-tauri/src/freigabegate.rs.
+// -------------------------------------------------------------------------------------------------
+
+/** The Härte of an open point — ordered hardest first. Mirrors `Haerte` (serde kebab-case). */
+export type Haerte = "hart" | "weich" | "warnung";
+
+/** What kind of open point this is — the source axis behind its Härte. Mirrors `Punktart`. */
+export type Punktart = "aufgabe" | "waise" | "fehlende-pflicht" | "stale-kante";
+
+/** The three states of the ONE context-dependent button. Mirrors `KnopfZustand`:
+ *  - "taggen": alles sauber (or warning-only) → proceed freely;
+ *  - "trotzdem-freigeben": a weicher Block → proceed with a logged Begründung;
+ *  - "gesperrt-durch-aufgabe": a harter Block → button off, dismiss only by acting on the task. */
+export type KnopfZustand = "taggen" | "trotzdem-freigeben" | "gesperrt-durch-aufgabe";
+
+/** One open point in the härte-sortierte Liste. Mirrors `OffenerPunkt`. */
+export interface OffenerPunkt {
+  haerte: Haerte;
+  art: Punktart;
+  /** Task id for an Aufgabe; product-relative path for a Waise/Stale-Kante; Pflicht label. */
+  ref_id: string;
+  /** Human one-liner naming the point (task title, orphan filename, …). */
+  label: string;
+}
+
+/** A personenübergreifende Warnung — a colleague's frischer Stand co-tagged. Mirrors `FremdWarnung`. */
+export interface FremdWarnung {
+  /** The colleague whose Stand is co-tagged. */
+  wer: string;
+  /** A ready human sentence („du taggst auch X' frischen Stand mit"). */
+  satz: string;
+}
+
+/** The Freigabe-Gate verdict: the härte-sortierte Liste + the one button's Zustand + the optional
+ *  cross-person warning. Mirrors `GateVerdict` in src-tauri/src/freigabegate.rs. */
+export interface GateVerdict {
+  /** Open points, hardest first (hart, then weich, then warnung); stable within a Härte. */
+  punkte: OffenerPunkt[];
+  /** The resulting state of the one context-dependent button. */
+  knopf: KnopfZustand;
+  /** `true` iff a harter Block is present (button off; only the task dismisses it). */
+  harter_block: boolean;
+  /** `true` iff a protokollierter Satz is required to proceed (weicher Block, no harter). */
+  begruendung_noetig: boolean;
+  /** The cross-person warning, if a colleague's frischer Stand is being co-tagged. */
+  fremd_warnung: FremdWarnung | null;
+}

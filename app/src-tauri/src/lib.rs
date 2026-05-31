@@ -11,6 +11,8 @@ pub mod credentials;
 pub mod edges;
 pub mod edgestore;
 pub mod forgejo;
+pub mod freigabegate;
+pub mod freigabegateglue;
 pub mod gitlog;
 pub mod gitrunner;
 pub mod graph;
@@ -44,6 +46,8 @@ use aufgabenblockglue::block_for_art;
 use baustein::{Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
+use freigabegate::GateVerdict;
+use freigabegateglue::gate_for_art;
 use graph::{MilestoneArt, VersionGraph};
 use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
@@ -897,6 +901,34 @@ fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision,
     Ok(block_for_art(root, art))
 }
 
+/// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Meilenstein-Art
+/// berechnen (Issue #52, E19/E19.3). Sammelt die offenen Punkte — offene Aufgaben (#49), Waisen
+/// (#47) und Stale-Kanten (#10) — und staffelt sie **nach Härte** hinter **einem** kontextabhängigen
+/// Knopf: alles sauber → „Taggen"; weicher Block (Waise/Pflicht) → „Trotzdem freigeben" + ein
+/// protokollierter Satz; harter Block (offene blockierende Aufgabe) → Knopf aus, daneben die
+/// Aufgabe mit ihren Auswegen. Reine Lesepfade der `_plm`-Stores; das Urteil ist der reine
+/// [`freigabegate::decide_gate`]-Kern. Ein leeres Produkt ist sauber (sperrt nie aus — E22).
+#[tauri::command]
+fn evaluate_freigabe_gate(path: String, art: MilestoneArt) -> Result<GateVerdict, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(gate_for_art(root, art))
+}
+
+/// Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
+/// Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
+/// protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
+/// „Trotzdem freigeben" nachvollziehbar bleibt.
+#[tauri::command]
+fn log_freigabe_begruendung(version: String, begruendung: String) {
+    gitlog::record(
+        "freigabe-begruendung",
+        format!("Freigabe „{version}“ trotz weichem Block: {begruendung}"),
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Das Git-/Sync-Diagnose-Log lesen (Issue #54-Folge) — das In-App-Diagnose-Panel pollt das, um
 /// zu zeigen, **ob und warum** ein Push lief oder nicht (Warden-Entscheidung + reale git-Exits).
@@ -962,6 +994,8 @@ pub fn run() {
             publish_to_server,
             run_checkpoint,
             freigeben,
+            evaluate_freigabe_gate,
+            log_freigabe_begruendung,
             read_git_log,
             clear_git_log,
             git_log_path,

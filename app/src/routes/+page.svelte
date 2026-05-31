@@ -17,6 +17,7 @@
     StandEvent,
     StandNode,
     VersionGraph,
+    GateVerdict,
     WardenAction,
     SyncOutcome,
     LoudQuestion,
@@ -35,6 +36,7 @@
   import UnzugeordnetFach from "$lib/UnzugeordnetFach.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
+  import FreigabeGate from "$lib/FreigabeGate.svelte";
   import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
@@ -64,6 +66,11 @@
   // When the gate decides the dangerous branch, hold the chosen folder + report here so the
   // "Historie anfassen" modal can explain the stakes before any rewrite.
   let gate = $state<{ path: string; report: GateReport } | null>(null);
+  // The Freigabe-Gate (Issue #52, E19/E19.3): when a Prototyp is toggled up to a Freigabe, the
+  // dreistufige Block runs first. A clean verdict raises the tag silently; any open point opens
+  // this gate, which staffs the points nach Härte behind the one context-dependent button.
+  let freigabeGate = $state<{ node: StandNode; verdict: GateVerdict } | null>(null);
+  let freigabeBusy = $state(false);
   // A plain refusal note when the folder is shared (E38: never poison others' clones).
   let refusal = $state<string | null>(null);
 
@@ -886,10 +893,110 @@
   // slice (Issue #52) and plugs into the Rust seam; nothing about it lives here.
   async function toggleArt(node: StandNode) {
     if (!productPath || node.milestone === null) return;
+    // Toggling *down* (Freigabe → Prototyp) is the lax direction: never gated. Toggling *up*
+    // (Prototyp → Freigabe) is the strenge Übergang — run the dreistufige Freigabe-Gate first
+    // (E19.3/E42). A clean verdict raises the tag straight away; any open point opens the gate.
+    if (node.milestone_art === "freigabe") {
+      await applyToggleArt(node);
+      return;
+    }
+    const verdict = await invoke<GateVerdict>("evaluate_freigabe_gate", {
+      path: productPath,
+      art: "freigabe",
+    });
+    if (verdict.knopf === "taggen" && verdict.fremd_warnung === null) {
+      // Alles sauber and nobody else co-tagged → no deliberate handle needed; raise it.
+      await applyToggleArt(node);
+      return;
+    }
+    freigabeGate = { node, verdict };
+  }
+
+  // The actual Art flip (Prototyp → Freigabe or back). Persists the Art + write-protect and
+  // returns the refreshed tree; raising to Freigabe is the public act, so publish the branch.
+  async function applyToggleArt(node: StandNode) {
+    if (!productPath || node.milestone === null) return;
+    const raising = node.milestone_art !== "freigabe";
     graph = await invoke<VersionGraph>("toggle_milestone_art", {
       path: productPath,
       version: node.milestone,
     });
+    if (raising) void freigeben();
+  }
+
+  // Re-run the gate after acting on a hard-blocking Aufgabe (the one Ausweg). If it has gone
+  // clean, the gate closes; otherwise the staffed list updates in place.
+  async function refreshFreigabeGate() {
+    if (!productPath || !freigabeGate) return;
+    const verdict = await invoke<GateVerdict>("evaluate_freigabe_gate", {
+      path: productPath,
+      art: "freigabe",
+    });
+    freigabeGate = { node: freigabeGate.node, verdict };
+  }
+
+  // The one button fired (clean „Taggen" or the soft-block „Trotzdem freigeben" + Begründung).
+  // A logged Begründung is recorded to the Diagnose-Log as the protokollierter Satz (§22.1).
+  async function freigabeConfirm(begruendung: string | null) {
+    if (!freigabeGate) return;
+    const node = freigabeGate.node;
+    freigabeBusy = true;
+    try {
+      if (begruendung && node.milestone) {
+        await invoke("log_freigabe_begruendung", {
+          version: node.milestone,
+          begruendung,
+        });
+      }
+      await applyToggleArt(node);
+      freigabeGate = null;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      freigabeBusy = false;
+    }
+  }
+
+  // The three Auswege out of a harter Block: act on the Aufgabe, then re-evaluate the gate.
+  async function freigabeErledigen(taskId: string) {
+    freigabeBusy = true;
+    try {
+      await setTaskStatus(taskId, "erledigt");
+      await refreshFreigabeGate();
+    } finally {
+      freigabeBusy = false;
+    }
+  }
+  async function freigabeVerwerfen(taskId: string) {
+    freigabeBusy = true;
+    try {
+      await setTaskStatus(taskId, "verworfen");
+      await refreshFreigabeGate();
+    } finally {
+      freigabeBusy = false;
+    }
+  }
+  async function freigabeHerabstufen(taskId: string) {
+    if (!productPath) return;
+    freigabeBusy = true;
+    try {
+      // Herabstufen zum Hinweis: a Hinweis is never block-capable, so it leaves the hard block.
+      const t = tasks.find((x) => x.id === taskId);
+      if (t) {
+        tasks = await invoke<Task[]>("edit_task_cmd", {
+          path: productPath,
+          id: taskId,
+          title: t.title,
+          kind: "hinweis",
+          link: t.link,
+          due: t.due,
+          blocksEverywhere: t.blocks_everywhere,
+        });
+      }
+      await refreshFreigabeGate();
+    } finally {
+      freigabeBusy = false;
+    }
   }
 </script>
 
@@ -1197,6 +1304,20 @@
     busy={loading === "migrate"}
     onConfirm={confirmMigrate}
     onCancel={() => (gate = null)}
+  />
+{/if}
+
+<!-- The Freigabe-Gate (Issue #52, E19/E19.3): the dreistufige Block in one context-dependent
+     button, opened when a Prototyp is raised to a Freigabe with open points. -->
+{#if freigabeGate}
+  <FreigabeGate
+    verdict={freigabeGate.verdict}
+    busy={freigabeBusy}
+    onFreigeben={freigabeConfirm}
+    onCancel={() => (freigabeGate = null)}
+    onErledigen={freigabeErledigen}
+    onVerwerfen={freigabeVerwerfen}
+    onHerabstufen={freigabeHerabstufen}
   />
 {/if}
 
