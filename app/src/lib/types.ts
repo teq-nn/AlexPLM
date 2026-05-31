@@ -372,3 +372,45 @@ export interface SearchResult {
   /** Total registered products considered (`searched + offline.length`). */
   total: number;
 }
+
+// Aufgaben & Hinweise (Issue #40, PRD US 27–30). First-class objects in the product, stored in
+// the product-local `_plm` store. Aufgaben (verpflichtend, *können* blockieren) and Hinweise
+// (blockieren nie) are separated PURELY by Blockier-Fähigkeit — not by importance. The block
+// DECISION itself is a later slice (Issue #49); here we only carry the kind + the flag.
+
+/** Typ: the ONLY thing separating the two — an `aufgabe` can block, a `hinweis` never does.
+ *  Mirrors `TaskKind` in src-tauri/src/tasks.rs. */
+export type TaskKind = "aufgabe" | "hinweis";
+
+/** Lifecycle status (no Kanban, US 28). Only `offen` items can ever block.
+ *  Mirrors `TaskStatus` in src-tauri/src/tasks.rs. */
+export type TaskStatus = "offen" | "erledigt" | "verworfen";
+
+/** The optional Verknüpfung (US 28): Produkt / Version / Arbeitsbereich / Artefakt, or none.
+ *  Serde-tagged `{ kind, ref }`. Mirrors `TaskLink` in src-tauri/src/tasks.rs. */
+export type TaskLink =
+  | { kind: "produkt" }
+  | { kind: "version"; ref: string }
+  | { kind: "arbeitsbereich"; ref: string }
+  | { kind: "artefakt"; ref: string };
+
+/** One Aufgabe or Hinweis. Minimal model: Titel/Status/Typ/Verknüpfung/Fälligkeit + the
+ *  „blockiert überall" opt-out (US 30). Mirrors `Task` in src-tauri/src/tasks.rs. */
+export interface Task {
+  /** Stable opaque id the store assigns; the UI keys rows on it. */
+  id: string;
+  /** Titel — the one piece of free human text. */
+  title: string;
+  /** Typ: aufgabe (block-capable) vs. hinweis (never blocks). */
+  kind: TaskKind;
+  status: TaskStatus;
+  /** Optional Verknüpfung; `null` = free-floating. */
+  link: TaskLink | null;
+  /** Optional Fälligkeit `YYYY-MM-DD`; `null` = kein Termin. */
+  due: string | null;
+  /** „blockiert überall" opt-out (US 30): block kontextunabhängig (only meaningful for an
+   *  Aufgabe; the block decision is Issue #49). */
+  blocks_everywhere: boolean;
+  /** Creation timestamp `YYYY-MM-DDTHH:MM:SSZ` (the store sets it). */
+  created_at: string;
+}

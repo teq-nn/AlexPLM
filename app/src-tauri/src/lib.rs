@@ -24,6 +24,8 @@ pub mod setup;
 pub mod stackstore;
 pub mod syncdecider;
 pub mod syncglue;
+pub mod taskstore;
+pub mod tasks;
 pub mod warden;
 pub mod watcher;
 
@@ -41,6 +43,8 @@ use setup::{configure_remote, publish_product, read_setup, SetupReport};
 use stackstore::{create_product_stack, read_stack, ProduktStack};
 use syncdecider::StandChoice;
 use syncglue::{resolve_sync, run_sync, SyncOutcome};
+use taskstore::{create_task, delete_task, read_tasks, set_task_status, update_task};
+use tasks::{NewTask, Task, TaskEdit, TaskKind, TaskLink, TaskStatus};
 use warden::{Checkpoint, WardenAction};
 use std::path::Path;
 use std::sync::Mutex;
@@ -617,6 +621,102 @@ async fn search_products(app: tauri::AppHandle, query: String) -> Result<SearchR
     .await
 }
 
+/// Read the product's Aufgaben & Hinweise (Issue #40). Tasks are opt-in: a product with no task
+/// file has zero tasks — never an error. Pure read; the list is returned as-is, the UI splits it
+/// into Aufgaben (block-capable) and Hinweise (never block) by `kind`.
+#[tauri::command]
+fn list_tasks(path: String) -> Result<Vec<Task>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(read_tasks(root))
+}
+
+/// Create an Aufgabe or Hinweis and persist it (Issue #40). The store mints the id + creation
+/// timestamp; the minimal model (Titel/Typ/Verknüpfung/Fälligkeit + „blockiert überall") comes
+/// from the caller. Returns the refreshed list so the UI updates in one round-trip.
+#[tauri::command]
+fn create_task_cmd(
+    path: String,
+    title: String,
+    kind: TaskKind,
+    link: Option<TaskLink>,
+    due: Option<String>,
+    blocks_everywhere: bool,
+) -> Result<Vec<Task>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    create_task(
+        root,
+        NewTask {
+            title,
+            kind,
+            link,
+            due,
+            blocks_everywhere,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Edit one task (Issue #40). The UI edit form carries a task's full state, so this command
+/// **replaces** title/kind/link/due/flag with the given values (a `null` `link`/`due` clears the
+/// Verknüpfung/Fälligkeit). `status` is left untouched here — it has its own command. (The pure
+/// [`TaskEdit`] keeps the finer clear-vs-untouched distinction for internal use; the wire stays
+/// JSON-honest by always setting these fields.) Returns the refreshed list.
+#[tauri::command]
+fn edit_task_cmd(
+    path: String,
+    id: String,
+    title: String,
+    kind: TaskKind,
+    link: Option<TaskLink>,
+    due: Option<String>,
+    blocks_everywhere: bool,
+) -> Result<Vec<Task>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    update_task(
+        root,
+        &id,
+        TaskEdit {
+            title: Some(title),
+            kind: Some(kind),
+            status: None,
+            link: Some(link), // outer Some = "set the link", inner is the new value (None clears)
+            due: Some(due),
+            blocks_everywhere: Some(blocks_everywhere),
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Set just the status of one task — erledigen / verwerfen / wieder öffnen (Issue #40). The
+/// common gesture, kept separate from the full edit. Returns the refreshed list.
+#[tauri::command]
+fn set_task_status_cmd(path: String, id: String, status: TaskStatus) -> Result<Vec<Task>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    set_task_status(root, &id, status).map_err(|e| e.to_string())
+}
+
+/// Delete one task (Issue #40). Absent id ⇒ no-op. Returns the refreshed list.
+#[tauri::command]
+fn delete_task_cmd(path: String, id: String) -> Result<Vec<Task>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    delete_task(root, &id).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -663,7 +763,12 @@ pub fn run() {
             list_products,
             register_product,
             unregister_product,
-            search_products
+            search_products,
+            list_tasks,
+            create_task_cmd,
+            edit_task_cmd,
+            set_task_status_cmd,
+            delete_task_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

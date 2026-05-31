@@ -20,6 +20,10 @@
     SyncOutcome,
     LoudQuestion,
     StandChoice,
+    Task,
+    TaskKind,
+    TaskStatus,
+    TaskLink,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
@@ -31,6 +35,7 @@
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
   import ProduktSuche from "$lib/ProduktSuche.svelte";
+  import AufgabenListe from "$lib/AufgabenListe.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -290,6 +295,7 @@
     stands = [];
     graph = null;
     edgeView = { edges: [], warnings: [] };
+    tasks = [];
     stopStatusLoop();
     stopSyncLoop();
   }
@@ -305,6 +311,83 @@
   // Manual „abgeleitet von" edges + their Stale-Warnungen (Issue #10). Opt-in: a product
   // with no drawn edges keeps this empty and shows no warnings (E40).
   let edgeView = $state<EdgeView>({ edges: [], warnings: [] });
+
+  // Aufgaben & Hinweise for the open product (Issue #40, PRD US 27–30). Opt-in: a product with
+  // no task file keeps this empty. The two kinds differ ONLY by Blockier-Fähigkeit; the block
+  // DECISION is a later slice (Issue #49), so nothing here raises the orange voice.
+  let tasks = $state<Task[]>([]);
+
+  // Verknüpfungs-Kandidaten the create/edit picker offers: the product's Bausteine, as
+  // {name, path}. (Produkt + a free Version link are always available in the form itself.)
+  const taskCandidates = $derived(
+    product ? product.bausteine.map((b) => ({ name: b.name, path: b.path })) : [],
+  );
+
+  async function refreshTasks() {
+    if (!productPath) return;
+    try {
+      tasks = await invoke<Task[]>("list_tasks", { path: productPath });
+    } catch (e) {
+      // Tasks are opt-in extra; a read failure must not break the read-only shell.
+      error = String(e);
+    }
+  }
+
+  async function createTask(t: {
+    title: string;
+    kind: TaskKind;
+    link: TaskLink | null;
+    due: string | null;
+    blocks_everywhere: boolean;
+  }) {
+    if (!productPath) return;
+    tasks = await invoke<Task[]>("create_task_cmd", {
+      path: productPath,
+      title: t.title,
+      kind: t.kind,
+      link: t.link,
+      due: t.due,
+      blocksEverywhere: t.blocks_everywhere,
+    });
+  }
+
+  async function editTask(
+    id: string,
+    t: {
+      title: string;
+      kind: TaskKind;
+      link: TaskLink | null;
+      due: string | null;
+      blocks_everywhere: boolean;
+    },
+  ) {
+    if (!productPath) return;
+    // The edit form carries the task's full state, so the command replaces title/kind/link/due/
+    // flag wholesale (a null link/due clears it). Status has its own command (setTaskStatus).
+    tasks = await invoke<Task[]>("edit_task_cmd", {
+      path: productPath,
+      id,
+      title: t.title,
+      kind: t.kind,
+      link: t.link,
+      due: t.due,
+      blocksEverywhere: t.blocks_everywhere,
+    });
+  }
+
+  async function setTaskStatus(id: string, status: TaskStatus) {
+    if (!productPath) return;
+    tasks = await invoke<Task[]>("set_task_status_cmd", {
+      path: productPath,
+      id,
+      status,
+    });
+  }
+
+  async function deleteTask(id: string) {
+    if (!productPath) return;
+    tasks = await invoke<Task[]>("delete_task_cmd", { path: productPath, id });
+  }
 
   // Per-artifact lookups derived from the edge view: which source a card is derived from,
   // and whether it is currently stale (source newer than derivation — E26).
@@ -406,6 +489,7 @@
       await invoke("start_watching", { path: selected });
       await refreshGraph();
       await refreshEdges();
+      await refreshTasks();
       await refreshSetup();
       startStatusLoop();
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
@@ -474,6 +558,7 @@
       await invoke("start_watching", { path });
       await refreshGraph();
       await refreshEdges();
+      await refreshTasks();
       await refreshSetup();
       // A freshly created product has no server yet — open the one-time ceremony once so the
       // user is guided to share it. Reopening/daily use never re-triggers this.
@@ -779,6 +864,19 @@
         {:else}
           <p class="notice label">Keine Bausteine in diesem Ordner gefunden</p>
         {/if}
+
+        <!-- Aufgaben & Hinweise for this product (Issue #40, US 27–30). Lives under the
+             Bausteine: routine workshop work, distinguished only by Blockier-Fähigkeit. -->
+        <div class="tasks-block">
+          <AufgabenListe
+            {tasks}
+            artefakte={taskCandidates}
+            onCreate={createTask}
+            onEdit={editTask}
+            onSetStatus={setTaskStatus}
+            onDelete={deleteTask}
+          />
+        </div>
       {:else}
         <div class="empty">
           <div class="empty-panel">
@@ -1123,6 +1221,12 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
     gap: 12px;
+  }
+
+  /* Aufgaben & Hinweise sit below the Bausteine, set off by a generous gap so the work area
+     reads as two stacked instruments rather than one crowded panel. */
+  .tasks-block {
+    margin-top: 22px;
   }
 
   /* Physical "key": light cap, hairline, seated bottom edge, crisp press. */
