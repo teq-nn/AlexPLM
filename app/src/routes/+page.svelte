@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+  import { openPath } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import type {
@@ -338,13 +338,18 @@
     }
   }
 
-  /** Hand-assignment is ONLY a correction (Issue #47): the convention assigns by Heimat-Ordner,
-   *  so the correction is to reveal the file in its folder where the user can move it into the
-   *  right Arbeitsbereich. No fake per-file label store — assignment stays by convention. */
-  async function correctZuordnung(file: string) {
+  /** In-app manual assignment (Folge von #47/#50): label a Waise as belonging to a Baustein, fully
+   *  inside the software — no file move, no file-browser detour. The choice is recorded in
+   *  `_plm/zuordnung.json`; the backend returns the freshly folded Werkbank so the card appears at
+   *  once. Overrides win over the Glob/Heimat-Konvention and ignore the Heimat boundary. */
+  async function assignArtefakt(file: string, bausteinId: string) {
     if (!productPath) return;
     try {
-      await revealItemInDir(`${productPath}/${file}`);
+      werkbank = await invoke<WerkbankView>("assign_artefakt_cmd", {
+        product: productPath,
+        file,
+        bausteinId,
+      });
     } catch (e) {
       error = String(e);
     }
@@ -402,6 +407,12 @@
   let stackMode = $state<"anlegen" | "erweitern">("anlegen");
   // A configured Werkzeugkasten has at least one copied Baustein.
   let hatStack = $derived((stack?.bausteine.length ?? 0) > 0);
+  // The Bausteine of the current product (id + name) — the in-app manual-assignment targets.
+  let stackBausteine = $derived(
+    (stack?.bausteine ?? [])
+      .filter((b) => !b.stillgelegt)
+      .map((b) => ({ id: b.id, name: b.name })),
+  );
 
   /** Re-read the product's Produkt-Stack (Issue #50). Best-effort: a product with no stack reads as
    *  an empty stack, which simply lights the „Werkzeugkasten einrichten"-Aufforderung. */
@@ -1010,14 +1021,15 @@
           {/if}
 
           <!-- Unzugeordnet-Fach pro Arbeitsbereich: the Waisen (tracked, unlabeled). Nothing is
-               lost by omission; hand-assignment is only a correction (reveal in folder). -->
+               lost by omission; in-app manual assignment labels a file as a Baustein's artifact. -->
           {#if werkbank.unzugeordnet.length > 0}
             <div class="waisen">
               {#each werkbank.unzugeordnet as fach (fach.arbeitsbereich)}
                 <UnzugeordnetFach
                   {fach}
+                  bausteine={stackBausteine}
                   onOpen={openWaise}
-                  onAssign={correctZuordnung}
+                  onAssign={assignArtefakt}
                 />
               {/each}
             </div>

@@ -106,6 +106,26 @@ pub fn onboard_stack_dotfiles(root: &Path, stack: &ProduktStack) -> std::io::Res
     Ok(())
 }
 
+/// Den **Heimat-Ordner** jedes (nicht stillgelegten) Bausteins auf der Platte anlegen, damit der
+/// Nutzer nach dem Einrichten sofort sieht, **wohin** seine Dateien gehören (PRD §50/§29: geführte
+/// Anlage). Leere Heimat (Produktwurzel) wird übersprungen; ein bereits existierender Ordner ist
+/// kein Fehler (`create_dir_all` ist idempotent). Leere Ordner sind für git unsichtbar — das ist
+/// gewollt: erst eine echte Datei darin wird erfasst. Der Ordner ist nur die sichtbare Einladung.
+pub fn scaffold_heimat_dirs(root: &Path, stack: &ProduktStack) -> std::io::Result<()> {
+    for sb in &stack.bausteine {
+        let b = &sb.baustein;
+        if b.stillgelegt {
+            continue;
+        }
+        let heimat = b.heimat.trim().trim_matches('/');
+        if heimat.is_empty() {
+            continue;
+        }
+        std::fs::create_dir_all(root.join(heimat))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +229,36 @@ mod tests {
         let out = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
         assert!(out.starts_with("# meins\nprivate/\n"));
         assert!(out.contains("# >>> baustein: zephyr >>>\nbuild/\n# <<< baustein: zephyr <<<"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Scaffolding legt je Baustein seinen Heimat-Ordner an; leere Heimat wird übersprungen,
+    /// stillgelegte Bausteine ebenfalls; zweimal aufrufen ist idempotent.
+    #[test]
+    fn scaffold_creates_heimat_dirs_skipping_empty_and_stillgelegt() {
+        use crate::stackstore::StackBaustein;
+        let dir = tmp();
+        let mut wurzel = baustein("root-baustein", &["*.x"], &[], &[]);
+        wurzel.heimat = "".to_string(); // Produktwurzel -> kein Ordner
+        let mut still = baustein("alt", &["*.y"], &[], &[]);
+        still.heimat = "altbereich".to_string();
+        still.stillgelegt = true;
+        let mut mech = baustein("fusion", &["*.step"], &[], &[]);
+        mech.heimat = "mechanik".to_string();
+
+        let stack = ProduktStack {
+            toolstack: None,
+            bausteine: vec![
+                StackBaustein::copy_of(&wurzel),
+                StackBaustein::copy_of(&still),
+                StackBaustein::copy_of(&mech),
+            ],
+        };
+        scaffold_heimat_dirs(&dir, &stack).unwrap();
+        scaffold_heimat_dirs(&dir, &stack).unwrap(); // idempotent
+
+        assert!(dir.join("mechanik").is_dir(), "Heimat-Ordner angelegt");
+        assert!(!dir.join("altbereich").exists(), "stillgelegt -> kein Ordner");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

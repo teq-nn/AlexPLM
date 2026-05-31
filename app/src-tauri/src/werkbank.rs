@@ -70,6 +70,15 @@ fn oeffnen_konfig(o: Oeffnen) -> OeffnenKonfig {
     }
 }
 
+/// Der Ordner-Anteil eines produkt-relativen Pfads (alles vor dem letzten `/`); `""` an der Wurzel.
+/// Für den Artefakt-Schlüssel einer manuellen Zuordnung (die Heimat-Grenze wird dabei ignoriert).
+fn ordner_of(rel: &str) -> String {
+    match rel.rsplit_once('/') {
+        Some((dir, _)) => dir.to_string(),
+        None => String::new(),
+    }
+}
+
 /// Der oberste Ordner eines produkt-relativen Pfads = der **Arbeitsbereich**. `""` = Wurzel.
 fn arbeitsbereich_of(rel: &str) -> String {
     match rel.split_once('/') {
@@ -97,10 +106,28 @@ pub struct StackRegel {
     pub oeffnen: OeffnenKonfig,
 }
 
+/// Priorität einer **manuellen** Zuordnung (Override). Bewusst die niedrigste mögliche Priorität,
+/// damit in einer gemischten Karte ein echter Glob-Treffer (kleiner Index) die **Hauptdatei**
+/// bleibt; eine rein manuell zugeordnete Einzeldatei ist dann selbst die Hauptdatei (dominant).
+const OVERRIDE_PRIO: usize = usize::MAX;
+
 /// **Reiner Kern des Glue**: falte erfasste Dateien + Glob-Satz zu Karten + Unzugeordnet-Fächern.
-/// Total und deterministisch; kein I/O (`root` dient nur dem Bilden absoluter Zielpfade). Diese
-/// Funktion ist der tabellengetestete Teil — `read_werkbank` liefert nur die Eingaben.
+/// Ohne manuelle Zuordnungen — siehe [`build_werkbank_with_overrides`].
 pub fn build_werkbank(root: &Path, tracked: &[String], stack: &[StackRegel]) -> WerkbankView {
+    build_werkbank_with_overrides(root, tracked, stack, &BTreeMap::new())
+}
+
+/// Wie [`build_werkbank`], aber mit **manuellen Zuordnungen** (`overrides`: Pfad → Baustein-id,
+/// aus `_plm/zuordnung.json`). Eine Override **gewinnt** über die Glob/Heimat-Konvention und
+/// ignoriert die Heimat-Grenze — der Nutzer darf jede Datei jedem (nicht stillgelegten, im Stack
+/// vorhandenen) Baustein zuordnen. Zeigt eine Override auf einen unbekannten/stillgelegten
+/// Baustein, fällt die Datei sauber auf die Konvention zurück. Total und deterministisch; kein I/O.
+pub fn build_werkbank_with_overrides(
+    root: &Path,
+    tracked: &[String],
+    stack: &[StackRegel],
+    overrides: &BTreeMap<String, String>,
+) -> WerkbankView {
     let regeln: Vec<BausteinRegel> = stack.iter().map(|s| s.regel.clone()).collect();
 
     // Artefakt-Schlüssel -> (Baustein-Index, Ordner, Dateien mit ihrer Hauptdatei-Priorität).
@@ -115,8 +142,27 @@ pub fn build_werkbank(root: &Path, tracked: &[String], stack: &[StackRegel]) -> 
     let mut waisen: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for path in tracked {
-        match zuordnen(path, &regeln) {
-            Zuordnung::Artefakt { artefakt_id, prioritaet, .. } => {
+        // Eine manuelle Zuordnung gewinnt — sofern sie auf einen vorhandenen, nicht stillgelegten
+        // Baustein zeigt. Sie ergibt (Artefakt-Schlüssel, niedrigste Priorität) und ignoriert die
+        // Heimat-Grenze (der Ordner stammt aus dem Datei-Pfad selbst).
+        let override_hit = overrides.get(path).and_then(|bid| {
+            regeln
+                .iter()
+                .find(|r| &r.id == bid && !r.stillgelegt)
+                .map(|r| {
+                    let ordner = ordner_of(path);
+                    (artefakt_key(&r.id, &ordner), OVERRIDE_PRIO)
+                })
+        });
+
+        // Sonst die Konvention (Glob + Heimat).
+        let zuordnung = override_hit.or_else(|| match zuordnen(path, &regeln) {
+            Zuordnung::Artefakt { artefakt_id, prioritaet, .. } => Some((artefakt_id, prioritaet)),
+            Zuordnung::Waise { .. } => None,
+        });
+
+        match zuordnung {
+            Some((artefakt_id, prioritaet)) => {
                 // Den Baustein-Index zum Schlüssel finden (erste Regel, deren key matcht).
                 let ordner = artefakt_id
                     .split_once(':')
@@ -133,7 +179,7 @@ pub fn build_werkbank(root: &Path, tracked: &[String], stack: &[StackRegel]) -> 
                 });
                 acc.dateien.push((path.clone(), prioritaet));
             }
-            Zuordnung::Waise { .. } => {
+            None => {
                 // Arbeitsbereich = top-level folder of the file itself (root file -> "").
                 let bereich = arbeitsbereich_of(path);
                 waisen.entry(bereich).or_default().push(path.clone());
@@ -221,7 +267,8 @@ pub fn read_werkbank(root: &Path) -> std::io::Result<WerkbankView> {
     let stack = read_stack(root);
     let regeln = stack_regeln(&stack);
     let tracked = list_tracked_files(root)?;
-    Ok(build_werkbank(root, &tracked, &regeln))
+    let overrides = crate::zuordnungstore::read_overrides(root);
+    Ok(build_werkbank_with_overrides(root, &tracked, &regeln, &overrides))
 }
 
 /// Die erfassten Dateien des Produkts, produkt-relativ mit Vorwärts-Slashes. Das committete
@@ -366,6 +413,62 @@ mod tests {
         assert_eq!(by("").unwrap().dateien, vec!["bom.csv"]);
         // doku has no Waisen -> no Fach for it.
         assert!(by("doku").is_none());
+    }
+
+    #[test]
+    fn manual_override_makes_a_card_across_heimat_and_wins_over_convention() {
+        // hardware/teil.FCStd matches no glob and sits outside every Heimat -> normally a Waise.
+        // A manual override to "fusion" must turn it into a fusion card (Heimat ignored).
+        let tracked: Vec<String> = ["hardware/teil.FCStd", "hardware/render.png"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("hardware/teil.FCStd".to_string(), "fusion".to_string());
+
+        let view = build_werkbank_with_overrides(root(), &tracked, &stack(), &overrides);
+
+        let fusion = view
+            .karten
+            .iter()
+            .find(|k| k.artefakt_id == "fusion:hardware")
+            .expect("manual fusion card in hardware/");
+        assert_eq!(fusion.baustein, "Fusion 360");
+        assert_eq!(fusion.dateien, vec!["hardware/teil.FCStd"]);
+        // Single file -> dominant -> opens the file.
+        assert_eq!(fusion.primaer, PrimaerAktion::Datei);
+        assert_eq!(fusion.ziel.as_deref(), Some("/produkt/hardware/teil.FCStd"));
+
+        // The un-assigned render.png stays a Waise in the hardware Arbeitsbereich.
+        let fach = view.unzugeordnet.iter().find(|f| f.arbeitsbereich == "hardware").unwrap();
+        assert_eq!(fach.dateien, vec!["hardware/render.png"]);
+    }
+
+    #[test]
+    fn override_to_unknown_baustein_falls_back_to_convention() {
+        // Override points at a Baustein not in the stack -> ignored, file stays a Waise.
+        let tracked = vec!["hardware/teil.FCStd".to_string()];
+        let mut overrides = BTreeMap::new();
+        overrides.insert("hardware/teil.FCStd".to_string(), "ghost".to_string());
+        let view = build_werkbank_with_overrides(root(), &tracked, &stack(), &overrides);
+        assert!(view.karten.is_empty());
+        assert_eq!(view.unzugeordnet[0].dateien, vec!["hardware/teil.FCStd"]);
+    }
+
+    #[test]
+    fn glob_hit_stays_hauptdatei_when_mixed_with_an_override() {
+        // A real glob hit (regler.kicad_pro, prio 0) plus a manually added README in the same folder.
+        let tracked: Vec<String> = ["elektronik/regler/regler.kicad_pro", "elektronik/regler/README"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("elektronik/regler/README".to_string(), "kicad".to_string());
+        let view = build_werkbank_with_overrides(root(), &tracked, &stack(), &overrides);
+        let kicad = view.karten.iter().find(|k| k.artefakt_id == "kicad:elektronik/regler").unwrap();
+        assert_eq!(kicad.dateien.len(), 2);
+        // The real glob hit remains the Hauptdatei; the override file is secondary.
+        assert_eq!(kicad.hauptdatei.as_deref(), Some("elektronik/regler/regler.kicad_pro"));
     }
 
     #[test]

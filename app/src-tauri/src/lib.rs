@@ -34,6 +34,7 @@ pub mod warden;
 pub mod watcher;
 pub mod werkbank;
 pub mod zuordnung;
+pub mod zuordnungstore;
 
 use aufgabenblock::BlockDecision;
 use aufgabenblockglue::block_for_art;
@@ -542,6 +543,9 @@ fn create_product_stack_cmd(
     // Tag-1-Pflicht (Issue #48, adressiert #63): idempotente Ignore/LFS-Marker-Blöcke in die
     // Dotfiles hängen, BEVOR ein Tool seine erste Binärdatei/Müll erzeugt — kein späteres lfs migrate.
     onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
+    // Geführte Anlage (PRD §50/§29): die Heimat-Ordner anlegen, damit der Nutzer sofort sieht, wohin
+    // seine Dateien gehören.
+    onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
     Ok(stack)
 }
 
@@ -563,6 +567,7 @@ fn extend_product_stack_cmd(
     }
     let stack = extend_product_stack(root, &lib, &baustein_ids).map_err(|e| e.to_string())?;
     onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
+    onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
     Ok(stack)
 }
 
@@ -594,6 +599,43 @@ async fn read_werkbank_cmd(product: String) -> Result<WerkbankView, String> {
         if !root.is_dir() {
             return Err(format!("Kein Ordner: {product}"));
         }
+        read_werkbank(root).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Manuelle Zuordnung** einer Waise zu einem Baustein (Folge von Issue #47/#50): der Nutzer
+/// ordnet eine erfasste Datei aus der Software heraus einem Baustein zu — ohne sie im Dateimanager
+/// zu verschieben. Die Zuordnung ist ein zerstörungsfreies Etikett in `_plm/zuordnung.json`; sie
+/// gewinnt über die Glob/Heimat-Konvention und ignoriert die Heimat-Grenze. Gibt die frisch
+/// berechnete Werkbank zurück, sodass die Karte sofort erscheint.
+#[tauri::command]
+async fn assign_artefakt_cmd(
+    product: String,
+    file: String,
+    baustein_id: String,
+) -> Result<WerkbankView, String> {
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        zuordnungstore::assign(root, &file, &baustein_id).map_err(|e| e.to_string())?;
+        read_werkbank(root).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Die **manuelle Zuordnung** einer Datei wieder lösen (Folge von Issue #47/#50): die Datei fällt
+/// zurück auf die Konvention bzw. wird wieder zur Waise. Gibt die frisch berechnete Werkbank zurück.
+#[tauri::command]
+async fn clear_artefakt_cmd(product: String, file: String) -> Result<WerkbankView, String> {
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        zuordnungstore::clear(root, &file).map_err(|e| e.to_string())?;
         read_werkbank(root).map_err(|e| e.to_string())
     })
     .await
@@ -831,6 +873,8 @@ pub fn run() {
             extend_product_stack_cmd,
             read_product_stack,
             read_werkbank_cmd,
+            assign_artefakt_cmd,
+            clear_artefakt_cmd,
             resolve_sync_cmd,
             list_products,
             register_product,
