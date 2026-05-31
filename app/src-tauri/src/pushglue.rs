@@ -198,6 +198,20 @@ pub fn auto_unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
     unlock(root, rel_path)
 }
 
+/// **Freigabe (branch-weit)** — publish the whole current branch to the shared stand. The explicit
+/// „ich bin fertig"-act of a Meilenstein. Unlike the per-path [`freigabe_push`], this does NOT gate
+/// on a single path being dirty: at Meilenstein time the work is already committed (a Stand *is* a
+/// commit, so every path is clean), which made the per-path Warden always `Refuse` and the publish
+/// unreachable through the milestone button (Issue #54-Folge). Here we simply push the branch onto
+/// the *actually shared* branch of the remote (Issue #64: `master`-repo → `master`, never a silent
+/// `main` split). The per-path Warden stays as-is for the silent laufend rhythm; the lock release
+/// is the caller's self-healing sweep over held-clean binaries ("unlock at push", E35).
+pub fn publish_branch(root: &Path) -> std::io::Result<()> {
+    let branch = current_branch(root)?;
+    let shared = shared_branch(root, &branch);
+    run_git(root, &["push", REMOTE_NAME, &format!("{branch}:{shared}")])
+}
+
 /// Release one `git lfs lock`. Treats an already-unlocked path as success (idempotent), so a
 /// double checkpoint never surfaces a scary error.
 fn unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
@@ -223,7 +237,7 @@ fn unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
 // ----------------------------------------------------------------------------------------------
 
 /// The current branch name; falls back to [`SHARED_BRANCH`] for a fresh repo on no branch.
-fn current_branch(root: &Path) -> std::io::Result<String> {
+pub fn current_branch(root: &Path) -> std::io::Result<String> {
     let name = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     Ok(if !name.is_empty() && name != "HEAD" { name } else { SHARED_BRANCH.to_string() })
 }
@@ -238,7 +252,7 @@ fn current_branch(root: &Path) -> std::io::Result<String> {
 /// `git remote set-head <remote> -a` does). When it is unknown we fall back to the caller's current
 /// branch — which, for the normal one-branch product repo, *is* the shared branch — keeping source
 /// and target in agreement either way.
-fn shared_branch(root: &Path, current: &str) -> String {
+pub fn shared_branch(root: &Path, current: &str) -> String {
     let head_ref = format!("refs/remotes/{REMOTE_NAME}/HEAD");
     let resolved = git_stdout(root, &["symbolic-ref", "--short", &head_ref])
         // `origin/master` -> `master`; tolerate the unprefixed form just in case.

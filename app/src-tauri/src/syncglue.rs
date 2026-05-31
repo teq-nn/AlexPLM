@@ -24,8 +24,21 @@ use serde::Serialize;
 use std::io::Error;
 use std::path::Path;
 
-/// The shared release branch the daily sync tracks (E34: both colleagues on `main`).
+/// The fallback shared release branch the daily sync tracks when the remote's real branch cannot
+/// be resolved (E34). The fetch/diff/merge no longer use this blindly — they resolve the *actually
+/// shared* branch of the remote first (see [`resolved_branch`]); a `master`-repo would otherwise
+/// fail every pass with „couldn't find remote ref main" (Issue #64 on the pull side, #54-Folge).
 pub const SHARED_BRANCH: &str = "main";
+
+/// The branch the daily sync actually fetches/diffs/merges against — the remote's real shared
+/// branch (Issue #64), reusing the same resolution as the push side ([`crate::pushglue`]). On a
+/// `master`-repo this is `master`, so the silent pull works instead of failing on a missing `main`.
+/// Cheap (local `symbolic-ref`/`rev-parse`); falls back to the current branch, then [`SHARED_BRANCH`].
+fn resolved_branch(root: &Path) -> String {
+    let current =
+        crate::pushglue::current_branch(root).unwrap_or_else(|_| SHARED_BRANCH.to_string());
+    crate::pushglue::shared_branch(root, &current)
+}
 
 /// The quiet daily sync state shown to the user, in the tool's OWN vocabulary (E41). Never
 /// push/pull/merge. This is what the calm status readout reflects after a silent sync; a loud
@@ -59,7 +72,7 @@ pub struct SyncOutcome {
 /// `other` is the colleague's name to phrase a possible loud question with (from `git config` or
 /// the lock owner upstream); `None` falls back to a neutral domain phrase.
 pub fn diverged_paths(root: &Path, other: Option<String>) -> std::io::Result<Vec<DivergedPath>> {
-    let remote_ref = format!("{REMOTE_NAME}/{SHARED_BRANCH}");
+    let remote_ref = format!("{REMOTE_NAME}/{}", resolved_branch(root));
     // Paths that differ between our HEAD and the fetched remote tip. If the remote ref is unknown
     // (never published / offline), there is nothing to diverge against → empty.
     let out = crate::gitrunner::command(root)
@@ -129,14 +142,14 @@ pub fn run_sync(root: &Path, other: Option<String>) -> std::io::Result<SyncOutco
 /// Fetch the remote stand into the remote-tracking ref. Reads only; never touches the worktree,
 /// so it can never corrupt a file. Best-effort: an offline/unpublished repo is not an error here.
 fn fetch(root: &Path) -> std::io::Result<()> {
-    run_git(root, &["fetch", REMOTE_NAME, SHARED_BRANCH])
+    run_git(root, &["fetch", REMOTE_NAME, &resolved_branch(root)])
 }
 
 /// Carry out the **silent merge** of the fetched remote stand into the local branch. Only reached
 /// when the Sync Decider has proven every diverged path is free, mergeable text — so git's merge
 /// touches only mergeable files and can produce no conflict marker. No user prompt (E41).
 fn silent_merge(root: &Path) -> std::io::Result<()> {
-    let remote_ref = format!("{REMOTE_NAME}/{SHARED_BRANCH}");
+    let remote_ref = format!("{REMOTE_NAME}/{}", resolved_branch(root));
     run_git(root, &["merge", "--no-edit", &remote_ref])
 }
 
@@ -167,7 +180,7 @@ fn silent_merge(root: &Path) -> std::io::Result<()> {
 pub fn resolve_sync(root: &Path, path: &str, choice: StandChoice) -> std::io::Result<SyncOutcome> {
     // Make sure we are resolving against the freshest remote stand (best-effort, never corrupts).
     let _ = fetch(root);
-    let remote_ref = format!("{REMOTE_NAME}/{SHARED_BRANCH}");
+    let remote_ref = format!("{REMOTE_NAME}/{}", resolved_branch(root));
 
     // 1. Begin the merge but do NOT commit: git auto-stages free text, leaves contested paths for us.
     //    `--no-ff` so there is always a merge commit to finish, even on a trivial case.

@@ -421,6 +421,26 @@ async fn run_checkpoint(product: String, path: String, milestone: bool) -> Resul
     .await
 }
 
+/// **Freigeben** (Issue #54-Folge): the explicit „ich bin fertig"-act of a Meilenstein. Publishes
+/// the whole current branch to the *actually shared* branch of the remote (Issue #64) and then
+/// self-heals — auto-unlocks every held-clean binary now published ("unlock at push", E35). This
+/// replaces the per-path Meilenstein checkpoint for the publish: at milestone time the work is
+/// already committed, so the per-path Warden always saw a clean path and `Refuse`d, leaving the
+/// branch never pushed to the shared stand. Returns `freigabe-push` so the readout lights
+/// „freigegeben"; the per-path Warden stays unchanged for the silent laufend backup rhythm.
+#[tauri::command]
+async fn freigeben(product: String) -> Result<WardenAction, String> {
+    // Pushes the branch + releases locks (networked, bounded); off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        pushglue::publish_branch(root).map_err(|e| e.to_string())?;
+        // Unlock-at-push for the milestone: release every held-clean binary now on the shared stand.
+        let _ = lockglue::auto_unlock_clean_paths(root);
+        Ok(WardenAction::FreigabePush)
+    })
+    .await
+}
+
 /// At a checkpoint, **auto-unlock every held lock whose path is locally clean** (Issue #42,
 /// E31/E35 self-healing). Reuses the pure Lock Warden decision per held lock — the lock policy is
 /// decided in one place, never duplicated. Returns the product-relative paths that were freed so
@@ -894,6 +914,7 @@ pub fn run() {
             connect_server,
             publish_to_server,
             run_checkpoint,
+            freigeben,
             read_git_log,
             clear_git_log,
             git_log_path,

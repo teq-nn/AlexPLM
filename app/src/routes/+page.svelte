@@ -850,10 +850,26 @@
       version,
       notes,
     });
-    // A Meilenstein is the Freigabe checkpoint ("ich bin fertig damit"): the Lock Warden
-    // publishes the finished artifact to the shared stand AND releases its lock atomically
-    // (E35). The Binär-Invariante is upheld in the Rust core, never here.
-    void runCheckpoint(node.path, true);
+    // A Meilenstein is the Freigabe ("ich bin fertig damit"): publish the whole branch to the
+    // shared stand and self-heal locks (Issue #54-Folge). The earlier per-path checkpoint always
+    // Refused here — at milestone time the work is already committed (clean), so the per-path
+    // Warden never reached a Freigabe-Push and nothing was published. The branch publish is the
+    // explicit public act; the per-path Warden still drives the silent laufend backup rhythm.
+    void freigeben();
+  }
+
+  /** Publish the current branch to the shared stand (the Meilenstein Freigabe). Best-effort: a
+   *  push failure no longer hides silently — the Diagnose-Log captures the real git exit/stderr. */
+  async function freigeben() {
+    if (!productPath) return;
+    try {
+      const action = await invoke<WardenAction>("freigeben", { product: productPath });
+      if (action !== "refuse") wardenAction = action;
+      await sweepCleanLocks();
+      await refreshStatus();
+    } catch (e) {
+      // Stays out of the silent vocabulary; the Diagnose-Log now records why a publish failed.
+    }
   }
 
   // Toggle a Meilenstein's Art (E42): Prototyp → Freigabe ("Releasen", write-protects the
