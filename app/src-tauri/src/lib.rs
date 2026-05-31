@@ -8,6 +8,7 @@ pub mod baustein;
 pub mod bibliothek;
 pub mod classifier;
 pub mod credentials;
+pub mod defaultkanten;
 pub mod edges;
 pub mod edgestore;
 pub mod forgejo;
@@ -47,7 +48,10 @@ use aufgabenblock::BlockDecision;
 use aufgabenblockglue::block_for_art;
 use baustein::{Baustein, Toolstack};
 use bibliothek::Bibliothek;
-use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
+use edgestore::{
+    add_persisted_edge, confirm_pair_edge, onboard_default_edges, read_edge_view,
+    remove_persisted_edge, EdgeView,
+};
 use freigabegate::GateVerdict;
 use freigabegateglue::gate_for_art;
 use graph::{MilestoneArt, VersionGraph};
@@ -317,6 +321,20 @@ fn remove_edge(path: String, derived: String, source: String) -> Result<EdgeView
         return Err(format!("Kein Ordner: {path}"));
     }
     remove_persisted_edge(root, &derived, &source).map_err(|e| e.to_string())?;
+    Ok(read_edge_view(root))
+}
+
+/// Einen **Baustein-Paar-Default-Vorschlag bestätigen** (Issue #56, E20): legt eine Kante mit
+/// Herkunft `PaarDefault` zwischen `derived` und `source` an und persistiert sie. Vorschläge werden
+/// nie automatisch angelegt — erst dieser Klick bestätigt sie. Gibt die frische Kantensicht zurück
+/// (samt verbleibender Vorschläge und Stale-Warnungen).
+#[tauri::command]
+fn confirm_pair_edge_cmd(path: String, derived: String, source: String) -> Result<EdgeView, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    confirm_pair_edge(root, &derived, &source).map_err(|e| e.to_string())?;
     Ok(read_edge_view(root))
 }
 
@@ -634,6 +652,9 @@ fn create_product_stack_cmd(
     // Geführte Anlage (PRD §50/§29): die Heimat-Ordner anlegen, damit der Nutzer sofort sieht, wohin
     // seine Dateien gehören.
     onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
+    // Baustein-Default-Kanten (Issue #56, E20): die Kanten INNERHALB der Bausteine beim Onboarding
+    // automatisch anlegen (idempotent; greift, sobald die Quell-/Ableitungs-Dateien erfasst sind).
+    onboard_default_edges(root).map_err(|e| e.to_string())?;
     Ok(stack)
 }
 
@@ -656,6 +677,8 @@ fn extend_product_stack_cmd(
     let stack = extend_product_stack(root, &lib, &baustein_ids).map_err(|e| e.to_string())?;
     onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
     onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
+    // Default-Kanten der (ggf. neu hinzugekommenen) Bausteine anlegen (Issue #56, E20). Idempotent.
+    onboard_default_edges(root).map_err(|e| e.to_string())?;
     Ok(stack)
 }
 
@@ -1047,6 +1070,7 @@ pub fn run() {
             read_edges,
             add_edge,
             remove_edge,
+            confirm_pair_edge_cmd,
             import_product,
             evaluate_gate,
             migrate_history,

@@ -9,8 +9,14 @@
 //! warnings (E40). Reading a missing/empty/corrupt file yields an empty set — never an error
 //! — so the warning view degrades to „nothing claimed" rather than breaking the shell.
 
-use crate::edges::{add_edge, remove_edge, stale_warnings, ArtifactStamp, Edge, StaleWarning};
+use crate::defaultkanten::{
+    baustein_default_kanten, mit_default_kanten, paar_default_vorschlaege, ArtefaktDatei,
+    KantenVorschlag,
+};
+use crate::edges::{add_edge, remove_edge, stale_warnings, ArtifactStamp, Edge, Herkunft, StaleWarning};
 use crate::projection::project_product;
+use crate::stackstore::read_stack;
+use crate::werkbank::list_tracked_files;
 use std::path::{Path, PathBuf};
 
 /// The tool's committed, shared store directory (ADR 0002). `projection.rs` skips it by name.
@@ -76,11 +82,64 @@ pub fn remove_persisted_edge(
     Ok(edges)
 }
 
-/// The edge set plus its computed Stale-Warnungen, returned to the UI in one round-trip.
+/// The edge set plus its computed Stale-Warnungen, returned to the UI in one round-trip. Trägt seit
+/// #56 zusätzlich die offenen **Paar-Default-Vorschläge** (deterministisch, per Klick bestätigt).
 #[derive(Debug, serde::Serialize)]
 pub struct EdgeView {
     pub edges: Vec<Edge>,
     pub warnings: Vec<StaleWarning>,
+    /// Offene Baustein-Paar-Default-Vorschläge (E20): noch nicht bestätigte Kanten. Leer, wenn keine
+    /// passende Baustein-Paarung im Stack liegt oder alle bereits bestätigt sind.
+    #[serde(default)]
+    pub vorschlaege: Vec<KantenVorschlag>,
+}
+
+/// Die erfassten Dateien eines Produkts als reine [`ArtefaktDatei`]-Snapshots (Pfad + Ordner) für
+/// den Default-Kanten-Kern. Side-effecting (`git ls-files`); die Ableitung selbst ist rein.
+fn artefakt_dateien(root: &Path) -> Vec<ArtefaktDatei> {
+    list_tracked_files(root)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pfad| {
+            let ordner = pfad.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+            ArtefaktDatei { pfad, ordner }
+        })
+        .collect()
+}
+
+/// **Baustein-Default-Kanten anlegen (Onboarding, E20):** den Produkt-Stack + die erfassten Dateien
+/// lesen, die Default-Kanten **innerhalb** der (aktiven) Bausteine ableiten und in `_plm/kanten.json`
+/// einfügen — bestehende (Hand-)Kanten bleiben unangetastet ([`mit_default_kanten`]). Idempotent:
+/// ein zweiter Lauf fügt nichts Neues hinzu. Stillgelegte Bausteine liefern keine Kante (still in
+/// Ruhe, E17). Gibt die persistierte Kantenmenge zurück. **Nur bei Änderung** wird geschrieben.
+pub fn onboard_default_edges(root: &Path) -> std::io::Result<Vec<Edge>> {
+    let stack = read_stack(root);
+    let dateien = artefakt_dateien(root);
+    let defaults = baustein_default_kanten(&stack, &dateien);
+    let vorhandene = read_edges(root);
+    let merged = mit_default_kanten(vorhandene.clone(), &defaults);
+    if merged != vorhandene {
+        write_edges(root, &merged)?;
+    }
+    Ok(merged)
+}
+
+/// Einen **Paar-Default-Vorschlag bestätigen** (E20): eine Kante mit Herkunft `PaarDefault` zwischen
+/// `derived` und `source` anlegen und persistieren. Dünn über [`add_persisted_edge_with_herkunft`].
+pub fn confirm_pair_edge(root: &Path, derived: &str, source: &str) -> std::io::Result<Vec<Edge>> {
+    add_persisted_edge_with_herkunft(root, derived, source, Herkunft::PaarDefault)
+}
+
+/// Wie [`add_persisted_edge`], aber mit ausdrücklicher Herkunft (für Default-/Paar-Kanten).
+pub fn add_persisted_edge_with_herkunft(
+    root: &Path,
+    derived: &str,
+    source: &str,
+    herkunft: Herkunft,
+) -> std::io::Result<Vec<Edge>> {
+    let edges = add_edge(read_edges(root), Edge::with_herkunft(derived, source, herkunft));
+    write_edges(root, &edges)?;
+    Ok(edges)
 }
 
 /// Collect the artifact timestamps for a product by walking its Bausteine and reading each
@@ -118,7 +177,12 @@ pub fn read_edge_view(root: &Path) -> EdgeView {
     let edges = read_edges(root);
     let artifacts = artifact_stamps(root);
     let warnings = stale_warnings(&edges, &artifacts);
-    EdgeView { edges, warnings }
+    // Offene Paar-Default-Vorschläge (E20): deterministisch aus Stack + erfassten Dateien, abzüglich
+    // bereits vorhandener Kanten. Rein berechnet; nur die Fakten werden hier gesammelt.
+    let stack = read_stack(root);
+    let dateien = artefakt_dateien(root);
+    let vorschlaege = paar_default_vorschlaege(&stack, &dateien, &edges);
+    EdgeView { edges, warnings, vorschlaege }
 }
 
 #[cfg(test)]
@@ -144,6 +208,35 @@ mod tests {
     fn missing_file_reads_as_zero_edges() {
         let dir = tmp();
         assert!(read_edges(&dir).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Einen Paar-Default-Vorschlag bestätigen (E20): die persistierte Kante trägt Herkunft
+    /// `PaarDefault` und ist endpunkt-dedupliziert gegen eine bereits vorhandene Hand-Kante.
+    #[test]
+    fn confirm_pair_edge_persists_with_paar_default_herkunft() {
+        let dir = tmp();
+        let edges = confirm_pair_edge(&dir, "fertigung", "elektronik/board").unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].herkunft, Herkunft::PaarDefault);
+        // auf der Platte ebenso
+        let back = read_edges(&dir);
+        assert_eq!(back, edges);
+
+        // erneut bestätigen ist ein No-op (Endpunkt-Dedup)
+        let again = confirm_pair_edge(&dir, "fertigung", "elektronik/board").unwrap();
+        assert_eq!(again.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `add_persisted_edge_with_herkunft` schreibt die Herkunft mit und rundtrippt durch die Datei.
+    #[test]
+    fn add_persisted_with_herkunft_round_trips() {
+        let dir = tmp();
+        add_persisted_edge_with_herkunft(&dir, "d", "s", Herkunft::BausteinDefault).unwrap();
+        let back = read_edges(&dir);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].herkunft, Herkunft::BausteinDefault);
         let _ = fs::remove_dir_all(&dir);
     }
 

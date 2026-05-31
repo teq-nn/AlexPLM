@@ -108,13 +108,28 @@ export interface GeoeffneterOrdner {
   neu: boolean;
 }
 
-/** A manual „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10).
+/** Woher eine Kante stammt — die drei Herkunftsstufen (E20, Issue #56). Mirrors `Herkunft`
+ *  in src-tauri/src/edges.rs. Reine Anzeige/Pflege; die Stale-Logik ist herkunfts-blind. */
+export type KantenHerkunft = "hand" | "baustein-default" | "paar-default";
+
+/** A „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10/#56).
  *  Both are product-relative artifact paths. Mirrors `Edge` in src-tauri/src/edges.rs. */
 export interface Edge {
   /** The derivation — made *from* `source`. */
   derived: string;
   /** The source the derivation „stammt aus". */
   source: string;
+  /** Herkunftsstufe (E20); fehlt sie (Altbestand), gilt "hand". */
+  herkunft?: KantenHerkunft;
+}
+
+/** Ein deterministischer Baustein-Paar-Default-Vorschlag (E20, Issue #56): per Klick zu einer
+ *  echten Kante bestätigt, nie automatisch. Mirrors `KantenVorschlag` in defaultkanten.rs. */
+export interface KantenVorschlag {
+  derived: string;
+  source: string;
+  baustein_id: string;
+  partner_id: string;
 }
 
 /** A fired Stale-Warnung: the derivation is older than its source (E26).
@@ -131,6 +146,8 @@ export interface StaleWarning {
 export interface EdgeView {
   edges: Edge[];
   warnings: StaleWarning[];
+  /** Offene Baustein-Paar-Default-Vorschläge (E20, Issue #56). */
+  vorschlaege?: KantenVorschlag[];
 }
 
 // Outcome of the clean, non-destructive import (Issue #3, E38).
@@ -290,6 +307,14 @@ export interface DefaultKante {
   source_glob: string;
 }
 
+/** A Baustein-Paar-Default-Kante (E20, Issue #56): "wenn Partner `partner_id` auch im Stack ist,
+ *  schlage `derived_glob` ← `source_glob` vor". Mirrors `PaarDefaultKante` in baustein.rs. */
+export interface PaarDefaultKante {
+  partner_id: string;
+  derived_glob: string;
+  source_glob: string;
+}
+
 /** A reusable per-tool Baustein. Mirrors `Baustein` in src-tauri/src/baustein.rs. */
 export interface Baustein {
   /** Stable kebab id, e.g. "kicad". */
@@ -308,6 +333,8 @@ export interface Baustein {
   oeffnen: Oeffnen;
   startaufgaben: Startaufgabe[];
   default_kanten: DefaultKante[];
+  /** Paar-Default-Kanten (E20, Issue #56): Vorschläge, sobald ein Partner-Baustein im Stack liegt. */
+  paar_default_kanten?: PaarDefaultKante[];
   /** Label-only stillgelegt (PRD §10). */
   stillgelegt: boolean;
 }

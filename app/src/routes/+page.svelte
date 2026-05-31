@@ -654,6 +654,43 @@
     });
   }
 
+  // ── Kanten auf der Werkbank (Issue #56) ──────────────────────────────────────
+  // Werkbank-Karten keyen auf ihren Ordner-Pfad — dieselbe Identität, die eine Kante trägt. Die
+  // Hand-Geste ("abgeleitet von …") und die Paar-Default-Vorschläge teilen sich die Kantenmenge
+  // aus #10; eine Default-Kante wird genauso behandelt wie eine Hand-Kante (E20, herkunfts-blind).
+
+  /** Other Artefakt-Karten this card can be derived from (itself excluded; no self-edge). */
+  function karteCandidates(self: ArtefaktKarteT): { ordner: string; baustein: string }[] {
+    if (!werkbank) return [];
+    return werkbank.karten
+      .filter((k) => k.ordner !== self.ordner)
+      .map((k) => ({ ordner: k.ordner, baustein: k.baustein }));
+  }
+
+  /** Draw a Hand-Kante from a Werkbank card (`derived` „stammt aus" `source`). */
+  async function deriveKarte(derived: string, source: string) {
+    if (!productPath) return;
+    edgeView = await invoke<EdgeView>("add_edge", { path: productPath, derived, source });
+  }
+
+  /** Clear the edge a Werkbank card carries (works for Hand- and Default-Kanten alike). */
+  async function clearKarteEdge(derived: string) {
+    if (!productPath) return;
+    const source = sourceOf.get(derived);
+    if (!source) return;
+    edgeView = await invoke<EdgeView>("remove_edge", { path: productPath, derived, source });
+  }
+
+  /** Confirm a deterministic Baustein-Paar-Default suggestion → a PaarDefault edge (E20). */
+  async function confirmSuggestion(derived: string, source: string) {
+    if (!productPath) return;
+    edgeView = await invoke<EdgeView>("confirm_pair_edge_cmd", {
+      path: productPath,
+      derived,
+      source,
+    });
+  }
+
   // Single long-lived listener for settled saves. The watcher (Rust) does the
   // debouncing and the silent local commit; we only render the resulting Stand and
   // refresh the tree so the new node appears.
@@ -1263,7 +1300,32 @@
                   index={i}
                   signal={signalFor(k)}
                   onOpen={openKarte}
+                  candidates={karteCandidates(k)}
+                  source={sourceOf.get(k.ordner) ?? null}
+                  onDeriveFrom={(s) => deriveKarte(k.ordner, s)}
+                  onClearEdge={() => clearKarteEdge(k.ordner)}
                 />
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Baustein-Paar-Default-Vorschläge (Issue #56, E20): deterministisch aus dem Stack,
+               per Klick bestätigt — nie automatisch. Eine ruhige Einladung, kein Alarm. -->
+          {#if (edgeView.vorschlaege?.length ?? 0) > 0}
+            <div class="vorschlaege" role="group" aria-label="Vorgeschlagene Kanten">
+              <span class="vs-head label">Vorgeschlagene Kanten</span>
+              {#each edgeView.vorschlaege ?? [] as v (v.derived + "<" + v.source)}
+                <div class="vs-row">
+                  <span class="vs-text mono">
+                    <span class="vs-d">{v.derived}</span>
+                    <span class="vs-arrow" aria-hidden="true">←</span>
+                    <span class="vs-s">{v.source}</span>
+                  </span>
+                  <span class="vs-why mono">{v.baustein_id} + {v.partner_id}</span>
+                  <button class="vs-confirm label" onclick={() => confirmSuggestion(v.derived, v.source)}>
+                    bestätigen
+                  </button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -1857,6 +1919,86 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  /* Baustein-Paar-Default-Vorschläge (Issue #56, E20): a quiet, recessed tray under the cards.
+     It is an invitation, not an alarm — routine grey, never the rationed orange. Each row reads
+     "Ableitung ← Quelle" in Mono (data) with the originating Baustein-pair as a faint reason, and
+     a single calm "bestätigen" cap. Confirming turns the deterministic suggestion into an edge. */
+  .vorschlaege {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 12px 14px;
+    background: var(--surface-sunken);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius);
+  }
+  .vs-head {
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    margin-bottom: 2px;
+  }
+  .vs-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .vs-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    font-size: 11px;
+    overflow: hidden;
+  }
+  .vs-d {
+    color: var(--ink-default);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .vs-arrow {
+    color: var(--key-mid);
+    flex: none;
+  }
+  .vs-s {
+    color: var(--ink-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .vs-why {
+    flex: none;
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    opacity: 0.7;
+  }
+  /* Calm creme cap — confirming a deterministic suggestion is routine, grey work (E22). */
+  .vs-confirm {
+    flex: none;
+    appearance: none;
+    cursor: pointer;
+    background: var(--key-light);
+    color: var(--ink-strong);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    padding: 5px 11px;
+    font-size: 9.5px;
+    box-shadow: 0 1px 0 rgba(28, 26, 25, 0.1);
+    transition:
+      background var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+  }
+  .vs-confirm:hover {
+    background: #f5f3ee;
+  }
+  .vs-confirm:active {
+    transform: translateY(1px);
+    box-shadow: none;
   }
 
   /* Aufgaben & Hinweise sit below the Bausteine, set off by a generous gap so the work area

@@ -16,13 +16,35 @@
     onOpen = (_karte: ArtefaktKarte) => {},
     // Hand-assignment is ONLY a correction (Issue #47): a quiet, hidden-until-asked gesture.
     onCorrect = undefined,
+    // ── Kanten (Issue #56) ──────────────────────────────────────────────────
+    // Other artifacts this card can be „abgeleitet von" (its own folder excluded by the parent).
+    candidates = [],
+    // The source this card is currently „abgeleitet von", if an edge (Hand- OR Default-Kante) exists.
+    source = null,
+    // Hand-gesture: draw / clear a manual „abgeleitet von" edge for this card (E40 opt-in).
+    onDeriveFrom = (_source: string) => {},
+    onClearEdge = () => {},
   }: {
     karte: ArtefaktKarte;
     index?: number;
     signal?: ArtifactSignal | null;
     onOpen?: (karte: ArtefaktKarte) => void;
     onCorrect?: ((karte: ArtefaktKarte) => void) | undefined;
+    candidates?: { ordner: string; baustein: string }[];
+    source?: string | null;
+    onDeriveFrom?: (source: string) => void;
+    onClearEdge?: () => void;
   } = $props();
+
+  // The "abgeleitet von" picker is a cheap, hidden-until-asked gesture (E40): routine stays quiet.
+  let picking = $state(false);
+  let pick = $state("");
+  function commitPick() {
+    const chosen = pick.trim();
+    if (chosen) onDeriveFrom(chosen);
+    picking = false;
+    pick = "";
+  }
 
   // The Hauptdatei carries weight (filename), the path stays visible but muted — the tool
   // never hides the filesystem. Fall back to the folder when a card has no single main file.
@@ -153,6 +175,31 @@
       <button class="correct label" onclick={() => onCorrect?.(karte)} title="Zuordnung korrigieren">
         zuordnen …
       </button>
+    {/if}
+  </div>
+
+  <!-- „Abgeleitet von" — opt-in lineage (Issue #56, E40). Absent edge = quiet card, no claim.
+       A Hand-Kante and a Baustein-/Paar-Default-Kante look the same here (herkunfts-blind, E20);
+       the Stale-Warnung rides on `projektion.stale` above and stays unchanged (E26). -->
+  <div class="edge">
+    {#if source}
+      <div class="lineage" class:stale={projektion.stale} title={`abgeleitet von ${source}`}>
+        <span class="label from">abgeleitet von</span>
+        <span class="mono src">{source}</span>
+        <button class="clear" onclick={onClearEdge} title="Kante entfernen" aria-label="Kante entfernen">×</button>
+      </div>
+    {:else if picking}
+      <div class="picker">
+        <select class="mono pick" bind:value={pick} onchange={commitPick} aria-label="Quelle wählen">
+          <option value="" disabled selected>Quelle wählen …</option>
+          {#each candidates as c (c.ordner)}
+            <option value={c.ordner}>{c.baustein} — {c.ordner}</option>
+          {/each}
+        </select>
+        <button class="link label" onclick={() => (picking = false)}>abbrechen</button>
+      </div>
+    {:else if candidates.length > 0}
+      <button class="derive label" onclick={() => (picking = true)}>+ abgeleitet von …</button>
     {/if}
   </div>
 </article>
@@ -357,6 +404,109 @@
   }
   .correct:hover {
     color: var(--ink-default);
+  }
+
+  /* ── „Abgeleitet von" lineage row (Issue #56) ──────────────────────────────
+     Quiet by default; the source path is data (Mono), the label is caps. Same visual language
+     as ArtifactCard's lineage so Hand- and Default-Kanten read identically across both views. */
+  .edge {
+    min-height: 20px;
+    display: flex;
+    align-items: center;
+  }
+  .lineage {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    width: 100%;
+  }
+  .from {
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    flex: none;
+  }
+  /* When this card is stale (source newer — E26), the lineage label lifts its voice (the one
+     loud exception); the orange stays a single accent, never a fill. */
+  .lineage.stale .from {
+    color: var(--accent);
+  }
+  .src {
+    color: var(--ink-default);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .clear {
+    appearance: none;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--ink-muted);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    flex: none;
+    transition: color var(--dur) var(--ease);
+  }
+  .clear:hover {
+    color: var(--ink-strong);
+  }
+  /* The cheap hand-gesture: a quiet, dotted "key" that only appears when there's a candidate. */
+  .derive {
+    appearance: none;
+    cursor: pointer;
+    background: none;
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-sm);
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    padding: 4px 8px;
+    transition:
+      border-color var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+  .derive:hover {
+    border-color: var(--key-mid);
+    color: var(--ink-default);
+  }
+  .picker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+  .pick {
+    flex: 1;
+    min-width: 0;
+    background: var(--surface-sunken);
+    color: var(--ink-default);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+  .pick:focus {
+    outline: none;
+    border-color: var(--key-mid);
+  }
+  .link {
+    appearance: none;
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    padding: 0;
+    flex: none;
+    transition: color var(--dur) var(--ease);
+  }
+  .link:hover {
+    color: var(--ink-strong);
   }
 
   @keyframes rise {
