@@ -1,17 +1,33 @@
 <script lang="ts">
-  import type { StandNode, VersionGraph } from "./types";
+  import type { GraphFilter, StandNode, VersionGraph } from "./types";
 
   let {
     graph,
     onPromote,
     onToggleArt,
+    filter = null,
+    onNodeAction = null,
+    title = "Verlauf · Graph",
   }: {
     graph: VersionGraph | null;
     /** Promote a Stand to a Meilenstein with human VERSION_NOTES text. */
     onPromote: (node: StandNode, version: string, notes: string) => Promise<void>;
     /** Toggle a Meilenstein's Art: Prototyp ↔ Freigabe ("Releasen" / "Un-Release"). E42. */
     onToggleArt: (node: StandNode) => Promise<void>;
+    /** Graph-Raum display filter (Issue #55, E45): hides nodes only, never rewrites. When null
+     *  (the embedded column) everything shows. */
+    filter?: GraphFilter | null;
+    /** Graph-Raum node-verb hook (Issue #55, E27): when provided, a node click opens the verb
+     *  menu instead of the promote dialog — the room never silently moves the Werkbank. The
+     *  caller is handed the clicked node and the LED's screen rect to anchor the menu. */
+    onNodeAction?: ((node: StandNode, anchor: DOMRect) => void) | null;
+    /** Heading shown in the display head. */
+    title?: string;
   } = $props();
+
+  // Graph-Raum mode: a node click offers the three verbs instead of promoting. The embedded
+  // column keeps its promote-on-click affordance.
+  const verbMode = $derived(onNodeAction !== null);
 
   // The promote dialog is the rare moment the user writes text (E28) — it is a quiet,
   // deliberate panel, not an alarm. No orange here; orange is for the laute Ausnahme only.
@@ -95,7 +111,16 @@
   const PAD_LEFT = 20; // x of the trunk (lane 0) centre
   const RIGHT_GUT = 18; // breathing room between the lanes and the text body
 
-  const nodes = $derived(graph?.nodes ?? []);
+  // Pure display filter (Issue #55, E45): hide variant lines and/or keep only Meilensteine.
+  // The active line always survives the variant filter so "where I am" stays navigable; the
+  // filter mirrors the Rust `passes_filter` core exactly. Null filter = show everything.
+  function passesFilter(n: StandNode): boolean {
+    if (!filter) return true;
+    if (!filter.varianten && !n.on_active) return false;
+    if (filter.nur_meilensteine && n.milestone === null) return false;
+    return true;
+  }
+  const nodes = $derived((graph?.nodes ?? []).filter(passesFilter));
   const laneCount = $derived(graph?.lane_count ?? 1);
   const rowOf = $derived(new Map(nodes.map((n, i) => [n.id, i])));
   const byId = $derived(new Map(nodes.map((n) => [n.id, n])));
@@ -185,31 +210,43 @@
   function hideTip() {
     tip = null;
   }
+  // A node click: in Graph-Raum mode it opens the verb menu (the room never silently moves the
+  // Werkbank — E27/§55); in the embedded column it opens the promote dialog as before.
+  function activateNode(node: StandNode, ev: MouseEvent | KeyboardEvent) {
+    if (verbMode && onNodeAction) {
+      const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+      onNodeAction(node, r);
+    } else {
+      openPromote(node);
+    }
+  }
   function onNodeKey(node: StandNode, ev: KeyboardEvent) {
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
-      openPromote(node);
+      activateNode(node, ev);
     }
   }
 </script>
 
-<section class="display" aria-label="Versionsbaum">
+<section class="display" aria-label={title}>
   <div class="display-head">
-    <span class="label title">Versionsbaum</span>
+    <span class="label title">{title}</span>
     {#if graph}
       {#if branched && graph.active_branch}
-        <span class="active-line label" title="Aktive Linie">
+        <span class="active-line label" title="Aktiver Branch">
           <span class="active-dot" aria-hidden="true"></span>
           {graph.active_branch}
         </span>
       {/if}
-      <span class="node-count mono">{graph.nodes.length.toString().padStart(2, "0")}</span>
+      <span class="node-count mono">{nodes.length.toString().padStart(2, "0")}</span>
     {/if}
   </div>
 
   <div class="tree-scroll">
-    {#if !graph || graph.nodes.length === 0}
-      <p class="idle mono">— noch keine Stände —</p>
+    {#if !graph || nodes.length === 0}
+      <p class="idle mono">
+        {#if graph && graph.nodes.length > 0}— nichts passt zum Filter —{:else}— noch keine Commits —{/if}
+      </p>
     {:else}
       <div
         class="graph"
@@ -229,7 +266,7 @@
         </svg>
 
         <ol class="tree">
-          {#each graph.nodes as n, i (n.id)}
+          {#each nodes as n, i (n.id)}
             {@const isMs = n.milestone !== null}
             {@const foreign = !n.on_active}
             {@const isTip = tipOfLane.has(n.id)}
@@ -245,11 +282,11 @@
                 class:offloaded={n.offloaded}
                 class:active={isActive}
                 style={foreign ? `--c: ${foreignTint(n.lane)};` : ""}
-                title="Zum Meilenstein machen"
+                title={verbMode ? "Verben: öffnen · abzweigen · zurückwerfen" : "Zum Meilenstein machen"}
                 aria-label={isMs
-                  ? `Meilenstein ${n.milestone}, ${day(n.timestamp)}`
-                  : `Stand ${leaf(n.path)}, ${day(n.timestamp)} — zum Meilenstein machen`}
-                onclick={() => openPromote(n)}
+                  ? `Meilenstein ${n.milestone}, ${day(n.timestamp)}${verbMode ? " — Verben öffnen" : ""}`
+                  : `Commit ${leaf(n.path)}, ${day(n.timestamp)} — ${verbMode ? "Verben öffnen" : "zum Meilenstein machen"}`}
+                onclick={(e) => activateNode(n, e)}
                 onkeydown={(e) => onNodeKey(n, e)}
                 onmouseenter={(e) => showTip(n, e)}
                 onmousemove={moveTip}
@@ -262,7 +299,7 @@
 
               <div class="body">
                 {#if foreign && isTip && n.branch}
-                  <span class="zweig-tag label" title="Zweig {n.branch}">{n.branch}</span>
+                  <span class="zweig-tag label" title="Branch {n.branch}">{n.branch}</span>
                 {/if}
                 <div class="line">
                   <span class="path mono" title={n.path}>{leaf(n.path)}</span>
@@ -320,11 +357,11 @@
       {/if}
     </div>
     <div class="tip-row mono">
-      <span class="tip-key label">Linie</span>
-      <span class="tip-val">{tip.node.branch ?? "aktive Linie"}</span>
+      <span class="tip-key label">Branch</span>
+      <span class="tip-val">{tip.node.branch ?? "aktiver Branch"}</span>
     </div>
     <div class="tip-row mono">
-      <span class="tip-key label">Stand</span>
+      <span class="tip-key label">Commit</span>
       <span class="tip-val">{day(tip.node.timestamp)} · {clock(tip.node.timestamp)}</span>
     </div>
     {#if tip.node.milestone !== null}
@@ -418,7 +455,7 @@
           class="input mono notes"
           bind:value={draftNotes}
           rows="5"
-          placeholder="Was macht diesen Stand vorzeigbar?"
+          placeholder="Was macht diesen Commit vorzeigbar?"
         ></textarea>
         <span class="field-hint label">Der einzige Ort für deinen Text</span>
       </label>

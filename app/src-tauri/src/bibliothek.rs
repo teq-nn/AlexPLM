@@ -224,6 +224,7 @@ mod tests {
             oeffnen: Oeffnen::Auto,
             startaufgaben: vec![],
             default_kanten: vec![],
+            paar_default_kanten: vec![],
             stillgelegt: false,
         }
     }

@@ -8,15 +8,20 @@ pub mod baustein;
 pub mod bibliothek;
 pub mod classifier;
 pub mod credentials;
+pub mod defaultkanten;
 pub mod edges;
 pub mod edgestore;
 pub mod forgejo;
+pub mod freigabegate;
+pub mod freigabegateglue;
 pub mod gitlog;
 pub mod gitrunner;
 pub mod graph;
 pub mod graphread;
 pub mod import;
 pub mod import_gate;
+pub mod kartenstatus;
+pub mod knotenverben;
 pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
@@ -27,6 +32,7 @@ pub mod registry;
 pub mod search;
 pub mod setup;
 pub mod stackstore;
+pub mod stilllegen;
 pub mod syncdecider;
 pub mod syncglue;
 pub mod taskstore;
@@ -34,6 +40,7 @@ pub mod tasks;
 pub mod warden;
 pub mod watcher;
 pub mod werkbank;
+pub mod worktreeglue;
 pub mod zuordnung;
 pub mod zuordnungstore;
 
@@ -41,7 +48,12 @@ use aufgabenblock::BlockDecision;
 use aufgabenblockglue::block_for_art;
 use baustein::{Baustein, Toolstack};
 use bibliothek::Bibliothek;
-use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
+use edgestore::{
+    add_persisted_edge, confirm_pair_edge, onboard_default_edges, read_edge_view,
+    remove_persisted_edge, EdgeView,
+};
+use freigabegate::GateVerdict;
+use freigabegateglue::gate_for_art;
 use graph::{MilestoneArt, VersionGraph};
 use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
@@ -57,6 +69,7 @@ use taskstore::{create_task, delete_task, read_tasks, set_task_status, update_ta
 use tasks::{NewTask, Task, TaskEdit, TaskKind, TaskLink, TaskStatus};
 use warden::{Checkpoint, WardenAction};
 use werkbank::{read_werkbank, WerkbankView};
+use worktreeglue::{als_ordner_oeffnen, von_hier_abzweigen, zurueckwerfen, GeoeffneterOrdner};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -217,6 +230,64 @@ fn toggle_milestone_art(path: String, version: String) -> Result<VersionGraph, S
     toggle_milestone_freigabe(root, &version).map_err(|e| e.to_string())
 }
 
+/// **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
+/// den Stand `stand_id` als *separaten, schreibgeschützten* Ordner neben dem Produkt (ein detached
+/// `git worktree`). Die Werkbank (Jetzt-Zustand) bleibt unberührt — ein Klick auf einen alten Knoten
+/// bewegt sie nie still. Idempotent: ein schon materialisierter Ordner wird nur zurückgegeben. Die
+/// UI übergibt den zurückgegebenen Pfad dem OS zum Öffnen.
+#[tauri::command]
+async fn knoten_als_ordner(
+    path: String,
+    stand_id: String,
+    label: String,
+) -> Result<GeoeffneterOrdner, String> {
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        als_ordner_oeffnen(root, &stand_id, &label).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Von hier abzweigen** (Issue #55, E27/E8/E43): ein bewusster neuer Branch ab dem Stand
+/// `stand_id`. Bevor die Werkbank bewegt wird, sichert das Werkzeug jede laufende Arbeit als
+/// gewöhnlichen Stand (E8) — kein `stash`, nichts geht verloren —, dann `checkout -b`. Gibt den
+/// frisch projizierten Versionsbaum zurück, damit die neue Linie sofort erscheint.
+#[tauri::command]
+async fn knoten_abzweigen(
+    path: String,
+    stand_id: String,
+    branch: String,
+) -> Result<VersionGraph, String> {
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        von_hier_abzweigen(root, &stand_id, &branch, SystemTime::now()).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Zurückwerfen** (Issue #55, E27 — destruktiv, hinter der schwarzen „Historie anfassen"-Gate,
+/// nie der Default): springt auf den alten Stand `stand_id`, aber **sicher** — keine versteckte
+/// `reset --hard`/`rebase`-Mechanik (E43). Es sichert erst die laufende Arbeit (E8), holt dann den
+/// alten Inhalt in die Werkbank und schreibt ihn als **neuen, vorwärts gerichteten Stand** fest
+/// („behalten, nie umschreiben", E9 — voll reversibel). Gibt den frischen Versionsbaum zurück.
+#[tauri::command]
+async fn knoten_zurueckwerfen(path: String, stand_id: String) -> Result<VersionGraph, String> {
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        zurueckwerfen(root, &stand_id, SystemTime::now()).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 /// Read the product's manual „abgeleitet von" edges and their Stale-Warnungen (Issue #10).
 /// Edges are opt-in: a product with no edge file has zero edges and no warnings (E40). Pure
 /// read — the edges + artifact timestamps are gathered then judged by the pure core.
@@ -250,6 +321,20 @@ fn remove_edge(path: String, derived: String, source: String) -> Result<EdgeView
         return Err(format!("Kein Ordner: {path}"));
     }
     remove_persisted_edge(root, &derived, &source).map_err(|e| e.to_string())?;
+    Ok(read_edge_view(root))
+}
+
+/// Einen **Baustein-Paar-Default-Vorschlag bestätigen** (Issue #56, E20): legt eine Kante mit
+/// Herkunft `PaarDefault` zwischen `derived` und `source` an und persistiert sie. Vorschläge werden
+/// nie automatisch angelegt — erst dieser Klick bestätigt sie. Gibt die frische Kantensicht zurück
+/// (samt verbleibender Vorschläge und Stale-Warnungen).
+#[tauri::command]
+fn confirm_pair_edge_cmd(path: String, derived: String, source: String) -> Result<EdgeView, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    confirm_pair_edge(root, &derived, &source).map_err(|e| e.to_string())?;
     Ok(read_edge_view(root))
 }
 
@@ -567,6 +652,9 @@ fn create_product_stack_cmd(
     // Geführte Anlage (PRD §50/§29): die Heimat-Ordner anlegen, damit der Nutzer sofort sieht, wohin
     // seine Dateien gehören.
     onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
+    // Baustein-Default-Kanten (Issue #56, E20): die Kanten INNERHALB der Bausteine beim Onboarding
+    // automatisch anlegen (idempotent; greift, sobald die Quell-/Ableitungs-Dateien erfasst sind).
+    onboard_default_edges(root).map_err(|e| e.to_string())?;
     Ok(stack)
 }
 
@@ -589,7 +677,54 @@ fn extend_product_stack_cmd(
     let stack = extend_product_stack(root, &lib, &baustein_ids).map_err(|e| e.to_string())?;
     onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
     onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
+    // Default-Kanten der (ggf. neu hinzugekommenen) Bausteine anlegen (Issue #56, E20). Idempotent.
+    onboard_default_edges(root).map_err(|e| e.to_string())?;
     Ok(stack)
+}
+
+/// Die Antwort des Stilllegens (Issue #51): die label-only-**Wirkung** (welche Globs erlöschen,
+/// welche Dateien zu Waisen werden, welches Sediment liegen bleibt) **plus** die frisch berechnete
+/// Werkbank, sodass die UI die neuen Waisen im Unzugeordnet-Fach sofort sieht.
+#[derive(serde::Serialize)]
+struct StilllegenResult {
+    wirkung: stilllegen::StilllegenWirkung,
+    stack: ProduktStack,
+    werkbank: WerkbankView,
+}
+
+/// Einen Baustein eines Produkts **stilllegen** bzw. reaktivieren (Issue #51, E17). Label-only und
+/// (fast) umkehrbar: setzt nur den `stillgelegt`-Schalter in `_plm/stack.json`. Die alten Globs
+/// hören dadurch auf zu greifen → ihre Dateien werden zu **Waisen** im Unzugeordnet-Fach; die
+/// Ignore-/LFS-Marker-Blöcke bleiben als **Sediment** unangetastet in den Dotfiles liegen; **nichts
+/// wird verschoben oder gelöscht**. Gibt die Wirkung + den neuen Stack + die frisch gefaltete
+/// Werkbank zurück. Eine unbekannte `id` ist eine no-op (kein Fehler).
+#[tauri::command]
+async fn stilllegen_baustein_cmd(
+    product: String,
+    baustein_id: String,
+    stillgelegt: bool,
+) -> Result<StilllegenResult, String> {
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        // Die Wirkung VOR dem Schreiben aus dem aktuellen Stand berechnen (reiner Kern), damit die
+        // erloschenen Globs/neuen Waisen unabhängig von der Persistenz prüfbar sind.
+        let stack_vorher = read_stack(root);
+        let tracked = werkbank::list_tracked_files(root).map_err(|e| e.to_string())?;
+        let wirkung = if stillgelegt {
+            stilllegen::berechne_wirkung(&stack_vorher, &baustein_id, &tracked)
+        } else {
+            // Reaktivieren hat keine Stilllege-Wirkung; eine leere, neutrale Wirkung genügt der UI.
+            stilllegen::StilllegenWirkung { nichts_bewegt: true, ..Default::default() }
+        };
+        let stack =
+            stackstore::stilllegen_baustein(root, &baustein_id, stillgelegt).map_err(|e| e.to_string())?;
+        let werkbank = read_werkbank(root).map_err(|e| e.to_string())?;
+        Ok(StilllegenResult { wirkung, stack, werkbank })
+    })
+    .await
 }
 
 /// Read a product's copied Produkt-Stack from `_plm/stack.json` (Issue #39). Pure read; a product
@@ -850,6 +985,34 @@ fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision,
     Ok(block_for_art(root, art))
 }
 
+/// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Meilenstein-Art
+/// berechnen (Issue #52, E19/E19.3). Sammelt die offenen Punkte — offene Aufgaben (#49), Waisen
+/// (#47) und Stale-Kanten (#10) — und staffelt sie **nach Härte** hinter **einem** kontextabhängigen
+/// Knopf: alles sauber → „Taggen"; weicher Block (Waise/Pflicht) → „Trotzdem freigeben" + ein
+/// protokollierter Satz; harter Block (offene blockierende Aufgabe) → Knopf aus, daneben die
+/// Aufgabe mit ihren Auswegen. Reine Lesepfade der `_plm`-Stores; das Urteil ist der reine
+/// [`freigabegate::decide_gate`]-Kern. Ein leeres Produkt ist sauber (sperrt nie aus — E22).
+#[tauri::command]
+fn evaluate_freigabe_gate(path: String, art: MilestoneArt) -> Result<GateVerdict, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(gate_for_art(root, art))
+}
+
+/// Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
+/// Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
+/// protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
+/// „Trotzdem freigeben" nachvollziehbar bleibt.
+#[tauri::command]
+fn log_freigabe_begruendung(version: String, begruendung: String) {
+    gitlog::record(
+        "freigabe-begruendung",
+        format!("Freigabe „{version}“ trotz weichem Block: {begruendung}"),
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Das Git-/Sync-Diagnose-Log lesen (Issue #54-Folge) — das In-App-Diagnose-Panel pollt das, um
 /// zu zeigen, **ob und warum** ein Push lief oder nicht (Warden-Entscheidung + reale git-Exits).
@@ -901,9 +1064,13 @@ pub fn run() {
             read_version_graph,
             promote_milestone,
             toggle_milestone_art,
+            knoten_als_ordner,
+            knoten_abzweigen,
+            knoten_zurueckwerfen,
             read_edges,
             add_edge,
             remove_edge,
+            confirm_pair_edge_cmd,
             import_product,
             evaluate_gate,
             migrate_history,
@@ -915,6 +1082,8 @@ pub fn run() {
             publish_to_server,
             run_checkpoint,
             freigeben,
+            evaluate_freigabe_gate,
+            log_freigabe_begruendung,
             read_git_log,
             clear_git_log,
             git_log_path,
@@ -925,6 +1094,7 @@ pub fn run() {
             toolstack_baustein_ids,
             create_product_stack_cmd,
             extend_product_stack_cmd,
+            stilllegen_baustein_cmd,
             read_product_stack,
             read_werkbank_cmd,
             assign_artefakt_cmd,

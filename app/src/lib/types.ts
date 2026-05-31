@@ -83,13 +83,53 @@ export interface VersionGraph {
   lane_count: number;
 }
 
-/** A manual „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10).
+/** One of the three Graph-Raum node verbs (Issue #55, E27).
+ *  Mirrors `KnotenVerb` in src-tauri/src/knotenverben.rs (kebab-case). */
+export type KnotenVerb =
+  | "als-ordner-oeffnen"
+  | "von-hier-abzweigen"
+  | "zurueckwerfen";
+
+/** The pure Graph-Raum display filter (Issue #55, E45). Hides nodes only — never rewrites.
+ *  Mirrors `GraphFilter` in src-tauri/src/knotenverben.rs. */
+export interface GraphFilter {
+  /** Show variant lines (non-active Zweige)? Default true. */
+  varianten: boolean;
+  /** Show only Meilensteine (promoted Stände)? Default false. */
+  nur_meilensteine: boolean;
+}
+
+/** Result of „Als Ordner öffnen" (Issue #55): the materialised read-only worktree path.
+ *  Mirrors `GeoeffneterOrdner` in src-tauri/src/worktreeglue.rs. */
+export interface GeoeffneterOrdner {
+  /** Absolute path of the materialised folder, forward-slash display. */
+  pfad: string;
+  /** Whether the folder was freshly created (vs. already present). */
+  neu: boolean;
+}
+
+/** Woher eine Kante stammt — die drei Herkunftsstufen (E20, Issue #56). Mirrors `Herkunft`
+ *  in src-tauri/src/edges.rs. Reine Anzeige/Pflege; die Stale-Logik ist herkunfts-blind. */
+export type KantenHerkunft = "hand" | "baustein-default" | "paar-default";
+
+/** A „abgeleitet von" edge: `derived` „stammt aus" `source` (Issue #10/#56).
  *  Both are product-relative artifact paths. Mirrors `Edge` in src-tauri/src/edges.rs. */
 export interface Edge {
   /** The derivation — made *from* `source`. */
   derived: string;
   /** The source the derivation „stammt aus". */
   source: string;
+  /** Herkunftsstufe (E20); fehlt sie (Altbestand), gilt "hand". */
+  herkunft?: KantenHerkunft;
+}
+
+/** Ein deterministischer Baustein-Paar-Default-Vorschlag (E20, Issue #56): per Klick zu einer
+ *  echten Kante bestätigt, nie automatisch. Mirrors `KantenVorschlag` in defaultkanten.rs. */
+export interface KantenVorschlag {
+  derived: string;
+  source: string;
+  baustein_id: string;
+  partner_id: string;
 }
 
 /** A fired Stale-Warnung: the derivation is older than its source (E26).
@@ -106,6 +146,8 @@ export interface StaleWarning {
 export interface EdgeView {
   edges: Edge[];
   warnings: StaleWarning[];
+  /** Offene Baustein-Paar-Default-Vorschläge (E20, Issue #56). */
+  vorschlaege?: KantenVorschlag[];
 }
 
 // Outcome of the clean, non-destructive import (Issue #3, E38).
@@ -265,6 +307,14 @@ export interface DefaultKante {
   source_glob: string;
 }
 
+/** A Baustein-Paar-Default-Kante (E20, Issue #56): "wenn Partner `partner_id` auch im Stack ist,
+ *  schlage `derived_glob` ← `source_glob` vor". Mirrors `PaarDefaultKante` in baustein.rs. */
+export interface PaarDefaultKante {
+  partner_id: string;
+  derived_glob: string;
+  source_glob: string;
+}
+
 /** A reusable per-tool Baustein. Mirrors `Baustein` in src-tauri/src/baustein.rs. */
 export interface Baustein {
   /** Stable kebab id, e.g. "kicad". */
@@ -283,6 +333,8 @@ export interface Baustein {
   oeffnen: Oeffnen;
   startaufgaben: Startaufgabe[];
   default_kanten: DefaultKante[];
+  /** Paar-Default-Kanten (E20, Issue #56): Vorschläge, sobald ein Partner-Baustein im Stack liegt. */
+  paar_default_kanten?: PaarDefaultKante[];
   /** Label-only stillgelegt (PRD §10). */
   stillgelegt: boolean;
 }
@@ -331,6 +383,28 @@ export interface ProduktStack {
  *  program; `ordner` → open the folder. Mirrors `PrimaerAktion` in src-tauri/src/zuordnung.rs. */
 export type PrimaerAktion = "datei" | "ordner";
 
+/** The live, derived Artefakt-Karten-Status from Git (Issue #53, E26) — never stored, always
+ *  read back. Mirrors `KartenStatus` in src-tauri/src/kartenstatus.rs (serde kebab-case). The
+ *  card is "im Alltag fast stumm": `vorhanden` is the quiet normal case, `geaendert`/`fehlt` are
+ *  the loud "prüf-mich" cases, `uebernommen` a quiet hint, `ignoriert` the silent out-of-band one.
+ *  Note the misspelling-free tokens follow the Rust enum names (ä → ae). */
+export type KartenStatus =
+  | "vorhanden"
+  | "geaendert"
+  | "fehlt"
+  | "uebernommen"
+  | "ignoriert";
+
+/** The derived card projection (Issue #53): the folded Git status PLUS the orthogonal Stale flag.
+ *  `status` comes from Git, `stale` from Kanten (E26/E40: no edge ⇒ never stale). A quiet
+ *  "vorhanden" card can still be stale. Mirrors `KartenProjektion` in src-tauri/src/kartenstatus.rs.
+ *  This is the shape #55 (filters) and #56 (edges) consume. */
+export interface KartenProjektion {
+  status: KartenStatus;
+  /** True iff a Hand-Kante exists and a source is newer than this derivation (E26/E40). */
+  stale: boolean;
+}
+
 /** An Artefakt-Karte built by convention from tracked files. Mirrors `ArtefaktKarte` in
  *  src-tauri/src/werkbank.rs. */
 export interface ArtefaktKarte {
@@ -348,6 +422,8 @@ export interface ArtefaktKarte {
   primaer: PrimaerAktion;
   /** Absolute on-disk target of the primary action (file or folder), for OS-default open. */
   ziel: string | null;
+  /** Live, derived Karten-Status + Stale flag (Issue #53, E26) — from Git + Kanten, never stored. */
+  projektion: KartenProjektion;
 }
 
 /** An Unzugeordnet-Fach per Arbeitsbereich: the Waisen (tracked files lacking a label). Nothing is
@@ -364,6 +440,31 @@ export interface UnzugeordnetFach {
 export interface WerkbankView {
   karten: ArtefaktKarte[];
   unzugeordnet: UnzugeordnetFach[];
+}
+
+// Baustein stilllegen (Issue #51, E17). Label-only und (fast) umkehrbar: die alten Globs hören auf
+// zu greifen → ihre Dateien werden zu Waisen im Unzugeordnet-Fach; die Ignore-/LFS-Marker-Blöcke
+// bleiben als Sediment liegen; nichts wird verschoben oder gelöscht.
+
+/** The label-only effect of decommissioning a Baustein. Mirrors `StilllegenWirkung` in
+ *  src-tauri/src/stilllegen.rs. */
+export interface StilllegenWirkung {
+  /** The Baustein's globs that stop matching. */
+  erloschene_globs: string[];
+  /** Previously-labelled files that become Waisen (orphans), product-relative, sorted. */
+  neue_waisen: string[];
+  /** The Ignore/LFS marker lines that remain as Sediment in the dotfiles. */
+  sediment: string[];
+  /** Invariant: nothing is moved or deleted — always true. */
+  nichts_bewegt: boolean;
+}
+
+/** The result of the stilllegen command: the effect plus the rewritten stack and freshly folded
+ *  Werkbank (so the new Waisen show in the Unzugeordnet-Fach at once). Mirrors `StilllegenResult`. */
+export interface StilllegenResult {
+  wirkung: StilllegenWirkung;
+  stack: ProduktStack;
+  werkbank: WerkbankView;
 }
 
 // The Produkt-Registry + produktübergreifende Live-Suche (Issue #45, E45). The registry is
@@ -474,4 +575,56 @@ export interface BlockDecision {
   blocked: boolean;
   /** Ids of the open Aufgaben that block this checkpoint, in input order. Empty ⇔ not blocked. */
   blocking_task_ids: string[];
+}
+
+// -------------------------------------------------------------------------------------------------
+// Freigabe-Gate (Issue #52, E19/E19.3). The dreistufige Block in ONE context-dependent button:
+// open points are collected from open Aufgaben (#49), Waisen/Pflicht (#47) and Stale-Kanten (#10),
+// staffed nach Härte (hardest first), and the one button changes label + severity. Surfaced by the
+// `evaluate_freigabe_gate` command. Mirrors `GateVerdict` & co in src-tauri/src/freigabegate.rs.
+// -------------------------------------------------------------------------------------------------
+
+/** The Härte of an open point — ordered hardest first. Mirrors `Haerte` (serde kebab-case). */
+export type Haerte = "hart" | "weich" | "warnung";
+
+/** What kind of open point this is — the source axis behind its Härte. Mirrors `Punktart`. */
+export type Punktart = "aufgabe" | "waise" | "fehlende-pflicht" | "stale-kante";
+
+/** The three states of the ONE context-dependent button. Mirrors `KnopfZustand`:
+ *  - "taggen": alles sauber (or warning-only) → proceed freely;
+ *  - "trotzdem-freigeben": a weicher Block → proceed with a logged Begründung;
+ *  - "gesperrt-durch-aufgabe": a harter Block → button off, dismiss only by acting on the task. */
+export type KnopfZustand = "taggen" | "trotzdem-freigeben" | "gesperrt-durch-aufgabe";
+
+/** One open point in the härte-sortierte Liste. Mirrors `OffenerPunkt`. */
+export interface OffenerPunkt {
+  haerte: Haerte;
+  art: Punktart;
+  /** Task id for an Aufgabe; product-relative path for a Waise/Stale-Kante; Pflicht label. */
+  ref_id: string;
+  /** Human one-liner naming the point (task title, orphan filename, …). */
+  label: string;
+}
+
+/** A personenübergreifende Warnung — a colleague's frischer Stand co-tagged. Mirrors `FremdWarnung`. */
+export interface FremdWarnung {
+  /** The colleague whose Stand is co-tagged. */
+  wer: string;
+  /** A ready human sentence („du taggst auch X' frischen Stand mit"). */
+  satz: string;
+}
+
+/** The Freigabe-Gate verdict: the härte-sortierte Liste + the one button's Zustand + the optional
+ *  cross-person warning. Mirrors `GateVerdict` in src-tauri/src/freigabegate.rs. */
+export interface GateVerdict {
+  /** Open points, hardest first (hart, then weich, then warnung); stable within a Härte. */
+  punkte: OffenerPunkt[];
+  /** The resulting state of the one context-dependent button. */
+  knopf: KnopfZustand;
+  /** `true` iff a harter Block is present (button off; only the task dismisses it). */
+  harter_block: boolean;
+  /** `true` iff a protokollierter Satz is required to proceed (weicher Block, no harter). */
+  begruendung_noetig: boolean;
+  /** The cross-person warning, if a colleague's frischer Stand is being co-tagged. */
+  fremd_warnung: FremdWarnung | null;
 }

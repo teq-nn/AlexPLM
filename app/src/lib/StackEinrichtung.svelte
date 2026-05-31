@@ -1,6 +1,12 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { BibliothekView, Baustein, ProduktStack } from "./types";
+  import type {
+    BibliothekView,
+    Baustein,
+    ProduktStack,
+    StackBaustein,
+    StilllegenResult,
+  } from "./types";
 
   // Werkzeugkasten einrichten (Issue #50): pick a Standard-Werkzeugkasten from the Bibliothek and
   // tune it Baustein-by-Baustein, then materialise it as the product's self-contained Produkt-Stack
@@ -14,20 +20,41 @@
     mode,
     stack,
     onConfirmed,
+    onStackChanged,
     onClose,
   }: {
     productPath: string;
     mode: "anlegen" | "erweitern";
     /** The product's current Produkt-Stack (empty in „anlegen", populated in „erweitern"). */
     stack: ProduktStack | null;
-    /** Bubble the freshly written stack up so the shell can re-derive the Werkbank. */
+    /** Bubble the freshly written stack up so the shell can re-derive the Werkbank (closes). */
     onConfirmed: (s: ProduktStack) => void;
+    /** A live, in-place stack change (stilllegen/reaktivieren) — re-derive the Werkbank WITHOUT
+     *  closing the dialog. Optional; the shell adopts the new stack + refreshes. */
+    onStackChanged?: (s: ProduktStack) => void;
     onClose: () => void;
   } = $props();
 
+  // A local, mutable copy of the present Bausteine so a stilllegen/reaktivieren shows here at once
+  // (the prop is a snapshot; the dialog stays open while the user retires/restores a tool). Seeded
+  // from the prop on open; thereafter owned locally and refreshed only when the prop identity changes.
+  let present = $state<StackBaustein[]>([]);
+  let lastStackSeen: ProduktStack | null = null;
+  $effect(() => {
+    if (stack !== lastStackSeen) {
+      lastStackSeen = stack;
+      present = (stack?.bausteine ?? []).slice();
+    }
+  });
+
   // The ids already copied into this product — locked in „erweitern" (anti-drift: kept verbatim,
-  // never re-pulled). Stilllegen of an existing Baustein is a separate concern (#51).
-  let vorhanden = $derived(new Set((stack?.bausteine ?? []).map((b) => b.id)));
+  // never re-pulled). A stillgelegter Baustein stays present (label-only, #51).
+  let vorhanden = $derived(new Set(present.map((b) => b.id)));
+
+  // Which present Baustein is mid-stilllegen (its row shows „arbeitet …"); null = none.
+  let busyId = $state<string | null>(null);
+  // The last stilllegen effect, keyed by Baustein id, so the row can report „N Dateien → Waisen".
+  let wirkungen = $state<Record<string, number>>({});
 
   let lib = $state<BibliothekView | null>(null);
   // The selection: ids the user has ticked. In „erweitern" this holds only the *new* additions;
@@ -116,6 +143,32 @@
   function heimatOf(b: Baustein): string {
     return b.heimat || "—";
   }
+
+  // Stilllegen / reaktivieren a present Baustein (Issue #51, E17). Label-only and (almost) fully
+  // reversible: the old Globs stop matching → their files become Waisen in the Unzugeordnet-Fach,
+  // the Ignore/LFS marker blocks stay as Sediment, nothing on disk is moved or deleted. We update
+  // the local card in place and bubble the new stack up so the Werkbank re-derives — without closing.
+  async function stilllegenToggle(b: StackBaustein, stillgelegt: boolean) {
+    error = null;
+    busyId = b.id;
+    try {
+      const res = await invoke<StilllegenResult>("stilllegen_baustein_cmd", {
+        product: productPath,
+        bausteinId: b.id,
+        stillgelegt,
+      });
+      // Reflect the new state locally so the row reads as retired/restored at once.
+      present = res.stack.bausteine.slice();
+      wirkungen = stillgelegt
+        ? { ...wirkungen, [b.id]: res.wirkung.neue_waisen.length }
+        : Object.fromEntries(Object.entries(wirkungen).filter(([k]) => k !== b.id));
+      onStackChanged?.(res.stack);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busyId = null;
+    }
+  }
 </script>
 
 <div class="scrim" role="presentation" onclick={() => !busy && onClose()}>
@@ -166,19 +219,51 @@
         </div>
       {/if}
 
-      <!-- Already-present Bausteine (erweitern only): locked, kept verbatim (anti-drift). -->
-      {#if mode === "erweitern" && (stack?.bausteine?.length ?? 0) > 0}
+      <!-- Already-present Bausteine (erweitern only): locked copies (anti-drift). Each can be
+           stillgelegt — label-only & reversible (#51): old Globs stop matching → Waisen, the
+           Ignore/LFS marker blocks stay as Sediment, nothing on disk is moved or deleted. -->
+      {#if mode === "erweitern" && present.length > 0}
         <div class="section">
           <span class="label sk">Vorhanden</span>
           <div class="grid">
-            {#each stack?.bausteine ?? [] as b (b.id)}
-              <div class="bcard locked" aria-disabled="true">
-                <span class="dot on" aria-hidden="true"></span>
+            {#each present as b (b.id)}
+              <div
+                class="bcard locked"
+                class:retired={b.stillgelegt}
+                aria-disabled="true"
+              >
+                <span class="dot" class:on={!b.stillgelegt} aria-hidden="true"></span>
                 <span class="b-main">
                   <span class="b-name label">{b.name}</span>
                   <span class="b-heimat mono">→ {heimatOf(b)}</span>
+                  {#if busyId === b.id}
+                    <span class="b-note label">arbeitet …</span>
+                  {:else if b.stillgelegt}
+                    <span class="b-note label"
+                      >stillgelegt · Sediment bleibt, nichts verschoben{#if wirkungen[b.id] !== undefined && wirkungen[b.id] > 0}
+                        · {wirkungen[b.id]} → Waisen{/if}</span
+                    >
+                  {/if}
                 </span>
-                <span class="b-tag label">vorhanden</span>
+                {#if b.stillgelegt}
+                  <button
+                    class="rowkey"
+                    onclick={() => stilllegenToggle(b, false)}
+                    disabled={busyId !== null || busy}
+                    title="Wieder in Betrieb nehmen"
+                  >
+                    <span class="label">reaktivieren</span>
+                  </button>
+                {:else}
+                  <button
+                    class="rowkey"
+                    onclick={() => stilllegenToggle(b, true)}
+                    disabled={busyId !== null || busy}
+                    title="Label-only stilllegen — alte Dateien werden Waisen, nichts wird verschoben oder gelöscht"
+                  >
+                    <span class="label">stilllegen</span>
+                  </button>
+                {/if}
               </div>
             {/each}
           </div>
@@ -414,6 +499,15 @@
     cursor: default;
     opacity: 0.78;
   }
+  /* A stillgelegter Baustein reads as quietly retired: dimmer, LED off, a hairline-only frame.
+     Calm — stilllegen is reversible, not an alarm; orange stays reserved for loud exceptions. */
+  .bcard.retired {
+    opacity: 0.6;
+    background: var(--surface-base);
+  }
+  .bcard.retired .b-name {
+    color: var(--ink-default);
+  }
   .b-main {
     display: flex;
     flex-direction: column;
@@ -434,10 +528,46 @@
     color: var(--ink-muted);
     opacity: 0.7;
   }
-  .b-tag {
-    font-size: 9px;
-    color: var(--led-free);
+  /* The retired/working line under the name — calm, lower-case, never shouting. */
+  .b-note {
+    font-size: 9.5px;
+    color: var(--ink-muted);
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    line-height: 1.35;
+  }
+
+  /* A small ghost key inside a present-Baustein row: stilllegen / reaktivieren. Quiet by default,
+     warms to the sunken surface on hover; the LED-dot + dimmed card carry the actual status. */
+  .rowkey {
+    appearance: none;
+    cursor: pointer;
     flex: none;
+    align-self: center;
+    background: transparent;
+    color: var(--ink-muted);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    padding: 4px 9px;
+    transition:
+      background var(--dur) var(--ease),
+      color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease),
+      opacity var(--dur) var(--ease);
+  }
+  .rowkey .label {
+    font-size: 9.5px;
+    color: inherit;
+  }
+  .rowkey:hover:not(:disabled) {
+    background: var(--surface-sunken);
+    color: var(--ink-strong);
+    border-color: var(--ink-muted);
+  }
+  .rowkey:disabled {
+    cursor: default;
+    opacity: 0.4;
   }
 
   /* LED dots — off (rim only) → lit green when selected/present, echoing the lock LEDs. */

@@ -21,12 +21,12 @@
     "freigabe-push": {
       led: "free",
       word: "freigegeben",
-      sub: "auf dem geteilten Stand · Sperre gelöst",
+      sub: "Push auf den geteilten Branch · Sperre gelöst",
     },
     "sicherungs-push": {
       led: "working",
       word: "gesichert",
-      sub: "dein Stand ist gesichert",
+      sub: "Sicherungs-Push in dein Backup",
     },
     "auto-unlock": {
       led: "free",

@@ -38,7 +38,7 @@
     <header class="head">
       <span class="kicker label">
         <span class="beacon" aria-hidden="true"></span>
-        Widerspruch · welcher Stand gilt?
+        Merge-Konflikt · welcher Stand gilt?
       </span>
       <h2 id="ausnahme-frage" class="frage">{question.frage}</h2>
     </header>
@@ -59,8 +59,8 @@
       </div>
 
       <p class="hint label">
-        Beide Seiten haben diesen Stand geändert. Er lässt sich nicht zusammenführen
-        — wähle, welcher gilt. Der andere bleibt als früherer Stand erhalten.
+        Beide Seiten haben diesen Stand geändert — der Merge lässt sich nicht automatisch
+        auflösen. Wähle, welcher gilt. Der andere bleibt als früherer Stand erhalten.
       </p>
     </div>
 

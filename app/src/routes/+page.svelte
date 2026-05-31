@@ -17,6 +17,8 @@
     StandEvent,
     StandNode,
     VersionGraph,
+    GateVerdict,
+    GeoeffneterOrdner,
     WardenAction,
     SyncOutcome,
     LoudQuestion,
@@ -30,11 +32,13 @@
     ProduktStack,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
+  import GraphRaum from "$lib/GraphRaum.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
   import ArtefaktKarte from "$lib/ArtefaktKarte.svelte";
   import UnzugeordnetFach from "$lib/UnzugeordnetFach.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
+  import FreigabeGate from "$lib/FreigabeGate.svelte";
   import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
@@ -64,6 +68,11 @@
   // When the gate decides the dangerous branch, hold the chosen folder + report here so the
   // "Historie anfassen" modal can explain the stakes before any rewrite.
   let gate = $state<{ path: string; report: GateReport } | null>(null);
+  // The Freigabe-Gate (Issue #52, E19/E19.3): when a Prototyp is toggled up to a Freigabe, the
+  // dreistufige Block runs first. A clean verdict raises the tag silently; any open point opens
+  // this gate, which staffs the points nach Härte behind the one context-dependent button.
+  let freigabeGate = $state<{ node: StandNode; verdict: GateVerdict } | null>(null);
+  let freigabeBusy = $state(false);
   // A plain refusal note when the folder is shared (E38: never poison others' clones).
   let refusal = $state<string | null>(null);
 
@@ -379,6 +388,7 @@
     werkbank = null;
     stack = null;
     stackOpen = false;
+    room = "werkbank";
     stopStatusLoop();
     stopSyncLoop();
   }
@@ -450,6 +460,14 @@
     await refreshWerkbank();
     await refreshTasks();
     await refreshStatus();
+  }
+
+  /** A live, in-place stack change (Baustein stilllegen/reaktivieren, Issue #51) — adopt the new
+   *  stack and re-derive the Werkbank so the resulting Waisen surface in the Unzugeordnet-Fach,
+   *  WITHOUT closing the setup dialog (the user may retire/restore several tools in one sitting). */
+  async function onStackChanged(s: ProduktStack) {
+    stack = s;
+    await refreshWerkbank();
   }
 
   // Verknüpfungs-Kandidaten the create/edit picker offers: the product's Bausteine, as
@@ -543,6 +561,64 @@
     }
   }
 
+  // ── Räume: Werkbank vs. Graph-Raum (Issue #55, E45) ─────────────────────────
+  // Two separate, equal rooms. The Werkbank (Jetzt-Zustand) is the start; the Graph-Raum
+  // (Verlauf) is something the user *sucht auf* — never the start screen. The switch lives in
+  // the app-level entry bar. Opening a product always lands in the Werkbank.
+  let room = $state<"werkbank" | "graph">("werkbank");
+
+  // ── Knoten-Verben (Issue #55, E27) ──────────────────────────────────────────
+  // A click on an old node never silently moves the Werkbank; the Graph-Raum offers three verbs.
+  // The dangerous git mechanics stay hidden — these route through the safe backend glue.
+
+  /** „Als Ordner öffnen" (Default): materialise a read-only worktree next to the product and hand
+   *  its path to the OS to open. The Werkbank is untouched (a worktree is a second checkout). */
+  async function openAsFolder(node: StandNode) {
+    if (!productPath) return;
+    const label = node.milestone ?? node.id.slice(0, 8);
+    const result = await invoke<GeoeffneterOrdner>("knoten_als_ordner", {
+      path: productPath,
+      standId: node.id,
+      label,
+    });
+    // Open the materialised folder via the OS default file browser.
+    try {
+      await openPath(result.pfad);
+    } catch (e) {
+      // The folder exists either way; a failure to launch the browser is not fatal to the verb.
+      error = String(e);
+    }
+  }
+
+  /** „Von hier abzweigen": save current work (E8), then create the named branch. This deliberately
+   *  moves the Werkbank, so afterwards we refresh the quiet views to reflect the new active line. */
+  async function branchFrom(node: StandNode, branch: string) {
+    if (!productPath) return;
+    graph = await invoke<VersionGraph>("knoten_abzweigen", {
+      path: productPath,
+      standId: node.id,
+      branch,
+    });
+    await refreshGraph();
+    await refreshWerkbank();
+    await refreshStatus();
+    await refreshEdges();
+  }
+
+  /** „Zurückwerfen" (destructive, behind the black gate): the SAFE restore — the backend lays the
+   *  old Stand on top as a new forward Stand (no reset/rebase/stash), then re-projects. */
+  async function throwBack(node: StandNode) {
+    if (!productPath) return;
+    graph = await invoke<VersionGraph>("knoten_zurueckwerfen", {
+      path: productPath,
+      standId: node.id,
+    });
+    await refreshGraph();
+    await refreshWerkbank();
+    await refreshStatus();
+    await refreshEdges();
+  }
+
   async function refreshEdges() {
     if (!productPath) return;
     try {
@@ -572,6 +648,43 @@
     const source = sourceOf.get(derived);
     if (!source) return;
     edgeView = await invoke<EdgeView>("remove_edge", {
+      path: productPath,
+      derived,
+      source,
+    });
+  }
+
+  // ── Kanten auf der Werkbank (Issue #56) ──────────────────────────────────────
+  // Werkbank-Karten keyen auf ihren Ordner-Pfad — dieselbe Identität, die eine Kante trägt. Die
+  // Hand-Geste ("abgeleitet von …") und die Paar-Default-Vorschläge teilen sich die Kantenmenge
+  // aus #10; eine Default-Kante wird genauso behandelt wie eine Hand-Kante (E20, herkunfts-blind).
+
+  /** Other Artefakt-Karten this card can be derived from (itself excluded; no self-edge). */
+  function karteCandidates(self: ArtefaktKarteT): { ordner: string; baustein: string }[] {
+    if (!werkbank) return [];
+    return werkbank.karten
+      .filter((k) => k.ordner !== self.ordner)
+      .map((k) => ({ ordner: k.ordner, baustein: k.baustein }));
+  }
+
+  /** Draw a Hand-Kante from a Werkbank card (`derived` „stammt aus" `source`). */
+  async function deriveKarte(derived: string, source: string) {
+    if (!productPath) return;
+    edgeView = await invoke<EdgeView>("add_edge", { path: productPath, derived, source });
+  }
+
+  /** Clear the edge a Werkbank card carries (works for Hand- and Default-Kanten alike). */
+  async function clearKarteEdge(derived: string) {
+    if (!productPath) return;
+    const source = sourceOf.get(derived);
+    if (!source) return;
+    edgeView = await invoke<EdgeView>("remove_edge", { path: productPath, derived, source });
+  }
+
+  /** Confirm a deterministic Baustein-Paar-Default suggestion → a PaarDefault edge (E20). */
+  async function confirmSuggestion(derived: string, source: string) {
+    if (!productPath) return;
+    edgeView = await invoke<EdgeView>("confirm_pair_edge_cmd", {
       path: productPath,
       derived,
       source,
@@ -878,10 +991,110 @@
   // slice (Issue #52) and plugs into the Rust seam; nothing about it lives here.
   async function toggleArt(node: StandNode) {
     if (!productPath || node.milestone === null) return;
+    // Toggling *down* (Freigabe → Prototyp) is the lax direction: never gated. Toggling *up*
+    // (Prototyp → Freigabe) is the strenge Übergang — run the dreistufige Freigabe-Gate first
+    // (E19.3/E42). A clean verdict raises the tag straight away; any open point opens the gate.
+    if (node.milestone_art === "freigabe") {
+      await applyToggleArt(node);
+      return;
+    }
+    const verdict = await invoke<GateVerdict>("evaluate_freigabe_gate", {
+      path: productPath,
+      art: "freigabe",
+    });
+    if (verdict.knopf === "taggen" && verdict.fremd_warnung === null) {
+      // Alles sauber and nobody else co-tagged → no deliberate handle needed; raise it.
+      await applyToggleArt(node);
+      return;
+    }
+    freigabeGate = { node, verdict };
+  }
+
+  // The actual Art flip (Prototyp → Freigabe or back). Persists the Art + write-protect and
+  // returns the refreshed tree; raising to Freigabe is the public act, so publish the branch.
+  async function applyToggleArt(node: StandNode) {
+    if (!productPath || node.milestone === null) return;
+    const raising = node.milestone_art !== "freigabe";
     graph = await invoke<VersionGraph>("toggle_milestone_art", {
       path: productPath,
       version: node.milestone,
     });
+    if (raising) void freigeben();
+  }
+
+  // Re-run the gate after acting on a hard-blocking Aufgabe (the one Ausweg). If it has gone
+  // clean, the gate closes; otherwise the staffed list updates in place.
+  async function refreshFreigabeGate() {
+    if (!productPath || !freigabeGate) return;
+    const verdict = await invoke<GateVerdict>("evaluate_freigabe_gate", {
+      path: productPath,
+      art: "freigabe",
+    });
+    freigabeGate = { node: freigabeGate.node, verdict };
+  }
+
+  // The one button fired (clean „Taggen" or the soft-block „Trotzdem freigeben" + Begründung).
+  // A logged Begründung is recorded to the Diagnose-Log as the protokollierter Satz (§22.1).
+  async function freigabeConfirm(begruendung: string | null) {
+    if (!freigabeGate) return;
+    const node = freigabeGate.node;
+    freigabeBusy = true;
+    try {
+      if (begruendung && node.milestone) {
+        await invoke("log_freigabe_begruendung", {
+          version: node.milestone,
+          begruendung,
+        });
+      }
+      await applyToggleArt(node);
+      freigabeGate = null;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      freigabeBusy = false;
+    }
+  }
+
+  // The three Auswege out of a harter Block: act on the Aufgabe, then re-evaluate the gate.
+  async function freigabeErledigen(taskId: string) {
+    freigabeBusy = true;
+    try {
+      await setTaskStatus(taskId, "erledigt");
+      await refreshFreigabeGate();
+    } finally {
+      freigabeBusy = false;
+    }
+  }
+  async function freigabeVerwerfen(taskId: string) {
+    freigabeBusy = true;
+    try {
+      await setTaskStatus(taskId, "verworfen");
+      await refreshFreigabeGate();
+    } finally {
+      freigabeBusy = false;
+    }
+  }
+  async function freigabeHerabstufen(taskId: string) {
+    if (!productPath) return;
+    freigabeBusy = true;
+    try {
+      // Herabstufen zum Hinweis: a Hinweis is never block-capable, so it leaves the hard block.
+      const t = tasks.find((x) => x.id === taskId);
+      if (t) {
+        tasks = await invoke<Task[]>("edit_task_cmd", {
+          path: productPath,
+          id: taskId,
+          title: t.title,
+          kind: "hinweis",
+          link: t.link,
+          due: t.due,
+          blocksEverywhere: t.blocks_everywhere,
+        });
+      }
+      await refreshFreigabeGate();
+    } finally {
+      freigabeBusy = false;
+    }
   }
 </script>
 
@@ -918,6 +1131,33 @@
       </button>
       <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
     </div>
+
+    {#if product}
+      <!-- Raum-Schalter (Issue #55, E45): Werkbank (Jetzt) und Graph-Raum (Verlauf) sind zwei
+           gleichwertige, getrennte Räume. Ein seated „Instrument-Schalter": die aktive Seite ist
+           eingedrückt + lit. Der Graph ist kein Startbildschirm — man sucht ihn hier auf. -->
+      <div class="roomswitch" role="group" aria-label="Raum">
+        <button
+          type="button"
+          class="rs-key"
+          class:on={room === "werkbank"}
+          aria-pressed={room === "werkbank"}
+          onclick={() => (room = "werkbank")}
+        >
+          <span class="label">Werkbank</span>
+        </button>
+        <button
+          type="button"
+          class="rs-key"
+          class:on={room === "graph"}
+          aria-pressed={room === "graph"}
+          onclick={() => (room = "graph")}
+        >
+          <span class="label">Verlauf · Graph</span>
+        </button>
+      </div>
+    {/if}
+
     <!-- Produktübergreifende Suche: an app-level instrument, reachable independent of an open
          product (the registry spans products). Quiet ghost key — it only reads. -->
     <button
@@ -930,6 +1170,18 @@
   </div>
 
   <div class="stage">
+    {#if product && room === "graph"}
+      <!-- Graph-Raum (Issue #55): a SEPARATE, full-width room — the Verlauf the user sucht auf.
+           It carries the filters + the three Knoten-Verben; a node click never moves the Werkbank. -->
+      <GraphRaum
+        {graph}
+        onPromote={promote}
+        onToggleArt={toggleArt}
+        onOpenAsFolder={openAsFolder}
+        onBranchFrom={branchFrom}
+        onThrowBack={throwBack}
+      />
+    {:else}
     <main class="work">
     <div class="toolbar">
       <span class="label section">Bausteine</span>
@@ -1048,7 +1300,32 @@
                   index={i}
                   signal={signalFor(k)}
                   onOpen={openKarte}
+                  candidates={karteCandidates(k)}
+                  source={sourceOf.get(k.ordner) ?? null}
+                  onDeriveFrom={(s) => deriveKarte(k.ordner, s)}
+                  onClearEdge={() => clearKarteEdge(k.ordner)}
                 />
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Baustein-Paar-Default-Vorschläge (Issue #56, E20): deterministisch aus dem Stack,
+               per Klick bestätigt — nie automatisch. Eine ruhige Einladung, kein Alarm. -->
+          {#if (edgeView.vorschlaege?.length ?? 0) > 0}
+            <div class="vorschlaege" role="group" aria-label="Vorgeschlagene Kanten">
+              <span class="vs-head label">Vorgeschlagene Kanten</span>
+              {#each edgeView.vorschlaege ?? [] as v (v.derived + "<" + v.source)}
+                <div class="vs-row">
+                  <span class="vs-text mono">
+                    <span class="vs-d">{v.derived}</span>
+                    <span class="vs-arrow" aria-hidden="true">←</span>
+                    <span class="vs-s">{v.source}</span>
+                  </span>
+                  <span class="vs-why mono">{v.baustein_id} + {v.partner_id}</span>
+                  <button class="vs-confirm label" onclick={() => confirmSuggestion(v.derived, v.source)}>
+                    bestätigen
+                  </button>
+                </div>
               {/each}
             </div>
           {/if}
@@ -1146,7 +1423,7 @@
         class="splitter"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Breite des Versionsbaums"
+        aria-label="Breite des Verlauf-/Graph-Bereichs"
         aria-valuenow={treeWidth}
         aria-valuemin={TREE_MIN}
         aria-valuemax={TREE_MAX}
@@ -1180,6 +1457,7 @@
         <StandList {stands} />
       </aside>
     {/if}
+    {/if}
   </div>
 </div>
 
@@ -1189,6 +1467,20 @@
     busy={loading === "migrate"}
     onConfirm={confirmMigrate}
     onCancel={() => (gate = null)}
+  />
+{/if}
+
+<!-- The Freigabe-Gate (Issue #52, E19/E19.3): the dreistufige Block in one context-dependent
+     button, opened when a Prototyp is raised to a Freigabe with open points. -->
+{#if freigabeGate}
+  <FreigabeGate
+    verdict={freigabeGate.verdict}
+    busy={freigabeBusy}
+    onFreigeben={freigabeConfirm}
+    onCancel={() => (freigabeGate = null)}
+    onErledigen={freigabeErledigen}
+    onVerwerfen={freigabeVerwerfen}
+    onHerabstufen={freigabeHerabstufen}
   />
 {/if}
 
@@ -1220,6 +1512,7 @@
     mode={stackMode}
     {stack}
     onConfirmed={onStackConfirmed}
+    onStackChanged={onStackChanged}
     onClose={() => (stackOpen = false)}
   />
 {/if}
@@ -1249,6 +1542,51 @@
   /* The app-level cross-product search trigger sits at the right edge of the entry bar. */
   .key.suche {
     flex: none;
+  }
+
+  /* Raum-Schalter (Issue #55): a seated two-position instrument switch. The two rooms are equal;
+     the active one is pressed-in (sunken) and lit, the other a calm raised key. Strictly grey —
+     routine navigation, never the orange exception. Centred between the entry keys and search. */
+  .roomswitch {
+    display: inline-flex;
+    flex: none;
+    margin: 0 auto;
+    padding: 3px;
+    gap: 3px;
+    border-radius: var(--radius);
+    background: var(--surface-sunken);
+    box-shadow: inset 0 1px 2px rgba(28, 26, 25, 0.14);
+  }
+  .rs-key {
+    appearance: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-muted);
+    padding: 6px 14px;
+    transition:
+      background var(--dur) var(--ease),
+      color var(--dur) var(--ease),
+      box-shadow var(--dur) var(--ease);
+  }
+  .rs-key .label {
+    color: inherit;
+  }
+  .rs-key:hover:not(.on) {
+    color: var(--ink-default);
+  }
+  .rs-key.on {
+    background: var(--surface-raised);
+    color: var(--ink-strong);
+    border-color: var(--hairline);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.6) inset,
+      0 1px 2px rgba(28, 26, 25, 0.12);
+  }
+  .rs-key:focus-visible {
+    outline: none;
+    border-color: var(--ink-muted);
   }
   .entry-actions {
     display: flex;
@@ -1581,6 +1919,86 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  /* Baustein-Paar-Default-Vorschläge (Issue #56, E20): a quiet, recessed tray under the cards.
+     It is an invitation, not an alarm — routine grey, never the rationed orange. Each row reads
+     "Ableitung ← Quelle" in Mono (data) with the originating Baustein-pair as a faint reason, and
+     a single calm "bestätigen" cap. Confirming turns the deterministic suggestion into an edge. */
+  .vorschlaege {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 12px 14px;
+    background: var(--surface-sunken);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius);
+  }
+  .vs-head {
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    margin-bottom: 2px;
+  }
+  .vs-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .vs-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    font-size: 11px;
+    overflow: hidden;
+  }
+  .vs-d {
+    color: var(--ink-default);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .vs-arrow {
+    color: var(--key-mid);
+    flex: none;
+  }
+  .vs-s {
+    color: var(--ink-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .vs-why {
+    flex: none;
+    color: var(--ink-muted);
+    font-size: 9.5px;
+    opacity: 0.7;
+  }
+  /* Calm creme cap — confirming a deterministic suggestion is routine, grey work (E22). */
+  .vs-confirm {
+    flex: none;
+    appearance: none;
+    cursor: pointer;
+    background: var(--key-light);
+    color: var(--ink-strong);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    padding: 5px 11px;
+    font-size: 9.5px;
+    box-shadow: 0 1px 0 rgba(28, 26, 25, 0.1);
+    transition:
+      background var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+  }
+  .vs-confirm:hover {
+    background: #f5f3ee;
+  }
+  .vs-confirm:active {
+    transform: translateY(1px);
+    box-shadow: none;
   }
 
   /* Aufgaben & Hinweise sit below the Bausteine, set off by a generous gap so the work area

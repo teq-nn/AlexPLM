@@ -53,11 +53,28 @@ pub struct Startaufgabe {
 
 /// Eine interne Default-Kante des Bausteins: ein abgeleitetes Glob „stammt aus" einem Quell-Glob
 /// (z.B. Fertigungs-STL stammt aus der CAD-Quelle). Pattern-basiert, nicht pro-Datei (PRD §13).
+/// **Baustein-Default** (E20): kommt beim Onboarding automatisch, ganz **innerhalb** des Bausteins.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultKante {
     /// Glob des abgeleiteten Artefakts.
     pub derived_glob: String,
     /// Glob der Quelle, aus der es stammt.
+    pub source_glob: String,
+}
+
+/// Eine **Baustein-Paar-Default-Kante** (E20): „wenn dieser Baustein **und** der Partner-Baustein
+/// `partner_id` beide im Stack sind, schlage die Kante `derived_glob` ← `source_glob` vor". Der
+/// `derived_glob`/`source_glob` greift über die Heimaten **beider** Bausteine hinweg (das ist der
+/// Sinn der Paar-Stufe: die Kante überspannt zwei Bausteine und hat auf Baustein-Ebene keine
+/// Heimat). Rein deterministisch — **kein** ML, keine Daten, kein Parser (E21). Der Vorschlag wird
+/// **per Klick bestätigt**, nie automatisch angelegt (Onboarding bleibt ruhig).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaarDefaultKante {
+    /// `id` des Partner-Bausteins, der zusätzlich im Stack liegen muss, damit der Vorschlag greift.
+    pub partner_id: String,
+    /// Glob des abgeleiteten Artefakts (z.B. Pick-and-Place).
+    pub derived_glob: String,
+    /// Glob der Quelle, aus der es stammt (z.B. Layout **und** BOM — je eine Paar-Kante).
     pub source_glob: String,
 }
 
@@ -86,9 +103,12 @@ pub struct Baustein {
     /// Beim Onboarding anzulegende Startaufgaben/Hinweise.
     #[serde(default)]
     pub startaufgaben: Vec<Startaufgabe>,
-    /// Interne Default-Kanten (pattern-basiert).
+    /// Interne Default-Kanten (pattern-basiert) — Baustein-Default (E20), beim Onboarding angelegt.
     #[serde(default)]
     pub default_kanten: Vec<DefaultKante>,
+    /// Paar-Default-Kanten (E20): Vorschläge, sobald ein Partner-Baustein mit im Stack liegt.
+    #[serde(default)]
+    pub paar_default_kanten: Vec<PaarDefaultKante>,
     /// Label-only stillgelegt (PRD §10): alte Globs greifen nicht mehr, nichts wird gelöscht.
     #[serde(default)]
     pub stillgelegt: bool,
@@ -141,6 +161,7 @@ mod tests {
             oeffnen,
             startaufgaben: vec![],
             default_kanten: vec![],
+            paar_default_kanten: vec![],
             stillgelegt: false,
         }
     }
@@ -205,6 +226,11 @@ mod tests {
                 derived_glob: "*.stl".to_string(),
                 source_glob: "*.f3d".to_string(),
             }],
+            paar_default_kanten: vec![PaarDefaultKante {
+                partner_id: "kicad".to_string(),
+                derived_glob: "*.pos".to_string(),
+                source_glob: "*.kicad_pcb".to_string(),
+            }],
             stillgelegt: false,
         };
         let json = serde_json::to_string_pretty(&bs).unwrap();
@@ -227,6 +253,8 @@ mod tests {
         assert!(bs.ignore.is_empty());
         assert!(bs.lfs.is_empty());
         assert_eq!(bs.oeffnen, Oeffnen::Auto);
+        assert!(bs.default_kanten.is_empty());
+        assert!(bs.paar_default_kanten.is_empty());
         assert!(!bs.stillgelegt);
     }
 }

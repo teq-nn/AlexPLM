@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { GateReport } from "./types";
+  import GateTaste from "./GateTaste.svelte";
 
   // The "Historie anfassen" gate (E38/E27). The destructive history rewrite sits behind a
-  // bewusste confirmation: the user reads the stakes, then must deliberately ARM a black,
-  // separated danger key before it can be pressed — never accidentally clickable.
+  // bewusste confirmation: the user reads the stakes, then deliberately arms the shared black,
+  // separated „Gate-Taste" (GateTaste) before it can be pressed — never accidentally clickable.
   let {
     report,
     busy = false,
@@ -15,9 +16,6 @@
     onConfirm: () => void;
     onCancel: () => void;
   } = $props();
-
-  // Two-step arming: the danger key is inert until the user toggles the explicit consent.
-  let armed = $state(false);
 </script>
 
 <div
@@ -88,28 +86,14 @@
         <span class="label">Abbrechen</span>
       </button>
 
-      <!-- The separated black danger zone: arm, then the heavy key becomes pressable. -->
-      <div class="danger" class:armed>
-        <label class="arm">
-          <input
-            type="checkbox"
-            bind:checked={armed}
-            disabled={busy}
-          />
-          <span class="arm-box" aria-hidden="true"></span>
-          <span class="label arm-text"
-            >Ich schreibe die Historie bewusst um</span
-          >
-        </label>
-
-        <button
-          class="key danger-key"
-          onclick={onConfirm}
-          disabled={!armed || busy}
-        >
-          <span class="label">{busy ? "schreibe um …" : "Historie umschreiben"}</span>
-        </button>
-      </div>
+      <!-- The shared black „Gate-Taste" (Issue #46): arm, then the heavy key becomes pressable. -->
+      <GateTaste
+        consent="Ich schreibe die Historie bewusst um"
+        label="Historie umschreiben"
+        busyLabel="schreibe um …"
+        {busy}
+        onPress={onConfirm}
+      />
     </footer>
   </section>
 </div>
@@ -293,89 +277,5 @@
     cursor: default;
     opacity: 0.5;
     box-shadow: none;
-  }
-
-  /* The separated danger zone — visually walled off, dark, on its own recessed plate. */
-  .danger {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 8px 10px;
-    border-radius: var(--radius);
-    border: 1px solid #2a2724;
-    background: linear-gradient(180deg, #1a1817, #0e0d0c);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.7);
-  }
-
-  .arm {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    user-select: none;
-  }
-  .arm input {
-    position: absolute;
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .arm-box {
-    width: 15px;
-    height: 15px;
-    flex: none;
-    border-radius: var(--radius-sm);
-    border: 1px solid #4a4641;
-    background: #0b0a09;
-    box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.8);
-    transition:
-      background var(--dur) var(--ease),
-      border-color var(--dur) var(--ease);
-  }
-  .danger.armed .arm-box {
-    background: var(--led-attention);
-    border-color: var(--led-attention);
-    box-shadow: 0 0 8px rgba(240, 66, 28, 0.55);
-  }
-  .arm input:focus-visible + .arm-box {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .arm-text {
-    color: #b8b4ad;
-    font-size: 10.5px;
-    max-width: 13ch;
-    line-height: 1.25;
-  }
-  .danger.armed .arm-text {
-    color: var(--screen-fg);
-  }
-
-  /* The black danger key: dark cap, only lit and pressable once armed. */
-  .danger-key {
-    background: #000;
-    color: #6b6660;
-    border: 1px solid #322e2a;
-    box-shadow: none;
-    white-space: nowrap;
-  }
-  .danger-key:disabled {
-    opacity: 1; /* it reads dark-and-dead rather than faded */
-    cursor: not-allowed;
-    color: #4a4641;
-  }
-  .danger.armed .danger-key:not(:disabled) {
-    color: var(--accent-ink);
-    border-color: var(--led-attention);
-    box-shadow:
-      0 0 0 1px rgba(240, 66, 28, 0.45),
-      0 0 14px -2px rgba(240, 66, 28, 0.5);
-    cursor: pointer;
-  }
-  .danger.armed .danger-key:not(:disabled):hover {
-    background: #0a0a0a;
-  }
-  .danger.armed .danger-key:not(:disabled):active {
-    transform: translateY(1px);
   }
 </style>

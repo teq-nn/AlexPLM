@@ -1,0 +1,576 @@
+//! The **Freigabe-Gate** decision core — the dreistufige Block in *einem* kontextabhängigen
+//! Knopf (Issue #52, E19/E19.3, glossar „Freigabe-Block"/„Freigabe-Dialog").
+//!
+//! Following the house pattern (`aufgabenblock.rs`, `syncdecider.rs`, `warden.rs`): one **pure,
+//! total, deterministic** function over a plain snapshot. It knows **no** git internals, no
+//! clock, no I/O — the loading glue (read tasks + stale edges + Waisen/Pflicht) lives in
+//! [`crate::freigabegateglue`]; this module only **classifies and sorts**. Snapshot in, exactly
+//! one [`GateVerdict`] out.
+//!
+//! The load-bearing rule of E19 is that offene Punkte beim Meilenstein/Tag are **nicht** auf
+//! einen Haufen geworfen, sondern **nach Härte gestaffelt** — härtestes zuerst — behind a single
+//! button whose Beschriftung *und* Schärfe wechselt (E19.3, „statt drei Knöpfen ein Knopf"):
+//!
+//! - **Warnung** ([`Haerte::Warnung`]) — eine Stale-Kante (E12/E20). Sichtbar, blockiert **nie**,
+//!   braucht keine Begründung. The button is unaffected.
+//! - **Weicher Block** ([`Haerte::Weich`]) — eine Waise / ein fehlendes Pflicht-Artefakt (E11).
+//!   Blockiert „technisch vollständig", aber per **protokollierter Begründung** bewusst
+//!   überwindbar (= §22.1): the button becomes „Trotzdem freigeben" and a logged sentence is
+//!   required.
+//! - **Harter Block** ([`Haerte::Hart`]) — eine offene blockierende Aufgabe am strengen
+//!   Übergang (E15/E42). **Nicht** per Begründungstext wegzudrücken; nur durch Anfassen der
+//!   Aufgabe selbst (Erledigen / Verwerfen / Herabstufen). The button is **aus**; the Ausweg is
+//!   one click on the task — it never fully locks the user out (E22).
+//!
+//! The block is **personenübergreifend** (E19.1/E33): a colleague's open blocking Aufgabe holds
+//! me too, and the dialog carries a cross-person Warnung („du taggst auch X' frischen Stand
+//! mit"). That warning is informational; it carries no Härte of its own.
+//!
+//! The button has exactly **three Zustände** ([`KnopfZustand`]), driven by the härtestes vorhandene
+//! item: clean → `Taggen`; only soft/warning → `TrotzdemFreigeben` (needs Begründung); any hard →
+//! `GesperrtDurchAufgabe` (off). The pure core decides which — the UI re-derives nothing.
+
+use crate::aufgabenblock::{decide_block, BlockDecision};
+use crate::edges::StaleWarning;
+use crate::graph::MilestoneArt;
+use crate::tasks::Task;
+use serde::Serialize;
+
+/// The Härte of a single open point at the Freigabe-Gate (E19). Ordered **härtestes zuerst**:
+/// the `Ord` derive ranks `Hart < Weich < Warnung`, so a plain ascending sort puts the hardest
+/// items at the top of the list — exactly the „nach Härte sortierte Liste" of E19.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Haerte {
+    /// Harter Block: an open blocking Aufgabe. Button off; only the task itself dismisses it.
+    Hart,
+    /// Weicher Block: a Waise / missing Pflicht-Artefakt. Overridable by a logged Begründung.
+    Weich,
+    /// Warnung: a Stale-Kante. Visible, never blocks, no Begründung.
+    Warnung,
+}
+
+/// What kind of open point an item is — the source axis behind its [`Haerte`]. Kept distinct from
+/// the Härte so the UI can render the right Auswege (a hard task gets Erledigen/Verwerfen/…; a
+/// Waise gets nothing but the Begründung path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Punktart {
+    /// An open blocking Aufgabe (→ harter Block).
+    Aufgabe,
+    /// A Waise — a tracked file without an Etikett (→ weicher Block).
+    Waise,
+    /// A missing Pflicht-Artefakt (→ weicher Block).
+    FehlendePflicht,
+    /// A Stale-Kante: the derivation is older than its source (→ Warnung).
+    StaleKante,
+}
+
+/// One open point in the härte-sortierte Liste. Carries everything the UI needs to render the
+/// row *and* its Auswege without re-deciding: its Härte, its kind, a stable `ref_id` (the task
+/// id, the orphan path, the missing artefact label, or the stale derivation path) and a human
+/// `label`. A hard task additionally carries its three Auswege via `ref_id` (the UI acts on the
+/// task by that id).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct OffenerPunkt {
+    /// The Härte of this point — drives both the sort and the row's visual weight.
+    pub haerte: Haerte,
+    /// What kind of point this is (the source axis behind the Härte).
+    pub art: Punktart,
+    /// A stable reference: task id for an Aufgabe, product-relative path for a Waise/Stale-Kante,
+    /// the Pflicht label for a missing artefact. The UI keys rows and Auswege on this.
+    pub ref_id: String,
+    /// A human one-liner naming the point (the task title, the orphan filename, …).
+    pub label: String,
+}
+
+/// The three Zustände of the *one* context-dependent button (E19.3). Exactly one; total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KnopfZustand {
+    /// Alles sauber (or only Warnungen) → the button is the plain „Taggen". Proceeds freely.
+    Taggen,
+    /// A weicher Block (and no harter) → „Trotzdem freigeben"; a protokollierter Satz is required.
+    TrotzdemFreigeben,
+    /// A harter Block → the button is **aus** (gesperrt). The Ausweg is a click on the Aufgabe;
+    /// no Begründung dismisses it.
+    GesperrtDurchAufgabe,
+}
+
+/// A personenübergreifende Warnung (E19.1/E33): a colleague's frischer Stand is being co-tagged.
+/// Informational — carries no Härte. `None` ⇔ no foreign recent work to warn about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FremdWarnung {
+    /// The colleague whose Stand is being co-tagged.
+    pub wer: String,
+    /// A ready human sentence („du taggst auch X' frischen Stand mit").
+    pub satz: String,
+}
+
+/// The single verdict the Freigabe-Gate core returns for a checkpoint. Exactly one; total. It
+/// carries the **härte-sortierte Liste** (härtestes zuerst), the resulting **Knopf-Zustand**, and
+/// the optional personenübergreifende Warnung — so the UI renders the whole gate without
+/// re-deciding anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct GateVerdict {
+    /// The open points, **härtestes zuerst** (Hart, then Weich, then Warnung), stable within a
+    /// Härte (input order preserved). Empty ⇔ alles sauber.
+    pub punkte: Vec<OffenerPunkt>,
+    /// The resulting state of the one context-dependent button.
+    pub knopf: KnopfZustand,
+    /// `true` iff a harter Block is present — the button is off and only acting on the Aufgabe
+    /// dismisses it (mirrors `knopf == GesperrtDurchAufgabe`, kept explicit for the UI).
+    pub harter_block: bool,
+    /// `true` iff a weicher Block is present and no harter — i.e. a protokollierter Satz is
+    /// required to proceed (mirrors `knopf == TrotzdemFreigeben`).
+    pub begruendung_noetig: bool,
+    /// The personenübergreifende Warnung, if a colleague's frischer Stand is being co-tagged.
+    pub fremd_warnung: Option<FremdWarnung>,
+}
+
+impl GateVerdict {
+    /// Whether the Freigabe may proceed **without** any deliberate handle: only when alles sauber
+    /// (button is plain `Taggen`). A weicher Block still proceeds, but only with a Begründung.
+    pub fn is_clean(&self) -> bool {
+        matches!(self.knopf, KnopfZustand::Taggen)
+    }
+
+    /// The ids of the open Aufgaben that hold a harter Block (in härte/list order). Empty ⇔ no
+    /// harter Block. The UI lists exactly these with their three Auswege.
+    pub fn hard_blocking_task_ids(&self) -> Vec<String> {
+        self.punkte
+            .iter()
+            .filter(|p| p.art == Punktart::Aufgabe && p.haerte == Haerte::Hart)
+            .map(|p| p.ref_id.clone())
+            .collect()
+    }
+}
+
+/// The collected inputs the gate classifies — already gathered by the glue, never fetched here.
+/// Keeping this a plain snapshot keeps [`decide_gate`] pure and the table tests trivial.
+#[derive(Debug, Clone, Default)]
+pub struct GateInputs {
+    /// The product's task snapshot (Aufgaben + Hinweise). The Aufgaben-Block core (#49) decides
+    /// which of these hard-block; Hinweise never block.
+    pub tasks: Vec<Task>,
+    /// The fired Stale-Warnungen (#10) — each becomes a Warnung row.
+    pub stale: Vec<StaleWarning>,
+    /// The product-relative paths of Waisen — tracked files without an Etikett. Each → weicher
+    /// Block.
+    pub waisen: Vec<String>,
+    /// The labels of fehlende Pflicht-Artefakte. Each → weicher Block.
+    pub fehlende_pflicht: Vec<String>,
+    /// The personenübergreifende Warnung, if any (E19.1).
+    pub fremd_warnung: Option<FremdWarnung>,
+}
+
+/// The **Freigabe-Gate decision**: given the collected open points and the intended
+/// Meilenstein-Art, produce the härte-sortierte Liste + Knopf-Zustand. **Pure, total,
+/// deterministic** — no I/O, no clock.
+///
+/// The rule (E19/E19.3), in one breath: a Freigabe collects its open points from the
+/// Aufgaben-Block (harter Block), the Waisen/Pflicht-Check (weicher Block) and the Stale-Kanten
+/// (Warnung), sorts them härtestes zuerst, and chooses the one button's Zustand from the härtestes
+/// vorhandene item — `Taggen` (clean) / `TrotzdemFreigeben` (weich, needs Begründung) /
+/// `GesperrtDurchAufgabe` (hart, off).
+///
+/// The hard-block set is decided by the reused [`decide_block`] core (#49) at the given `art`, so
+/// a Prototyp surfaces only its „blockiert überall" Aufgaben as hard, while a Freigabe surfaces
+/// every open Aufgabe. The Waisen/Pflicht weicher Block and the Stale Warnung do not depend on the
+/// Art (they are technical completeness, not Strenge).
+pub fn decide_gate(inputs: &GateInputs, art: MilestoneArt) -> GateVerdict {
+    let block: BlockDecision = decide_block(&inputs.tasks, art);
+
+    let mut punkte: Vec<OffenerPunkt> = Vec::new();
+
+    // Harter Block: the open Aufgaben that block at this Art (decided by the #49 core, in its
+    // input order). Name each with its title for the row + its three Auswege.
+    for id in &block.blocking_task_ids {
+        let label = inputs
+            .tasks
+            .iter()
+            .find(|t| &t.id == id)
+            .map(|t| t.title.clone())
+            .unwrap_or_else(|| id.clone());
+        punkte.push(OffenerPunkt {
+            haerte: Haerte::Hart,
+            art: Punktart::Aufgabe,
+            ref_id: id.clone(),
+            label,
+        });
+    }
+
+    // Weicher Block: Waisen, then fehlende Pflicht-Artefakte. Overridable by a logged Begründung.
+    for pfad in &inputs.waisen {
+        punkte.push(OffenerPunkt {
+            haerte: Haerte::Weich,
+            art: Punktart::Waise,
+            ref_id: pfad.clone(),
+            label: pfad.clone(),
+        });
+    }
+    for pflicht in &inputs.fehlende_pflicht {
+        punkte.push(OffenerPunkt {
+            haerte: Haerte::Weich,
+            art: Punktart::FehlendePflicht,
+            ref_id: pflicht.clone(),
+            label: pflicht.clone(),
+        });
+    }
+
+    // Warnung: the Stale-Kanten. Visible, never block.
+    for w in &inputs.stale {
+        punkte.push(OffenerPunkt {
+            haerte: Haerte::Warnung,
+            art: Punktart::StaleKante,
+            ref_id: w.derived.clone(),
+            label: w.derived.clone(),
+        });
+    }
+
+    // härtestes zuerst — stable within a Härte (the source loops above already preserve input
+    // order, and a stable sort keeps that order for equal keys).
+    punkte.sort_by_key(|p| p.haerte);
+
+    let has_hart = punkte.iter().any(|p| p.haerte == Haerte::Hart);
+    let has_weich = punkte.iter().any(|p| p.haerte == Haerte::Weich);
+
+    // The one button's Zustand is chosen by the härtestes vorhandene item (E19.3):
+    let knopf = if has_hart {
+        KnopfZustand::GesperrtDurchAufgabe
+    } else if has_weich {
+        KnopfZustand::TrotzdemFreigeben
+    } else {
+        // alles sauber, or only Warnungen — the button is the plain „Taggen".
+        KnopfZustand::Taggen
+    };
+
+    GateVerdict {
+        punkte,
+        knopf,
+        harter_block: has_hart,
+        begruendung_noetig: !has_hart && has_weich,
+        fremd_warnung: inputs.fremd_warnung.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tasks::{TaskKind, TaskStatus};
+
+    fn task(
+        id: &str,
+        title: &str,
+        kind: TaskKind,
+        status: TaskStatus,
+        blocks_everywhere: bool,
+    ) -> Task {
+        Task {
+            id: id.to_string(),
+            title: title.to_string(),
+            kind,
+            status,
+            link: None,
+            due: None,
+            blocks_everywhere,
+            created_at: "ts".to_string(),
+        }
+    }
+    fn open_aufgabe(id: &str, title: &str) -> Task {
+        task(id, title, TaskKind::Aufgabe, TaskStatus::Offen, false)
+    }
+    fn stale(derived: &str) -> StaleWarning {
+        StaleWarning {
+            derived: derived.to_string(),
+            source: "src".to_string(),
+            source_timestamp: "2026-05-31T12:00:00Z".to_string(),
+            derived_timestamp: "2026-05-30T12:00:00Z".to_string(),
+        }
+    }
+
+    /// **Härte ordering**: the `Ord` derive ranks härtestes zuerst — `Hart < Weich < Warnung` — so
+    /// a plain ascending sort yields the E19.3 list (hardest at the top).
+    #[test]
+    fn haerte_orders_hardest_first() {
+        let mut v = vec![Haerte::Warnung, Haerte::Hart, Haerte::Weich];
+        v.sort();
+        assert_eq!(v, vec![Haerte::Hart, Haerte::Weich, Haerte::Warnung]);
+    }
+
+    /// **The core acceptance matrix**: every combination of {hart?, weich?, warnung?} → the
+    /// correct single Knopf-Zustand (E19.3), proven in one table. The härtestes vorhandene item
+    /// always decides the button.
+    #[test]
+    fn button_state_per_combination() {
+        // (has_hart, has_weich, has_warn, expect_knopf)
+        let cases: &[(bool, bool, bool, KnopfZustand)] = &[
+            // alles sauber, and warning-only, both → plain Taggen (proceed freely).
+            (false, false, false, KnopfZustand::Taggen),
+            (false, false, true, KnopfZustand::Taggen),
+            // a weicher Block (with/without a warning) → Trotzdem freigeben + Begründung.
+            (false, true, false, KnopfZustand::TrotzdemFreigeben),
+            (false, true, true, KnopfZustand::TrotzdemFreigeben),
+            // any harter Block dominates → button off, no matter what else is present.
+            (true, false, false, KnopfZustand::GesperrtDurchAufgabe),
+            (true, true, false, KnopfZustand::GesperrtDurchAufgabe),
+            (true, false, true, KnopfZustand::GesperrtDurchAufgabe),
+            (true, true, true, KnopfZustand::GesperrtDurchAufgabe),
+        ];
+        for (hart, weich, warn, expect) in cases {
+            let inputs = GateInputs {
+                tasks: if *hart {
+                    vec![open_aufgabe("a1", "Footprint Q3 prüfen")]
+                } else {
+                    vec![]
+                },
+                waisen: if *weich {
+                    vec!["fertigung/verirrt.csv".to_string()]
+                } else {
+                    vec![]
+                },
+                stale: if *warn {
+                    vec![stale("layout/board.kicad_pcb")]
+                } else {
+                    vec![]
+                },
+                fehlende_pflicht: vec![],
+                fremd_warnung: None,
+            };
+            let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+            assert_eq!(
+                v.knopf, *expect,
+                "hart={hart} weich={weich} warn={warn} → {expect:?}"
+            );
+            assert_eq!(v.harter_block, *hart, "harter_block flag must mirror knopf");
+            assert_eq!(
+                v.begruendung_noetig,
+                !*hart && *weich,
+                "begruendung_noetig iff weich and not hart"
+            );
+            assert_eq!(v.is_clean(), matches!(expect, KnopfZustand::Taggen));
+        }
+    }
+
+    /// **Sort order over a real mixed bag** (E19 example: a Waise (weich), a changed PCB since the
+    /// last Gerber (Warnung) and an open „Footprint Q3 prüfen" (hart)): the list comes out
+    /// härtestes zuerst, and within a Härte the input order is preserved (stable).
+    #[test]
+    fn collects_and_sorts_hardest_first_stable_within_haerte() {
+        let inputs = GateInputs {
+            tasks: vec![
+                open_aufgabe("hart-2", "Bohrplan prüfen"),
+                open_aufgabe("hart-1", "Footprint Q3 prüfen"),
+            ],
+            waisen: vec!["fertigung/verirrt.csv".to_string()],
+            fehlende_pflicht: vec!["Testprotokoll".to_string()],
+            stale: vec![stale("layout/board.kicad_pcb")],
+            fremd_warnung: None,
+        };
+        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+
+        let order: Vec<(Haerte, &str)> = v
+            .punkte
+            .iter()
+            .map(|p| (p.haerte, p.ref_id.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (Haerte::Hart, "hart-2"), // tasks in #49 input order
+                (Haerte::Hart, "hart-1"),
+                (Haerte::Weich, "fertigung/verirrt.csv"), // Waisen before fehlende Pflicht
+                (Haerte::Weich, "Testprotokoll"),
+                (Haerte::Warnung, "layout/board.kicad_pcb"),
+            ],
+            "härtestes zuerst, stable within a Härte"
+        );
+        // The hardest item present is a task → button off.
+        assert_eq!(v.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert_eq!(v.hard_blocking_task_ids(), vec!["hart-2", "hart-1"]);
+    }
+
+    /// **Hard block is not dismissable by reason text** — only by acting on the task; and it
+    /// **never** appears as a Begründung path. With a hard block present, `begruendung_noetig` is
+    /// false even though a weicher Block also exists, and the offending task ids are named so the
+    /// UI can show their Auswege.
+    #[test]
+    fn hard_block_offers_the_task_not_a_reason_box() {
+        let inputs = GateInputs {
+            tasks: vec![open_aufgabe("t1", "Footprint Q3 prüfen")],
+            waisen: vec!["verirrt.csv".to_string()],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        assert!(v.harter_block);
+        assert!(
+            !v.begruendung_noetig,
+            "a hard block is never dismissed by a reason"
+        );
+        assert_eq!(v.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert_eq!(v.hard_blocking_task_ids(), vec!["t1"]);
+        assert!(!v.is_clean(), "a hard block is never clean");
+    }
+
+    /// **Soft block requires a logged sentence**: a Waise (no hard block) yields
+    /// `TrotzdemFreigeben` + `begruendung_noetig`, and offers no task to act on.
+    #[test]
+    fn soft_block_requires_begruendung() {
+        let inputs = GateInputs {
+            waisen: vec!["fertigung/verirrt.csv".to_string()],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        assert_eq!(v.knopf, KnopfZustand::TrotzdemFreigeben);
+        assert!(v.begruendung_noetig);
+        assert!(!v.harter_block);
+        assert!(v.hard_blocking_task_ids().is_empty());
+        assert_eq!(v.punkte.len(), 1);
+        assert_eq!(v.punkte[0].art, Punktart::Waise);
+    }
+
+    /// **Warnung never blocks**: a Stale-Kante with nothing else leaves the button at plain
+    /// `Taggen` and is still listed (visible, no Begründung).
+    #[test]
+    fn warnung_is_visible_but_never_blocks() {
+        let inputs = GateInputs {
+            stale: vec![stale("layout/board.kicad_pcb")],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        assert_eq!(v.knopf, KnopfZustand::Taggen);
+        assert!(
+            v.is_clean(),
+            "a Warnung alone does not block — taggen proceeds"
+        );
+        assert!(!v.begruendung_noetig);
+        assert_eq!(v.punkte.len(), 1);
+        assert_eq!(v.punkte[0].haerte, Haerte::Warnung);
+    }
+
+    /// **Reuses the #49 strictness**: the hard-block set is exactly [`decide_block`] at the Art.
+    /// At a Prototyp an ordinary open Aufgabe does **not** hard-block (so it is absent from the
+    /// list), while a „blockiert überall" Aufgabe hard-blocks even a Prototyp.
+    #[test]
+    fn hard_block_follows_milestone_art_strictness() {
+        let ordinary = vec![open_aufgabe("a1", "Footprint prüfen")];
+        // Prototyp + ordinary open Aufgabe → not a hard block (the #49 lax rule).
+        let p = decide_gate(
+            &GateInputs {
+                tasks: ordinary.clone(),
+                ..Default::default()
+            },
+            MilestoneArt::Prototyp,
+        );
+        assert_eq!(
+            p.knopf,
+            KnopfZustand::Taggen,
+            "a Prototyp is lax — no hard block"
+        );
+        assert!(p.punkte.is_empty());
+        // Freigabe + the same Aufgabe → harter Block.
+        let f = decide_gate(
+            &GateInputs {
+                tasks: ordinary,
+                ..Default::default()
+            },
+            MilestoneArt::Freigabe,
+        );
+        assert_eq!(f.knopf, KnopfZustand::GesperrtDurchAufgabe);
+
+        // „blockiert überall" hard-blocks even a Prototyp.
+        let ueberall = vec![task(
+            "u",
+            "überall",
+            TaskKind::Aufgabe,
+            TaskStatus::Offen,
+            true,
+        )];
+        let pu = decide_gate(
+            &GateInputs {
+                tasks: ueberall,
+                ..Default::default()
+            },
+            MilestoneArt::Prototyp,
+        );
+        assert_eq!(pu.knopf, KnopfZustand::GesperrtDurchAufgabe);
+    }
+
+    /// A **Hinweis** never appears as a blocking point, in any context (it is not block-capable).
+    #[test]
+    fn hinweis_never_appears_as_a_block() {
+        let inputs = GateInputs {
+            tasks: vec![task(
+                "h",
+                "nur ein Hinweis",
+                TaskKind::Hinweis,
+                TaskStatus::Offen,
+                true,
+            )],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        assert_eq!(v.knopf, KnopfZustand::Taggen, "a Hinweis never blocks");
+        assert!(v.punkte.is_empty());
+    }
+
+    /// **Personenübergreifend (E19.1/E33)**: the cross-person Warnung is carried through verbatim
+    /// and is independent of the Härte staffing (it warns even when alles sauber). A colleague's
+    /// open blocking Aufgabe holds me too — same hard block, regardless of whose task it is.
+    #[test]
+    fn cross_person_warning_is_carried_and_block_is_cross_person() {
+        let warn = FremdWarnung {
+            wer: "Alex".to_string(),
+            satz: "du taggst auch Alex' frischen Stand mit".to_string(),
+        };
+        // alles sauber but a colleague pushed recently → the warning still appears.
+        let clean = decide_gate(
+            &GateInputs {
+                fremd_warnung: Some(warn.clone()),
+                ..Default::default()
+            },
+            MilestoneArt::Freigabe,
+        );
+        assert_eq!(clean.knopf, KnopfZustand::Taggen);
+        assert_eq!(clean.fremd_warnung, Some(warn.clone()));
+
+        // a colleague's open blocking Aufgabe holds me too — the gate doesn't know whose it is,
+        // it blocks all the same (the block is personenübergreifend).
+        let held = decide_gate(
+            &GateInputs {
+                tasks: vec![open_aufgabe("alex-task", "Alex: Footprint prüfen")],
+                fremd_warnung: Some(warn.clone()),
+                ..Default::default()
+            },
+            MilestoneArt::Freigabe,
+        );
+        assert_eq!(held.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert_eq!(held.hard_blocking_task_ids(), vec!["alex-task"]);
+        assert_eq!(held.fremd_warnung, Some(warn));
+    }
+
+    /// **Total + deterministic**: empty inputs → clean Taggen with an empty list, and the same
+    /// inputs always yield the same verdict.
+    #[test]
+    fn empty_is_clean_and_decision_is_deterministic() {
+        let empty = GateInputs::default();
+        let v = decide_gate(&empty, MilestoneArt::Freigabe);
+        assert!(v.is_clean());
+        assert!(v.punkte.is_empty());
+        assert!(v.fremd_warnung.is_none());
+
+        let inputs = GateInputs {
+            tasks: vec![open_aufgabe("t", "x")],
+            waisen: vec!["w".to_string()],
+            stale: vec![stale("s")],
+            ..Default::default()
+        };
+        assert_eq!(
+            decide_gate(&inputs, MilestoneArt::Freigabe),
+            decide_gate(&inputs, MilestoneArt::Freigabe)
+        );
+    }
+}

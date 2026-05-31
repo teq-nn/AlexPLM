@@ -214,7 +214,7 @@ pub fn resolve_sync(root: &Path, path: &str, choice: StandChoice) -> std::io::Re
     // progress to resolve — surface a clean error rather than committing a half-state.
     if !merge_in_progress(root) {
         return Err(Error::other(
-            "Der Stand ließ sich nicht zusammenführen — bitte erneut versuchen.".to_string(),
+            "Der Merge ließ sich nicht starten — bitte erneut versuchen.".to_string(),
         ));
     }
 

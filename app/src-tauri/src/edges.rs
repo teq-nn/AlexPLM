@@ -13,22 +13,64 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Woher eine Kante stammt — die drei Herkunftsstufen aus E20/Glossar (Issue #56). Reine Anzeige-
+/// und Pflege-Information; sie ändert **nichts** an der Stale-Logik (E26 vergleicht nur Zeitstempel).
+/// Sie erlaubt aber, Default-Kanten beim Stilllegen still in Ruhe zu schicken (E17) und in der UI
+/// Hand- von Automatik-Kanten zu unterscheiden.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Herkunft {
+    /// Von Hand gezogen (das echt Idiosynkratische) — der Default, auch für Altbestand ohne Feld.
+    #[default]
+    Hand,
+    /// Baustein-Default: Kante **innerhalb** eines Bausteins (Gerber ← Layout), beim Onboarding angelegt.
+    BausteinDefault,
+    /// Baustein-Paar-Default: über zwei bekannt zusammengehörige Bausteine, per Klick bestätigt.
+    PaarDefault,
+}
+
 /// A manual „abgeleitet von" edge: `derived` „stammt aus" `source`. Both are product-relative
 /// artifact paths (the same identity the [`crate::projection::Baustein`] `path` carries).
+///
+/// Die `herkunft` trägt die Herkunftsstufe (E20). Alte `kanten.json` ohne das Feld lesen sich als
+/// [`Herkunft::Hand`] (serde-Default) — die Stale-Logik ist davon **unberührt**.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct Edge {
     /// The derivation — the artifact that was made *from* `source`.
     pub derived: String,
     /// The source the derivation „stammt aus".
     pub source: String,
+    /// Herkunftsstufe (E20). Fehlt sie auf der Platte, gilt `Hand` (Altbestand/Hand-Kante).
+    #[serde(default)]
+    pub herkunft: Herkunft,
 }
 
 impl Edge {
+    /// Eine Hand-Kante (die historische Konstruktor-Semantik — Default-Herkunft `Hand`).
     pub fn new(derived: impl Into<String>, source: impl Into<String>) -> Self {
         Edge {
             derived: derived.into(),
             source: source.into(),
+            herkunft: Herkunft::Hand,
         }
+    }
+
+    /// Eine Kante mit ausdrücklicher Herkunft (Baustein-/Paar-Default).
+    pub fn with_herkunft(
+        derived: impl Into<String>,
+        source: impl Into<String>,
+        herkunft: Herkunft,
+    ) -> Self {
+        Edge {
+            derived: derived.into(),
+            source: source.into(),
+            herkunft,
+        }
+    }
+
+    /// Gleiche Endpunkte (Richtung), unabhängig von der Herkunft. Für Dedup über Herkunftsstufen.
+    pub fn same_endpoints(&self, other: &Edge) -> bool {
+        self.derived == other.derived && self.source == other.source
     }
 }
 
@@ -104,16 +146,20 @@ pub fn add_edge(mut edges: Vec<Edge>, edge: Edge) -> Vec<Edge> {
     if edge.derived == edge.source {
         return edges;
     }
-    if !edges.contains(&edge) {
+    // Dedup über die **Endpunkte** (Richtung), nicht die exakte Herkunft: eine bereits vorhandene
+    // Kante (egal welcher Herkunft) zwischen denselben Endpunkten ist ein No-op — eine Hand-Geste
+    // auf eine bestehende Default-Kante fabriziert keine zweite Kante.
+    if !edges.iter().any(|e| e.same_endpoints(&edge)) {
         edges.push(edge);
     }
     edges
 }
 
 /// Remove a manual edge from `edges`, returning the new set. Removing an absent edge is a
-/// no-op. Pure — the inverse gesture to [`add_edge`].
+/// no-op. Pure — the inverse gesture to [`add_edge`]. Vergleich über die **Endpunkte**, sodass die
+/// Lösch-Geste die Kante trifft, gleich welche Herkunft sie trägt.
 pub fn remove_edge(mut edges: Vec<Edge>, edge: &Edge) -> Vec<Edge> {
-    edges.retain(|e| e != edge);
+    edges.retain(|e| !e.same_endpoints(edge));
     edges
 }
 
@@ -223,5 +269,46 @@ mod tests {
         assert_eq!(edges.len(), 1);
         let edges = remove_edge(edges, &Edge::new("d", "s"));
         assert!(edges.is_empty());
+    }
+
+    /// Altbestand ohne `herkunft`-Feld liest sich als Hand-Kante (serde-Default) — kein Bruch der
+    /// bestehenden `kanten.json` (Issue #56 baut auf #10 auf, ohne dessen Format zu brechen).
+    #[test]
+    fn legacy_edge_without_herkunft_reads_as_hand() {
+        let legacy = r#"{ "derived": "fertigung/stl", "source": "mechanik/gehaeuse" }"#;
+        let edge: Edge = serde_json::from_str(legacy).unwrap();
+        assert_eq!(edge.herkunft, Herkunft::Hand);
+        // und eine neue Kante mit ausdrücklicher Herkunft rundtrippt
+        let d = Edge::with_herkunft("a", "b", Herkunft::BausteinDefault);
+        let back: Edge = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+    }
+
+    /// Dedup über Endpunkte, nicht Herkunft: eine Hand-Geste auf eine bestehende Default-Kante
+    /// fabriziert keine zweite Kante; Löschen trifft die Kante unabhängig von ihrer Herkunft.
+    #[test]
+    fn add_and_remove_match_on_endpoints_across_herkunft() {
+        let edges = add_edge(Vec::new(), Edge::with_herkunft("d", "s", Herkunft::BausteinDefault));
+        let edges = add_edge(edges, Edge::new("d", "s")); // gleiche Endpunkte, Hand -> No-op
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].herkunft, Herkunft::BausteinDefault, "erste Kante bleibt");
+        // Löschen über die (Hand-)Kante trifft die Default-Kante.
+        let edges = remove_edge(edges, &Edge::new("d", "s"));
+        assert!(edges.is_empty());
+    }
+
+    /// Stale-Warnung ist herkunfts-blind: eine Default-Kante warnt nach genau derselben Regel wie
+    /// eine Hand-Kante (E26 vergleicht nur Zeitstempel). Belegt, dass die neuen Quellen die
+    /// Warnung speisen, ohne ihre Logik zu ändern.
+    #[test]
+    fn stale_is_herkunft_blind() {
+        let edges = vec![Edge::with_herkunft("d", "s", Herkunft::BausteinDefault)];
+        let artifacts = vec![
+            stamp("s", "2026-05-30T11:00:00Z"),
+            stamp("d", "2026-05-30T09:00:00Z"),
+        ];
+        let w = stale_warnings(&edges, &artifacts);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].derived, "d");
     }
 }
