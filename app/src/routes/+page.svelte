@@ -62,6 +62,25 @@
   let product = $state<ProductView | null>(null);
   let productPath = $state<string | null>(null);
   let error = $state<string | null>(null);
+  // A TRANSIENT open-error hint (Issue #70). A failed „Datei/Ordner öffnen" is a non-fatal
+  // action error — it must NOT take over the work area like the page-wide `error` does (which
+  // lives in the `{#if error}` branch and replaces the Bausteine view). This dezenter, self-
+  // fading Hinweis sits inside the work area instead, so one failed open leaves the Bausteine
+  // standing. Never route Open-Handler failures through `error` anymore.
+  let openError = $state<string | null>(null);
+  let openErrorTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Surface a transient open failure (auto-fades after a few seconds, replaces any prior one). */
+  function flashOpenError(e: unknown) {
+    openError = `Konnte nicht öffnen — ${String(e)}`;
+    if (openErrorTimer !== null) clearTimeout(openErrorTimer);
+    openErrorTimer = setTimeout(() => {
+      openError = null;
+      openErrorTimer = null;
+    }, 6000);
+  }
+  onDestroy(() => {
+    if (openErrorTimer !== null) clearTimeout(openErrorTimer);
+  });
   let loading = $state<"open" | "import" | "gate" | "migrate" | null>(null);
   // Import outcome, in the tool's own vocabulary — never "git" / "commit".
   let imported = $state<ImportResult | null>(null);
@@ -338,7 +357,8 @@
       }
       await openPath(k.ziel);
     } catch (e) {
-      error = String(e);
+      // Non-fatal: a failed open must leave the Bausteine view standing (Issue #70).
+      flashOpenError(e);
     }
   }
 
@@ -348,7 +368,8 @@
     try {
       await openPath(`${productPath}/${file}`);
     } catch (e) {
-      error = String(e);
+      // Non-fatal: a failed open must leave the Bausteine view standing (Issue #70).
+      flashOpenError(e);
     }
   }
 
@@ -371,6 +392,11 @@
 
   function reset() {
     error = null;
+    openError = null;
+    if (openErrorTimer !== null) {
+      clearTimeout(openErrorTimer);
+      openErrorTimer = null;
+    }
     imported = null;
     refusal = null;
     signals = {};
@@ -586,7 +612,8 @@
       await openPath(result.pfad);
     } catch (e) {
       // The folder exists either way; a failure to launch the browser is not fatal to the verb.
-      error = String(e);
+      // Surface it as the transient open hint, never the page-wide `error` (Issue #70).
+      flashOpenError(e);
     }
   }
 
@@ -1265,6 +1292,25 @@
       {#if error}
         <p class="notice mono">{error}</p>
       {:else if product}
+        <!-- Transient open-error hint (Issue #70): a failed „Datei/Ordner öffnen" is non-fatal,
+             so it must NOT replace the Bausteine view the way the page-wide `error` does. This
+             dezenter, self-fading Hinweis sits *inside* the work area and leaves the Bausteine
+             standing. Keyed on its text so a fresh failure re-triggers the entry animation. -->
+        {#if openError}
+          {#key openError}
+            <div class="open-hint mono" role="status" aria-live="polite">
+              <span class="dot warn" aria-hidden="true"></span>
+              <span class="open-hint-text">{openError}</span>
+              <button
+                type="button"
+                class="open-hint-dismiss"
+                aria-label="Hinweis schließen"
+                onclick={() => (openError = null)}>×</button
+              >
+            </div>
+          {/key}
+        {/if}
+
         <!-- Werkzeugkasten-Leiste (Issue #50): an einrichten-Aufforderung when none exists yet,
              else a quiet readout of the configured stack with an additive „erweitern". -->
         {#if hatStack}
@@ -2111,5 +2157,74 @@
     font-weight: 400;
     font-size: 13px;
     line-height: 1.45;
+  }
+
+  /* Transient open-error hint (Issue #70): a non-fatal „Öffnen schlug fehl"-Hinweis that sits
+     inside the work area instead of replacing it. Borrows the calm `.refusal` idiom — hairline
+     frame, surface-raised fill, attention-LED accent on the left — but stays a single, quiet
+     line and fades itself out. Never alarmist; the Bausteine keep working behind it. */
+  .open-hint {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 16px;
+    padding: 8px 10px 8px 12px;
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--led-attention);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+    font-size: 12px;
+    color: var(--ink-default);
+    /* Enter + a long, gentle hold, then fade — mirrors the 6s auto-clear in flashOpenError(). */
+    animation: open-hint-in 160ms ease-out both, open-hint-out 420ms ease-in 5.58s both;
+  }
+  .open-hint .dot.warn {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--led-attention);
+    box-shadow: 0 0 6px rgba(240, 66, 28, 0.4);
+  }
+  .open-hint-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .open-hint-dismiss {
+    flex: none;
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--ink-muted);
+    font-size: 15px;
+    line-height: 1;
+    padding: 2px 4px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 120ms ease;
+  }
+  .open-hint-dismiss:hover {
+    color: var(--ink-default);
+  }
+
+  @keyframes open-hint-in {
+    from {
+      opacity: 0;
+      transform: translateY(-3px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes open-hint-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
   }
 </style>
