@@ -27,7 +27,7 @@
 //! ("dein und X' <Stand> widersprechen sich — welcher gilt?"), and it carries **no git markers**.
 
 use crate::classifier::Bucket;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One diverged path: where local and remote stands disagree, plus its mergeability bucket
 /// (from the #3 [`crate::classifier`]) and who, if anyone, holds the remote side. Plain data —
@@ -83,7 +83,7 @@ impl SyncDecision {
 
 /// Which stand the user must choose between in a loud exception. The whole question is framed in
 /// domain language; this enum never leaks a git ref or marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StandChoice {
     /// Keep my local stand for the contested artifact.

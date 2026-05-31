@@ -33,7 +33,8 @@ use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
 use stackstore::{create_product_stack, read_stack, ProduktStack};
-use syncglue::{run_sync, SyncOutcome};
+use syncdecider::StandChoice;
+use syncglue::{resolve_sync, run_sync, SyncOutcome};
 use warden::{Checkpoint, WardenAction};
 use std::path::Path;
 use std::sync::Mutex;
@@ -489,6 +490,29 @@ fn read_product_stack(product: String) -> Result<ProduktStack, String> {
     Ok(read_stack(root))
 }
 
+/// **Resolve the laute Ausnahme** (Issue #43, E41): the single moment the user answers the loud
+/// question by choosing whose stand applies for the contested artifact. The backend then finishes
+/// the sync with the chosen side and a raw git conflict marker is NEVER written to the worktree —
+/// the dangerous hand-resolution stays hidden behind "mein Stand" / "Bens Stand". On success the
+/// daily rhythm resumes quietly (`gesichert`); raw git (push/pull/merge) never surfaces.
+#[tauri::command]
+async fn resolve_sync_cmd(
+    path: String,
+    artifact: String,
+    choice: StandChoice,
+) -> Result<SyncOutcome, String> {
+    // The resolve fetches + merges + commits (the fetch is networked, bounded); off the main thread
+    // so finishing the sync can never freeze the WebView.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        resolve_sync(root, &artifact, choice).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -528,7 +552,8 @@ pub fn run() {
             list_toolstacks,
             toolstack_baustein_ids,
             create_product_stack_cmd,
-            read_product_stack
+            read_product_stack,
+            resolve_sync_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
