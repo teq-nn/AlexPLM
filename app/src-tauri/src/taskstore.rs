@@ -13,14 +13,14 @@ use crate::tasks::{add_task, edit_task, remove_task, set_status, NewTask, Task, 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// File that holds the product's Aufgaben & Hinweise, in the product root. A `.plm-*.json`
-/// dotfile (same family as `.plm-kanten.json`) so the `projection.rs` walk — which skips hidden
-/// entries — never mistakes it for a Baustein.
-pub const TASKS_FILE: &str = ".plm-aufgaben.json";
+/// The tool's committed, shared store directory (ADR 0002). `projection.rs` skips it by name.
+pub const PLM_DIR: &str = "_plm";
+/// File that holds the product's Aufgaben & Hinweise, inside `_plm/` (ADR 0002).
+pub const TASKS_FILE: &str = "aufgaben.json";
 
-/// Absolute path of the task file for a product `root`.
+/// Absolute path of the `_plm/aufgaben.json` task file for a product `root`.
 fn tasks_path(root: &Path) -> PathBuf {
-    root.join(TASKS_FILE)
+    root.join(PLM_DIR).join(TASKS_FILE)
 }
 
 /// Read the persisted task list for a product. A missing/empty/corrupt file means **zero
@@ -33,8 +33,10 @@ pub fn read_tasks(root: &Path) -> Vec<Task> {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// Persist the task list, pretty-printed for an honest, diffable on-disk record.
+/// Persist the task list, pretty-printed for an honest, diffable on-disk record. Creates the
+/// `_plm/` directory as needed before writing.
 fn write_tasks(root: &Path, tasks: &[Task]) -> std::io::Result<()> {
+    std::fs::create_dir_all(root.join(PLM_DIR))?;
     let json = serde_json::to_string_pretty(tasks).map_err(std::io::Error::other)?;
     std::fs::write(tasks_path(root), json)
 }
@@ -130,8 +132,17 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_zero_tasks() {
         let dir = tmp();
+        fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
         fs::write(tasks_path(&dir), "{ not json ]").unwrap();
         assert!(read_tasks(&dir).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_to_the_new_plm_location() {
+        let dir = tmp();
+        create_task(&dir, new("x", TaskKind::Aufgabe, None)).unwrap();
+        assert!(dir.join(PLM_DIR).join(TASKS_FILE).is_file(), "tasks live in _plm/aufgaben.json");
         let _ = fs::remove_dir_all(&dir);
     }
 
