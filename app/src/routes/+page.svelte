@@ -27,6 +27,7 @@
     TaskLink,
     WerkbankView,
     ArtefaktKarte as ArtefaktKarteT,
+    ProduktStack,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
@@ -41,6 +42,7 @@
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
   import ProduktSuche from "$lib/ProduktSuche.svelte";
   import AufgabenListe from "$lib/AufgabenListe.svelte";
+  import StackEinrichtung from "$lib/StackEinrichtung.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -365,6 +367,8 @@
     edgeView = { edges: [], warnings: [] };
     tasks = [];
     werkbank = null;
+    stack = null;
+    stackOpen = false;
     stopStatusLoop();
     stopSyncLoop();
   }
@@ -390,6 +394,47 @@
   // the pure Pattern-Zuordnung core, plus the Unzugeordnet-Fach per Arbeitsbereich (the Waisen).
   // Read read-only; refreshed on open and whenever a new Stand settles (tracked set may change).
   let werkbank = $state<WerkbankView | null>(null);
+
+  // The product's Werkzeugkasten (Produkt-Stack, Issue #50): the self-contained anti-drift copy of
+  // chosen Bausteine. Drives whether the shell offers „einrichten" (no stack yet) or „erweitern".
+  let stack = $state<ProduktStack | null>(null);
+  let stackOpen = $state(false);
+  let stackMode = $state<"anlegen" | "erweitern">("anlegen");
+  // A configured Werkzeugkasten has at least one copied Baustein.
+  let hatStack = $derived((stack?.bausteine.length ?? 0) > 0);
+
+  /** Re-read the product's Produkt-Stack (Issue #50). Best-effort: a product with no stack reads as
+   *  an empty stack, which simply lights the „Werkzeugkasten einrichten"-Aufforderung. */
+  async function refreshStack() {
+    if (!productPath) {
+      stack = null;
+      return;
+    }
+    try {
+      stack = await invoke<ProduktStack>("read_product_stack", { product: productPath });
+    } catch {
+      stack = null;
+    }
+  }
+
+  /** Open the Werkzeugkasten-Einrichtung: „anlegen" when none exists yet, else additive „erweitern". */
+  function openStack() {
+    stackMode = hatStack ? "erweitern" : "anlegen";
+    stackOpen = true;
+  }
+
+  /** A freshly written stack: adopt it, then re-derive the Werkbank (the Bausteine changed the
+   *  convention layer) and re-read tasks (onboarding may have seeded Startaufgaben). */
+  async function onStackConfirmed(s: ProduktStack) {
+    stack = s;
+    stackOpen = false;
+    if (productPath) {
+      product = await invoke<ProductView>("open_product", { path: productPath });
+    }
+    await refreshWerkbank();
+    await refreshTasks();
+    await refreshStatus();
+  }
 
   // Verknüpfungs-Kandidaten the create/edit picker offers: the product's Bausteine, as
   // {name, path}. (Produkt + a free Version link are always available in the form itself.)
@@ -567,6 +612,7 @@
       await refreshEdges();
       await refreshTasks();
       await refreshWerkbank();
+      await refreshStack();
       await refreshSetup();
       startStatusLoop();
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
@@ -923,6 +969,30 @@
       {#if error}
         <p class="notice mono">{error}</p>
       {:else if product}
+        <!-- Werkzeugkasten-Leiste (Issue #50): an einrichten-Aufforderung when none exists yet,
+             else a quiet readout of the configured stack with an additive „erweitern". -->
+        {#if hatStack}
+          <div class="stackbar">
+            <span class="dot ok" aria-hidden="true"></span>
+            <span class="sb-k label">Werkzeugkasten</span>
+            <span class="sb-v mono"
+              >{stack?.toolstack ?? "eigene Auswahl"} · {stack?.bausteine.length} Bausteine</span
+            >
+            <button class="sb-act" onclick={openStack}>erweitern</button>
+          </div>
+        {:else}
+          <button class="stacksetup" onclick={openStack}>
+            <span class="dot off" aria-hidden="true"></span>
+            <span class="ss-main">
+              <span class="ss-title label">Werkzeugkasten einrichten</span>
+              <span class="ss-sub mono"
+                >Standard wählen, Bausteine anpassen — als Kopie ins Produkt</span
+              >
+            </span>
+            <span class="ss-go label">einrichten →</span>
+          </button>
+        {/if}
+
         {#if werkbank && (werkbank.karten.length > 0 || werkbank.unzugeordnet.length > 0)}
           <!-- Issue #47: Artefakt-Karten built by convention from tracked files (Pattern-
                Zuordnung). One click opens the dominant file or the folder via OS default. -->
@@ -1095,6 +1165,18 @@
 <!-- Produktübergreifende Live-Suche (Issue #45, E45): an app-level instrument screen. -->
 {#if sucheOpen}
   <ProduktSuche onClose={() => (sucheOpen = false)} />
+{/if}
+
+<!-- Werkzeugkasten einrichten/erweitern (Issue #50): pick a Standard-Werkzeugkasten + tune it,
+     materialised as the product's anti-drift Produkt-Stack copy. -->
+{#if stackOpen && productPath}
+  <StackEinrichtung
+    {productPath}
+    mode={stackMode}
+    {stack}
+    onConfirmed={onStackConfirmed}
+    onClose={() => (stackOpen = false)}
+  />
 {/if}
 
 <style>
@@ -1329,6 +1411,113 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
     gap: 12px;
+  }
+
+  /* Werkzeugkasten-Leiste (Issue #50). Configured: a thin readout strip with a quiet „erweitern".
+     Unconfigured: a full-width invitation key the eye lands on first. */
+  .stackbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding: 9px 13px;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+  }
+  .stackbar .sb-k {
+    color: var(--ink-muted);
+    font-size: 9.5px;
+  }
+  .stackbar .sb-v {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--ink-strong);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sb-act {
+    appearance: none;
+    cursor: pointer;
+    flex: none;
+    background: none;
+    border: none;
+    padding: 2px 0 3px;
+    color: var(--ink-muted);
+    font-family: var(--font-label);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--hairline);
+    transition:
+      color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  .sb-act:hover {
+    color: var(--ink-strong);
+    border-bottom-color: var(--ink-strong);
+  }
+
+  .stacksetup {
+    appearance: none;
+    cursor: pointer;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    text-align: left;
+    margin-bottom: 18px;
+    padding: 13px 15px;
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+    transition:
+      border-color var(--dur) var(--ease),
+      background var(--dur) var(--ease);
+  }
+  .stacksetup:hover {
+    border-color: var(--ink-strong);
+    border-style: solid;
+    background: #f5f3ee;
+  }
+  .ss-main {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+  }
+  .ss-title {
+    color: var(--ink-strong);
+    font-size: 12px;
+  }
+  .ss-sub {
+    color: var(--ink-muted);
+    font-size: 11px;
+  }
+  .ss-go {
+    flex: none;
+    color: var(--ink-default);
+    font-size: 10px;
+  }
+
+  /* LED dots for the Werkzeugkasten-Leiste, matching the lock-LED idiom elsewhere. */
+  .stackbar .dot,
+  .stacksetup .dot {
+    width: 9px;
+    height: 9px;
+    flex: none;
+    border-radius: 50%;
+  }
+  .stackbar .dot.ok {
+    background: var(--led-free);
+    box-shadow: 0 0 6px rgba(60, 154, 75, 0.5);
+  }
+  .stacksetup .dot.off {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--led-off);
   }
 
   /* Unzugeordnet-Fächer (Issue #47): stacked recessive drawers under the Artefakt-Karten —

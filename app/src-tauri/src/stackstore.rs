@@ -100,6 +100,30 @@ pub fn create_product_stack(
     Ok(stack)
 }
 
+/// Einen bestehenden Produkt-Stack **additiv** um weitere Bibliotheks-Bausteine erweitern (PRD §50:
+/// „diesmal Zephyr statt PlatformIO" / „später ergänzen"). Anti-Drift bleibt gewahrt: bereits
+/// kopierte Bausteine werden **nicht** neu aus der `lib` gezogen (kein stilles Versions-Update),
+/// nur fehlende `id`s werden als Vollkopie angehängt. Unbekannte/bereits vorhandene `id`s werden
+/// übersprungen. Der Toolstack-Anzeigename bleibt unverändert. Gibt den erweiterten Stack zurück.
+pub fn extend_product_stack(
+    root: &Path,
+    lib: &Bibliothek,
+    neue_baustein_ids: &[String],
+) -> std::io::Result<ProduktStack> {
+    let mut stack = read_stack(root);
+    for id in neue_baustein_ids {
+        let schon_da = stack.bausteine.iter().any(|sb| &sb.baustein.id == id);
+        if schon_da {
+            continue; // bereits kopiert — nie neu ziehen (Anti-Drift)
+        }
+        if let Some(b) = lib.read_baustein(id) {
+            stack.bausteine.push(StackBaustein::copy_of(&b));
+        }
+    }
+    write_stack(root, &stack)?;
+    Ok(stack)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +221,62 @@ mod tests {
 
         // re-read from disk equals what we wrote
         assert_eq!(read_stack(&dir), stack);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&libdir);
+    }
+
+    #[test]
+    fn extend_appends_new_and_preserves_existing_copies() {
+        let dir = tmp();
+        let libdir = tmp();
+        let lib = Bibliothek::new(&libdir);
+        // Bibliothek hat kicad@1 + zephyr@1.
+        lib.seed_from(
+            &[baustein("kicad", 1, "elektronik"), baustein("zephyr", 1, "firmware")],
+            &[],
+        )
+        .unwrap();
+
+        // Stack zunächst nur mit kicad@1.
+        create_product_stack(&dir, &lib, &["kicad".to_string()], None).unwrap();
+
+        // Bibliothek aktualisiert kicad auf @2 — die bestehende Kopie darf NICHT mitwandern.
+        lib.seed_from(&[baustein("kicad", 2, "elektronik")], &[]).unwrap();
+
+        // Additiv um zephyr erweitern; kicad erneut mit anführen (muss übersprungen werden).
+        let stack = extend_product_stack(
+            &dir,
+            &lib,
+            &["kicad".to_string(), "zephyr".to_string(), "ghost".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(stack.bausteine.len(), 2);
+        // kicad-Kopie bleibt @1 (Anti-Drift), nicht neu auf @2 gezogen.
+        assert_eq!(stack.bausteine[0].baustein.id, "kicad");
+        assert_eq!(stack.bausteine[0].baustein.version, 1);
+        assert_eq!(stack.bausteine[0].herkunft.version, 1);
+        // zephyr@1 neu angehängt.
+        assert_eq!(stack.bausteine[1].baustein.id, "zephyr");
+        assert_eq!(stack.bausteine[1].herkunft, Herkunft { from: "zephyr".to_string(), version: 1 });
+        // unbekanntes "ghost" übersprungen; Persistenz stimmt.
+        assert_eq!(read_stack(&dir), stack);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&libdir);
+    }
+
+    #[test]
+    fn extend_on_missing_stack_starts_fresh() {
+        let dir = tmp();
+        let libdir = tmp();
+        let lib = Bibliothek::new(&libdir);
+        lib.seed_from(&[baustein("kicad", 1, "elektronik")], &[]).unwrap();
+
+        let stack = extend_product_stack(&dir, &lib, &["kicad".to_string()]).unwrap();
+        assert_eq!(stack.bausteine.len(), 1);
+        assert_eq!(stack.bausteine[0].baustein.id, "kicad");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&libdir);

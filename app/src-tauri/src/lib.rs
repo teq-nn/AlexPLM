@@ -48,7 +48,7 @@ use projection::{project_product, ProductView};
 use registry::{add_registered, read_registry, registry_path, remove_registered, RegisteredProduct};
 use search::{fan_out, SearchResult};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
-use stackstore::{create_product_stack, read_stack, ProduktStack};
+use stackstore::{create_product_stack, extend_product_stack, read_stack, ProduktStack};
 use syncdecider::StandChoice;
 use syncglue::{resolve_sync, run_sync, SyncOutcome};
 use taskstore::{create_task, delete_task, read_tasks, set_task_status, update_task};
@@ -545,6 +545,27 @@ fn create_product_stack_cmd(
     Ok(stack)
 }
 
+/// Extend an existing Produkt-Stack **additively** with further Bibliothek Bausteine (Issue #50,
+/// „Tool erweitern" / „später ergänzen"). Already-copied Bausteine are kept verbatim — never re-pulled
+/// from the Bibliothek (anti-drift: no silent version bump); only genuinely new `id`s are appended as
+/// full copies. The newly onboarded Bausteine get their Tag-1 marker blocks written too (idempotent,
+/// Issue #48). Returns the extended stack.
+#[tauri::command]
+fn extend_product_stack_cmd(
+    app: tauri::AppHandle,
+    product: String,
+    baustein_ids: Vec<String>,
+) -> Result<ProduktStack, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    let root = Path::new(&product);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {product}"));
+    }
+    let stack = extend_product_stack(root, &lib, &baustein_ids).map_err(|e| e.to_string())?;
+    onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
+    Ok(stack)
+}
+
 /// Read a product's copied Produkt-Stack from `_plm/stack.json` (Issue #39). Pure read; a product
 /// with no stack file reads as an empty stack (never an error). This is the anti-drift copy — it
 /// reflects only what was copied in, never the live Bibliothek.
@@ -807,6 +828,7 @@ pub fn run() {
             list_toolstacks,
             toolstack_baustein_ids,
             create_product_stack_cmd,
+            extend_product_stack_cmd,
             read_product_stack,
             read_werkbank_cmd,
             resolve_sync_cmd,
