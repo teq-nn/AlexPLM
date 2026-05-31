@@ -32,6 +32,8 @@ pub mod taskstore;
 pub mod tasks;
 pub mod warden;
 pub mod watcher;
+pub mod werkbank;
+pub mod zuordnung;
 
 use aufgabenblock::BlockDecision;
 use aufgabenblockglue::block_for_art;
@@ -52,6 +54,7 @@ use syncglue::{resolve_sync, run_sync, SyncOutcome};
 use taskstore::{create_task, delete_task, read_tasks, set_task_status, update_task};
 use tasks::{NewTask, Task, TaskEdit, TaskKind, TaskLink, TaskStatus};
 use warden::{Checkpoint, WardenAction};
+use werkbank::{read_werkbank, WerkbankView};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -554,6 +557,27 @@ fn read_product_stack(product: String) -> Result<ProduktStack, String> {
     Ok(read_stack(root))
 }
 
+/// Read the product's **Werkbank** (Issue #47): turn tracked files into Artefakt-Karten by
+/// convention via the pure Pattern-Zuordnung core, and gather the unlabeled tracked files into an
+/// **Unzugeordnet-Fach pro Arbeitsbereich**. Each card carries its Hauptdatei (highest glob
+/// priority) and a derived primary action (open the dominant file, else the folder) with an absolute
+/// target so the UI can open it via the OS default program. Pure read — `git ls-files` is collected
+/// once, then the pure core folds it; no mutation. A product without a Produkt-Stack has no
+/// Glob-Satz, so every tracked file becomes a Waise (nothing is ever lost) rather than an error.
+#[tauri::command]
+async fn read_werkbank_cmd(product: String) -> Result<WerkbankView, String> {
+    // `git ls-files` is local but walks the index; off the main thread for the same reason the other
+    // git reads are — a large product can never freeze the WebView.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        read_werkbank(root).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 /// **Resolve the laute Ausnahme** (Issue #43, E41): the single moment the user answers the loud
 /// question by choosing whose stand applies for the contested artifact. The backend then finishes
 /// the sync with the chosen side and a raw git conflict marker is NEVER written to the worktree —
@@ -784,6 +808,7 @@ pub fn run() {
             toolstack_baustein_ids,
             create_product_stack_cmd,
             read_product_stack,
+            read_werkbank_cmd,
             resolve_sync_cmd,
             list_products,
             register_product,

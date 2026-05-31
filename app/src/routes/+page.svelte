@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte";
   import type {
@@ -24,9 +25,13 @@
     TaskKind,
     TaskStatus,
     TaskLink,
+    WerkbankView,
+    ArtefaktKarte as ArtefaktKarteT,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import ArtifactCard from "$lib/ArtifactCard.svelte";
+  import ArtefaktKarte from "$lib/ArtefaktKarte.svelte";
+  import UnzugeordnetFach from "$lib/UnzugeordnetFach.svelte";
   import ForeignLocksPanel from "$lib/ForeignLocksPanel.svelte";
   import HistorieGate from "$lib/HistorieGate.svelte";
   import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
@@ -231,9 +236,15 @@
   async function refreshStatus() {
     if (!productPath || !product || statusInFlight) return;
     statusInFlight = true;
-    const paths = product.bausteine
-      .map((b) => b.main_file)
-      .filter((f): f is string => f !== null);
+    const paths = Array.from(
+      new Set(
+        [
+          ...product.bausteine.map((b) => b.main_file),
+          // The convention Artefakt-Karten (#47) carry the LED on their Hauptdatei too.
+          ...(werkbank?.karten.map((k) => k.hauptdatei) ?? []),
+        ].filter((f): f is string => f !== null && f !== undefined),
+      ),
+    );
     try {
       const [sigs, foreign] = await Promise.all([
         invoke<ArtifactSignal[]>("read_status", {
@@ -280,6 +291,63 @@
     await refreshStatus();
   }
 
+  /** Re-read the Werkbank (Issue #47): tracked files → Artefakt-Karten + Unzugeordnet-Fächer.
+   *  Pure read; best-effort — a product with no Produkt-Stack simply shows everything as Waisen. */
+  async function refreshWerkbank() {
+    if (!productPath) return;
+    try {
+      werkbank = await invoke<WerkbankView>("read_werkbank_cmd", {
+        product: productPath,
+      });
+    } catch (e) {
+      // The Werkbank is the convention layer over the read view; a hiccup must not break the shell.
+      werkbank = null;
+    }
+  }
+
+  /** Signal lookup for a card, keyed on its Hauptdatei (the Auto-Lock LED, E37). */
+  function signalFor(k: ArtefaktKarteT): ArtifactSignal | null {
+    return k.hauptdatei ? (signals[k.hauptdatei] ?? null) : null;
+  }
+
+  /** THE one-click primary action of an Artefakt-Karte (Issue #47, PRD §14): open the dominant
+   *  file or the folder via the OS default program. For a lockable Hauptdatei this also
+   *  auto-acquires the lock (E31) before opening, reusing the existing edit gesture. */
+  async function openKarte(k: ArtefaktKarteT) {
+    if (!k.ziel) return;
+    try {
+      if (k.primaer === "datei" && k.hauptdatei) {
+        // Opening/editing a lockable artifact auto-acquires its lock first (E31).
+        await editBaustein(k.hauptdatei);
+      }
+      await openPath(k.ziel);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** Open a single Waise file via the OS default program (Issue #47). */
+  async function openWaise(file: string) {
+    if (!productPath) return;
+    try {
+      await openPath(`${productPath}/${file}`);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  /** Hand-assignment is ONLY a correction (Issue #47): the convention assigns by Heimat-Ordner,
+   *  so the correction is to reveal the file in its folder where the user can move it into the
+   *  right Arbeitsbereich. No fake per-file label store — assignment stays by convention. */
+  async function correctZuordnung(file: string) {
+    if (!productPath) return;
+    try {
+      await revealItemInDir(`${productPath}/${file}`);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   function reset() {
     error = null;
     imported = null;
@@ -296,6 +364,7 @@
     graph = null;
     edgeView = { edges: [], warnings: [] };
     tasks = [];
+    werkbank = null;
     stopStatusLoop();
     stopSyncLoop();
   }
@@ -316,6 +385,11 @@
   // no task file keeps this empty. The two kinds differ ONLY by Blockier-Fähigkeit; the block
   // DECISION is a later slice (Issue #49), so nothing here raises the orange voice.
   let tasks = $state<Task[]>([]);
+
+  // The Werkbank view (Issue #47): tracked files turned into Artefakt-Karten by convention via
+  // the pure Pattern-Zuordnung core, plus the Unzugeordnet-Fach per Arbeitsbereich (the Waisen).
+  // Read read-only; refreshed on open and whenever a new Stand settles (tracked set may change).
+  let werkbank = $state<WerkbankView | null>(null);
 
   // Verknüpfungs-Kandidaten the create/edit picker offers: the product's Bausteine, as
   // {name, path}. (Produkt + a free Version link are always available in the form itself.)
@@ -452,6 +526,8 @@
     void refreshGraph();
     // A new save can change an artifact's timestamp, so Stale-Warnungen may flip (E26).
     void refreshEdges();
+    // A settled save can add/remove a tracked file, so the Artefakt-Karten may change (#47).
+    void refreshWerkbank();
     // A settled save is a laufender Checkpoint: the Lock Warden runs and, for open work,
     // mirrors it to the private backup (Sicherungs-Push) — never the shared stand (E35).
     void runCheckpoint(e.payload.path, false);
@@ -490,6 +566,7 @@
       await refreshGraph();
       await refreshEdges();
       await refreshTasks();
+      await refreshWerkbank();
       await refreshSetup();
       startStatusLoop();
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
@@ -559,6 +636,7 @@
       await refreshGraph();
       await refreshEdges();
       await refreshTasks();
+      await refreshWerkbank();
       await refreshSetup();
       // A freshly created product has no server yet — open the one-time ceremony once so the
       // user is guided to share it. Reopening/daily use never re-triggers this.
@@ -845,7 +923,37 @@
       {#if error}
         <p class="notice mono">{error}</p>
       {:else if product}
-        {#if product.bausteine.length > 0}
+        {#if werkbank && (werkbank.karten.length > 0 || werkbank.unzugeordnet.length > 0)}
+          <!-- Issue #47: Artefakt-Karten built by convention from tracked files (Pattern-
+               Zuordnung). One click opens the dominant file or the folder via OS default. -->
+          {#if werkbank.karten.length > 0}
+            <div class="grid">
+              {#each werkbank.karten as k, i (k.artefakt_id)}
+                <ArtefaktKarte
+                  karte={k}
+                  index={i}
+                  signal={signalFor(k)}
+                  onOpen={openKarte}
+                />
+              {/each}
+            </div>
+          {/if}
+
+          <!-- Unzugeordnet-Fach pro Arbeitsbereich: the Waisen (tracked, unlabeled). Nothing is
+               lost by omission; hand-assignment is only a correction (reveal in folder). -->
+          {#if werkbank.unzugeordnet.length > 0}
+            <div class="waisen">
+              {#each werkbank.unzugeordnet as fach (fach.arbeitsbereich)}
+                <UnzugeordnetFach
+                  {fach}
+                  onOpen={openWaise}
+                  onAssign={correctZuordnung}
+                />
+              {/each}
+            </div>
+          {/if}
+        {:else if product.bausteine.length > 0}
+          <!-- Fallback to the read-view folder cards when a product has no Produkt-Stack yet. -->
           <div class="grid">
             {#each product.bausteine as b, i (b.path)}
               <ArtifactCard
@@ -1221,6 +1329,15 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
     gap: 12px;
+  }
+
+  /* Unzugeordnet-Fächer (Issue #47): stacked recessive drawers under the Artefakt-Karten —
+     present and openable, but visually quiet so the labeled artifacts lead. */
+  .waisen {
+    margin-top: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
   /* Aufgaben & Hinweise sit below the Bausteine, set off by a generous gap so the work area
