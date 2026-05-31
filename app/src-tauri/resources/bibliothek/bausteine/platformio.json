@@ -1,0 +1,22 @@
+{
+  "id": "platformio",
+  "version": 1,
+  "name": "PlatformIO",
+  "heimat": "firmware",
+  "globs": [
+    "platformio.ini",
+    "*.c",
+    "*.cpp",
+    "*.h",
+    "*.hpp",
+    "*.ino"
+  ],
+  "ignore": [
+    ".pio/"
+  ],
+  "lfs": [],
+  "oeffnen": "ordner",
+  "startaufgaben": [],
+  "default_kanten": [],
+  "stillgelegt": false
+}

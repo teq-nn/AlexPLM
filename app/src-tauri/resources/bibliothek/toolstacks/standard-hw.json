@@ -1,0 +1,10 @@
+{
+  "id": "standard-hw",
+  "name": "Standard Hardware",
+  "baustein_ids": [
+    "kicad",
+    "fusion",
+    "zephyr",
+    "doku"
+  ]
+}

@@ -13,27 +13,46 @@ use crate::edges::{add_edge, remove_edge, stale_warnings, ArtifactStamp, Edge, S
 use crate::projection::project_product;
 use std::path::{Path, PathBuf};
 
-/// File that holds the manual edge set, in the product root. Dotfile so the `projection.rs`
-/// walk (which skips hidden entries) never mistakes it for a Baustein.
-pub const EDGES_FILE: &str = ".plm-kanten.json";
+/// The tool's committed, shared store directory (ADR 0002). `projection.rs` skips it by name.
+pub const PLM_DIR: &str = "_plm";
+/// File that holds the manual edge set, inside `_plm/` (ADR 0002).
+pub const EDGES_FILE: &str = "kanten.json";
+/// Legacy location of the edge set (pre-ADR-0002 dotfile). Still read for migration.
+pub const LEGACY_EDGES_FILE: &str = ".plm-kanten.json";
 
-/// Absolute path of the edge file for a product `root`.
+/// Absolute path of the `_plm/kanten.json` edge file for a product `root`.
 fn edges_path(root: &Path) -> PathBuf {
-    root.join(EDGES_FILE)
+    root.join(PLM_DIR).join(EDGES_FILE)
+}
+
+/// Absolute path of the legacy `.plm-kanten.json` dotfile for a product `root`.
+fn legacy_edges_path(root: &Path) -> PathBuf {
+    root.join(LEGACY_EDGES_FILE)
 }
 
 /// Read the persisted manual edge set for a product. A missing/empty/corrupt file means
 /// **zero edges** (opt-in, E40) — not an error.
+///
+/// Migration (ADR 0002): the new `_plm/kanten.json` wins; if it is absent the legacy
+/// `.plm-kanten.json` dotfile is read so existing products are not silently emptied. The next
+/// write lands in the new location.
 pub fn read_edges(root: &Path) -> Vec<Edge> {
-    let raw = std::fs::read_to_string(edges_path(root)).unwrap_or_default();
+    let raw = match std::fs::read_to_string(edges_path(root)) {
+        Ok(s) => s,
+        // New file absent -> fall back to the legacy dotfile for migration.
+        Err(_) => std::fs::read_to_string(legacy_edges_path(root)).unwrap_or_default(),
+    };
     if raw.trim().is_empty() {
         return Vec::new();
     }
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// Persist the manual edge set, pretty-printed for an honest, diffable on-disk record.
+/// Persist the manual edge set, pretty-printed for an honest, diffable on-disk record. Always
+/// writes the new `_plm/kanten.json` (creating `_plm/` as needed); the legacy dotfile is left
+/// untouched as harmless sediment.
 fn write_edges(root: &Path, edges: &[Edge]) -> std::io::Result<()> {
+    std::fs::create_dir_all(root.join(PLM_DIR))?;
     let json = serde_json::to_string_pretty(edges).map_err(std::io::Error::other)?;
     std::fs::write(edges_path(root), json)
 }
@@ -146,8 +165,34 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_zero_edges() {
         let dir = tmp();
+        fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
         fs::write(edges_path(&dir), "{ not json ]").unwrap();
         assert!(read_edges(&dir).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_to_the_new_plm_location() {
+        let dir = tmp();
+        add_persisted_edge(&dir, "a", "b").unwrap();
+        assert!(dir.join(PLM_DIR).join(EDGES_FILE).is_file(), "edges live in _plm/kanten.json");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_legacy_dotfile_when_new_file_absent() {
+        let dir = tmp();
+        // a product that only has the old dotfile must not be silently emptied (migration).
+        let legacy = vec![Edge::new("fertigung/stl", "mechanik/gehaeuse")];
+        let json = serde_json::to_string_pretty(&legacy).unwrap();
+        fs::write(legacy_edges_path(&dir), json).unwrap();
+
+        let edges = read_edges(&dir);
+        assert_eq!(edges, legacy, "legacy dotfile is read when _plm/kanten.json is absent");
+
+        // the next write lands in the new location, leaving the legacy file as sediment.
+        add_persisted_edge(&dir, "x/y", "p/q").unwrap();
+        assert!(dir.join(PLM_DIR).join(EDGES_FILE).is_file());
         let _ = fs::remove_dir_all(&dir);
     }
 }

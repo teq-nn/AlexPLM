@@ -1,5 +1,7 @@
 pub mod askpass;
 pub mod autocommit;
+pub mod baustein;
+pub mod bibliothek;
 pub mod classifier;
 pub mod credentials;
 pub mod edges;
@@ -15,11 +17,14 @@ pub mod locks;
 pub mod projection;
 pub mod pushglue;
 pub mod setup;
+pub mod stackstore;
 pub mod syncdecider;
 pub mod syncglue;
 pub mod warden;
 pub mod watcher;
 
+use baustein::{Baustein, Toolstack};
+use bibliothek::Bibliothek;
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
 use graph::VersionGraph;
 use graphread::{promote_to_milestone, read_graph};
@@ -27,6 +32,7 @@ use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, G
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
+use stackstore::{create_product_stack, read_stack, ProduktStack};
 use syncglue::{run_sync, SyncOutcome};
 use warden::{Checkpoint, WardenAction};
 use std::path::Path;
@@ -386,12 +392,118 @@ async fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome
     .await
 }
 
+/// The Bibliothek root for this install: `<app-data>/plm-werkzeug/bibliothek` (ADR 0003).
+fn bibliothek_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App-Data-Verzeichnis nicht auffindbar: {e}"))?;
+    Ok(data.join("plm-werkzeug").join("bibliothek"))
+}
+
+/// The bundled default Bibliothek shipped as a Tauri resource (`resources/bibliothek`).
+fn bundled_bibliothek_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let res = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Ressourcen-Verzeichnis nicht auffindbar: {e}"))?;
+    Ok(res.join("resources").join("bibliothek"))
+}
+
+/// Run the idempotent, version-gated seeding of the bundled default Bausteine/Toolstacks into the
+/// local Bibliothek (ADR 0003). Runs on first start and after every app update; never touches
+/// user-edited or user-added Bausteine, and never touches product copies (anti-drift).
+fn seed_bibliothek(app: &tauri::AppHandle) -> Result<(), String> {
+    let lib = Bibliothek::new(bibliothek_root(app)?);
+    let (bausteine, toolstacks) = bibliothek::load_bundled(&bundled_bibliothek_dir(app)?);
+    lib.seed_from(&bausteine, &toolstacks)
+        .map_err(|e| format!("Bibliothek-Seeding fehlgeschlagen: {e}"))?;
+    Ok(())
+}
+
+/// List the local Bibliothek (Issue #39, ADR 0003): the seeded + user-added Bausteine and the
+/// available Toolstacks. Pure read; missing/corrupt entries degrade to an empty list.
+#[tauri::command]
+fn list_bibliothek(app: tauri::AppHandle) -> Result<BibliothekView, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    Ok(BibliothekView {
+        bausteine: lib.list_bausteine(),
+        toolstacks: lib.list_toolstacks(),
+    })
+}
+
+/// The Bibliothek as sent to the UI: the available Bausteine and Toolstacks.
+#[derive(serde::Serialize)]
+struct BibliothekView {
+    bausteine: Vec<Baustein>,
+    toolstacks: Vec<Toolstack>,
+}
+
+/// List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
+/// the „Standard-Toolstack wählen"-Schritt der Produkt-Anlage (#50).
+#[tauri::command]
+fn list_toolstacks(app: tauri::AppHandle) -> Result<Vec<Toolstack>, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    Ok(lib.list_toolstacks())
+}
+
+/// Resolve a named Toolstack from the Bibliothek to its ordered Baustein-`id`s (Issue #39).
+/// Returns an error if the Toolstack is unknown. Used to seed a product stack from a chosen stack.
+#[tauri::command]
+fn toolstack_baustein_ids(app: tauri::AppHandle, toolstack_id: String) -> Result<Vec<String>, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    lib.read_toolstack(&toolstack_id)
+        .map(|t| t.baustein_ids)
+        .ok_or_else(|| format!("Unbekannter Toolstack: {toolstack_id}"))
+}
+
+/// Create/configure a product's Produkt-Stack as a **full self-contained copy** of the chosen
+/// Bibliothek Bausteine, written to `_plm/stack.json` with a provenance stamp (Issue #39, ADR
+/// 0003). No live link to the Bibliothek — a later Bibliothek edit never reaches this product
+/// (anti-drift). `toolstack` is the optional display name of the chosen standard stack. The
+/// product-creation UI is #50; this is the backend the ceremony calls.
+#[tauri::command]
+fn create_product_stack_cmd(
+    app: tauri::AppHandle,
+    product: String,
+    baustein_ids: Vec<String>,
+    toolstack: Option<String>,
+) -> Result<ProduktStack, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    let root = Path::new(&product);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {product}"));
+    }
+    create_product_stack(root, &lib, &baustein_ids, toolstack).map_err(|e| e.to_string())
+}
+
+/// Read a product's copied Produkt-Stack from `_plm/stack.json` (Issue #39). Pure read; a product
+/// with no stack file reads as an empty stack (never an error). This is the anti-drift copy — it
+/// reflects only what was copied in, never the live Bibliothek.
+#[tauri::command]
+fn read_product_stack(product: String) -> Result<ProduktStack, String> {
+    let root = Path::new(&product);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {product}"));
+    }
+    Ok(read_stack(root))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState::default())
+        .setup(|app| {
+            // Idempotent, version-gated seeding of the bundled default Bausteine on startup
+            // (ADR 0003). A seeding failure must not stop the app from launching — it only means
+            // the Bibliothek starts empty/stale; surface it on stderr and carry on.
+            if let Err(e) = seed_bibliothek(&app.handle().clone()) {
+                eprintln!("Bibliothek-Seeding übersprungen: {e}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_product,
             start_watching,
@@ -411,7 +523,12 @@ pub fn run() {
             connect_server,
             publish_to_server,
             run_checkpoint,
-            sync_product
+            sync_product,
+            list_bibliothek,
+            list_toolstacks,
+            toolstack_baustein_ids,
+            create_product_stack_cmd,
+            read_product_stack
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

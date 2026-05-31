@@ -33,6 +33,10 @@ pub struct ProductView {
 
 const DIR_DENYLIST: &[&str] = &["node_modules", "target", "__pycache__"];
 
+/// Name prefix of the tool's own committed store directory (`_plm`, ADR 0002). The walk skips
+/// any entry starting with this so the tool's notes are never projected as a Baustein.
+const PLM_PREFIX: &str = "_plm";
+
 /// Project a product folder into a [`ProductView`]. Pure read — no writes, no git mutation.
 pub fn project_product(root: &Path) -> std::io::Result<ProductView> {
     let name = file_name_of(root);
@@ -58,7 +62,7 @@ fn collect_bausteine(root: &Path, dir: &Path, out: &mut Vec<Baustein>) -> std::i
         let ft = entry.file_type()?;
         let fname = entry.file_name().to_string_lossy().into_owned();
         if ft.is_dir() {
-            if is_hidden(&fname) || DIR_DENYLIST.contains(&fname.as_str()) {
+            if is_hidden(&fname) || is_plm(&fname) || DIR_DENYLIST.contains(&fname.as_str()) {
                 continue;
             }
             subdirs.push(entry.path());
@@ -86,6 +90,13 @@ fn collect_bausteine(root: &Path, dir: &Path, out: &mut Vec<Baustein>) -> std::i
 
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
+}
+
+/// Whether an entry name belongs to the tool's own `_plm` store (ADR 0002). The Baustein walk
+/// skips it by name so the visible, committed tool directory is never taken for an Arbeitsbereich
+/// (previously the dotfile camouflage did this job).
+fn is_plm(name: &str) -> bool {
+    name.starts_with(PLM_PREFIX)
 }
 
 fn file_name_of(p: &Path) -> String {
@@ -222,5 +233,13 @@ mod tests {
     fn join_rel_handles_root_level_files() {
         assert_eq!(join_rel("", "x.f3d"), "x.f3d");
         assert_eq!(join_rel("elektronik", "x.f3d"), "elektronik/x.f3d");
+    }
+
+    #[test]
+    fn is_plm_recognises_the_tool_store_by_name() {
+        assert!(is_plm("_plm"));
+        assert!(is_plm("_plm-archive")); // prefix rule, defensive
+        assert!(!is_plm("elektronik"));
+        assert!(!is_plm("plm")); // no leading underscore
     }
 }

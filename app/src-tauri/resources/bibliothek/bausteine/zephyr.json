@@ -1,0 +1,26 @@
+{
+  "id": "zephyr",
+  "version": 1,
+  "name": "Zephyr",
+  "heimat": "firmware",
+  "globs": [
+    "CMakeLists.txt",
+    "prj.conf",
+    "*.c",
+    "*.h",
+    "*.overlay",
+    "*.dts",
+    "*.dtsi",
+    "*.conf",
+    "*.yaml"
+  ],
+  "ignore": [
+    "build/",
+    "twister-out/"
+  ],
+  "lfs": [],
+  "oeffnen": "ordner",
+  "startaufgaben": [],
+  "default_kanten": [],
+  "stillgelegt": false
+}

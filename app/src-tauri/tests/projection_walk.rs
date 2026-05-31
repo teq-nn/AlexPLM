@@ -31,6 +31,9 @@ fn projects_leaf_folders_as_bausteine_with_representative_files() {
     touch(&root.join("README.md")); // root has subdirs -> root is not a Baustein
     fs::create_dir_all(root.join("docs")).unwrap(); // empty -> ignored
     fs::create_dir_all(root.join(".git")).unwrap(); // hidden -> ignored
+    // The tool's own committed store must never be projected as a Baustein (ADR 0002).
+    touch(&root.join("_plm/stack.json"));
+    touch(&root.join("_plm/kanten.json"));
 
     let view = project_product(root).unwrap();
 
