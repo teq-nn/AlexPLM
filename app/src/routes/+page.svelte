@@ -78,10 +78,25 @@
       });
       // Only a real action lights the readout; Refuse leaves the rhythm silent.
       if (action !== "refuse") wardenAction = action;
+      // At every checkpoint, self-heal: auto-unlock every held lock whose path is now locally
+      // clean (committed, no open edit). The Lock Warden decides per path (Issue #42, E31/E35);
+      // the freed binaries rest read-only (frei) again. Best-effort — never breaks the rhythm.
+      await sweepCleanLocks();
       await refreshStatus();
     } catch (e) {
       // The two push types are background safety nets; surfacing the raw error would break the
       // silent vocabulary, so we swallow it (a louder, in-tool sync error is a later slice).
+    }
+  }
+
+  /** Auto-unlock every held lock whose path is locally clean (Issue #42). Best-effort: an
+   *  offline/unpublished repo simply frees nothing — never breaks the silent rhythm. */
+  async function sweepCleanLocks() {
+    if (!productPath) return;
+    try {
+      await invoke<string[]>("sweep_clean_locks", { product: productPath });
+    } catch (e) {
+      // Self-healing is a quiet safety net; a hiccup must never surface as a loud error.
     }
   }
 
@@ -322,8 +337,17 @@
     void runCheckpoint(e.payload.path, false);
   }).then((u) => (unlisten = u));
 
+  // The watcher auto-locked the first dirty lockable path (Issue #42): the lock now exists before
+  // any checkpoint, closing the Binär-Invarianten-Fenster. Re-read so the card's LED reflects it
+  // (mine → grey/in Arbeit; a colleague would now see „gesperrt von X seit …"). No git vocabulary.
+  let unlistenLock: UnlistenFn | null = null;
+  listen<string>("lock-acquired", () => {
+    void refreshStatus();
+  }).then((u) => (unlistenLock = u));
+
   onDestroy(() => {
     unlisten?.();
+    unlistenLock?.();
     void invoke("stop_watching").catch(() => {});
   });
 
