@@ -30,6 +30,7 @@
   import VersionTree from "$lib/VersionTree.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
+  import ProduktSuche from "$lib/ProduktSuche.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -200,6 +201,11 @@
   // server is opened/imported, then stays out of the silent daily rhythm.
   let setup = $state<SetupReport | null>(null);
   let ceremonyOpen = $state(false);
+
+  // The produktübergreifende Live-Suche (Issue #45, E45). App-level: it spans products, so it
+  // lives in its own instrument screen reachable from the entry bar — not tied to the open
+  // product. The registry it searches stores only paths (never content).
+  let sucheOpen = $state(false);
 
   /** Read the ceremony state from git (server connected? published?). Best-effort. */
   async function refreshSetup() {
@@ -671,6 +677,15 @@
       </button>
       <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
     </div>
+    <!-- Produktübergreifende Suche: an app-level instrument, reachable independent of an open
+         product (the registry spans products). Quiet ghost key — it only reads. -->
+    <button
+      class="key ghost suche"
+      onclick={() => (sucheOpen = true)}
+      title="Über alle registrierten Produkte suchen"
+    >
+      <span class="label">Suche über Produkte</span>
+    </button>
   </div>
 
   <div class="stage">
@@ -871,6 +886,11 @@
   <LauteAusnahme question={loud} busy={resolving} onChoose={resolveLoud} />
 {/if}
 
+<!-- Produktübergreifende Live-Suche (Issue #45, E45): an app-level instrument screen. -->
+{#if sucheOpen}
+  <ProduktSuche onClose={() => (sucheOpen = false)} />
+{/if}
+
 <style>
   .app {
     display: flex;
@@ -884,9 +904,15 @@
   .entrybar {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     padding: 10px 16px;
     background: var(--surface-raised);
     border-bottom: 1px solid var(--hairline);
+  }
+  /* The app-level cross-product search trigger sits at the right edge of the entry bar. */
+  .key.suche {
+    flex: none;
   }
   .entry-actions {
     display: flex;

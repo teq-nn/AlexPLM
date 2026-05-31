@@ -18,6 +18,8 @@ pub mod lockglue;
 pub mod locks;
 pub mod projection;
 pub mod pushglue;
+pub mod registry;
+pub mod search;
 pub mod setup;
 pub mod stackstore;
 pub mod syncdecider;
@@ -33,6 +35,8 @@ use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
+use registry::{add_registered, read_registry, registry_path, remove_registered, RegisteredProduct};
+use search::{fan_out, SearchResult};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
 use stackstore::{create_product_stack, read_stack, ProduktStack};
 use syncdecider::StandChoice;
@@ -559,6 +563,60 @@ async fn resolve_sync_cmd(
     .await
 }
 
+/// Resolve the app-level Produkt-Registry file under Tauri's app config dir (Issue #45). The
+/// registry lives at app level — NOT inside any product — because it is the one list that spans
+/// products. A failure to resolve the config dir surfaces as a German error string.
+fn resolve_registry_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("App-Konfigurationsordner nicht ermittelbar: {e}"))?;
+    Ok(registry_path(&dir))
+}
+
+/// List the registered products (Issue #45). Path-only: each entry is a folder path plus its
+/// derived display name — no content is cached. A missing/corrupt registry reads as empty.
+#[tauri::command]
+fn list_products(app: tauri::AppHandle) -> Result<Vec<RegisteredProduct>, String> {
+    let file = resolve_registry_file(&app)?;
+    Ok(read_registry(&file))
+}
+
+/// Register a product folder into the app-level Produkt-Registry (Issue #45). Stores ONLY the
+/// path (de-duplicated, normalized); the content is never copied. Returns the refreshed list.
+#[tauri::command]
+fn register_product(app: tauri::AppHandle, path: String) -> Result<Vec<RegisteredProduct>, String> {
+    let file = resolve_registry_file(&app)?;
+    add_registered(&file, &path).map_err(|e| e.to_string())
+}
+
+/// Remove a product from the Produkt-Registry (Issue #45). Drops only the registry entry; the
+/// product folder on disk is never touched. Returns the refreshed list.
+#[tauri::command]
+fn unregister_product(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Vec<RegisteredProduct>, String> {
+    let file = resolve_registry_file(&app)?;
+    remove_registered(&file, &path).map_err(|e| e.to_string())
+}
+
+/// The produktübergreifende Live-Suche (Issue #45, E45): a live Fan-out over the registry —
+/// opens each reachable product and greps live over Dateinamen, `_plm` and `VERSION_NOTES.md`.
+/// No central index, no mirror. Unreachable products are reported honestly in the result's
+/// `offline` list with searched/total counts — never silently dropped.
+#[tauri::command]
+async fn search_products(app: tauri::AppHandle, query: String) -> Result<SearchResult, String> {
+    // The fan-out walks N product trees off disk; keep it off the WebView main thread so a slow /
+    // large registry can never freeze the UI (same reason as the git commands above).
+    let file = resolve_registry_file(&app)?;
+    on_blocking(move || {
+        let registry = read_registry(&file);
+        Ok(fan_out(&registry, &query))
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -601,7 +659,11 @@ pub fn run() {
             toolstack_baustein_ids,
             create_product_stack_cmd,
             read_product_stack,
-            resolve_sync_cmd
+            resolve_sync_cmd,
+            list_products,
+            register_product,
+            unregister_product,
+            search_products
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
