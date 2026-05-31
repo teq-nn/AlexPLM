@@ -22,7 +22,7 @@
 //! Zweig becomes its own visible line. The active line stays clearly marked. A product with
 //! a single linear history simply has one lane and renders exactly as before.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
 /// One commit as observed in the repository, newest-relevant fields only. This is the raw
@@ -46,7 +46,7 @@ pub struct CommitFact {
 /// **Freigabe** (streng), which write-protects the tag (E8). Toggling back is a deliberate
 /// reversible „Un-Release" (E22). Serialized to the UI in kebab-case (`"prototyp"` /
 /// `"freigabe"`).
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum MilestoneArt {
     /// Lax: the default for a new Meilenstein. No write-protect, warnings only.

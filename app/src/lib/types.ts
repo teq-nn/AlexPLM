@@ -414,3 +414,20 @@ export interface Task {
   /** Creation timestamp `YYYY-MM-DDTHH:MM:SSZ` (the store sets it). */
   created_at: string;
 }
+
+// -------------------------------------------------------------------------------------------------
+// Aufgaben-Block decision (Issue #49, E42). The pure core decides whether open Aufgaben block a
+// checkpoint, carrying the Strenge on the Meilenstein-Art (NOT a Branch-Typ): a "freigabe" is
+// blocked by any open Aufgabe, a "prototyp" only by an open „blockiert überall" Aufgabe, and a
+// Hinweis never blocks. Surfaced by the `evaluate_task_block` command; Issue #52's Freigabe-Gate
+// consumes it. Mirrors `BlockDecision` in src-tauri/src/aufgabenblock.rs.
+// -------------------------------------------------------------------------------------------------
+
+/** Whether a checkpoint at the intended Meilenstein-Art is blocked by open Aufgaben, and by which.
+ *  Mirrors `BlockDecision` in src-tauri/src/aufgabenblock.rs. */
+export interface BlockDecision {
+  /** Whether the checkpoint is blocked at all. `true` iff `blocking_task_ids` is non-empty. */
+  blocked: boolean;
+  /** Ids of the open Aufgaben that block this checkpoint, in input order. Empty ⇔ not blocked. */
+  blocking_task_ids: string[];
+}

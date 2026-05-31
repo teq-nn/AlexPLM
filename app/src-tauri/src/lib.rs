@@ -1,5 +1,7 @@
 pub mod artstore;
 pub mod askpass;
+pub mod aufgabenblock;
+pub mod aufgabenblockglue;
 pub mod autocommit;
 pub mod autolock;
 pub mod baustein;
@@ -29,10 +31,12 @@ pub mod tasks;
 pub mod warden;
 pub mod watcher;
 
+use aufgabenblock::BlockDecision;
+use aufgabenblockglue::block_for_art;
 use baustein::{Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
-use graph::VersionGraph;
+use graph::{MilestoneArt, VersionGraph};
 use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
@@ -717,6 +721,21 @@ fn delete_task_cmd(path: String, id: String) -> Result<Vec<Task>, String> {
     delete_task(root, &id).map_err(|e| e.to_string())
 }
 
+/// Decide whether a checkpoint at the intended Meilenstein-Art is blocked by open Aufgaben
+/// (Issue #49, E42). The Strenge lives on the Art: a Freigabe is blocked by any open Aufgabe, a
+/// Prototyp only by an open „blockiert überall" Aufgabe, and a Hinweis never blocks. Pure read of
+/// the product's task store; the judgement is the pure [`aufgabenblock::decide_block`] core.
+/// Returns whether it is blocked and the ids of the blocking tasks (so Issue #52's Freigabe-Gate
+/// can name them). A product with no task store is never blocked.
+#[tauri::command]
+fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(block_for_art(root, art))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -768,7 +787,8 @@ pub fn run() {
             create_task_cmd,
             edit_task_cmd,
             set_task_status_cmd,
-            delete_task_cmd
+            delete_task_cmd,
+            evaluate_task_block
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
