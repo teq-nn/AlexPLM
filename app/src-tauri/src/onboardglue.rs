@@ -1,0 +1,241 @@
+//! Onboarding-Glue: Tag-1-Ignore/LFS in die Dotfiles hängen (Issue #48, adressiert #63).
+//!
+//! Dünne Seiteneffekt-Schicht über dem reinen [`crate::markerblock`]-Kern. Beim Onboarding eines
+//! Bausteins in ein Produkt:
+//! 1. die gewünschten Zeilen je Dotfile aus dem Baustein **ableiten** (rein, total),
+//! 2. `.gitignore`/`.gitattributes` lesen (fehlend ⇒ leer, nie Fehler),
+//! 3. den Marker-Block des Bausteins idempotent setzen ([`markerblock::upsert_block`]),
+//! 4. zurückschreiben — **nur wenn sich etwas ändert** (kein unnötiger Schreibzugriff/Diff).
+//!
+//! **Tag-1-Pflicht:** Das geschieht beim Anlegen/Erweitern des Produkt-Stacks, also **bevor** das
+//! Tool des Bausteins seine erste Binärdatei/Müll erzeugt — daher kein späteres `lfs migrate`.
+//!
+//! **Quelle der Muster (bewusste Entscheidung, ADR-würdig):**
+//! - **Ignore** = die `ignore`-Liste des Bausteins, 1:1 (das ist Tool-Wissen, ADR 0003).
+//! - **LFS** = die `lfs`-Liste des Bausteins **vereinigt** mit den Bausteins-`globs`, deren
+//!   Endung formatintrinsisch *lockable* ist (über [`crate::classifier`], die einzige Wahrheit
+//!   über Lockability — ADR 0003). So landen z.B. CAD-`globs` auch dann unter LFS, wenn der
+//!   Baustein keine explizite `lfs`-Liste pflegt (schließt #63: Onboarding ohne LFS-Muster).
+//!   Reihenfolge: erst explizite `lfs`, dann abgeleitete Globs; Duplikate werden entfernt.
+
+use crate::baustein::Baustein;
+use crate::classifier::{classify, Bucket};
+use crate::markerblock::upsert_block;
+use crate::stackstore::ProduktStack;
+use std::path::Path;
+
+/// Dateiname der Ignore-Dotfile.
+const GITIGNORE: &str = ".gitignore";
+/// Dateiname der Attribut-Dotfile.
+const GITATTRIBUTES: &str = ".gitattributes";
+
+/// Die kanonische `.gitignore`-Zeilenmenge eines Bausteins: seine `ignore`-Liste, 1:1 (Tool-Wissen).
+pub fn ignore_lines(b: &Baustein) -> Vec<String> {
+    b.ignore.clone()
+}
+
+/// Die kanonische `.gitattributes`-Zeilenmenge eines Bausteins: explizite `lfs`-Muster vereinigt
+/// mit den lockable `globs`, jeweils als vollständige LFS-Attributzeile gerendert. Rein, total,
+/// deterministisch und dedupliziert (Reihenfolge erhalten: explizit zuerst, dann abgeleitet).
+pub fn lfs_lines(b: &Baustein) -> Vec<String> {
+    let mut patterns: Vec<String> = Vec::new();
+    let push_unique = |patterns: &mut Vec<String>, p: &str| {
+        if !patterns.iter().any(|x| x == p) {
+            patterns.push(p.to_string());
+        }
+    };
+    // 1) Explizite LFS-Muster des Bausteins.
+    for p in &b.lfs {
+        push_unique(&mut patterns, p);
+    }
+    // 2) Globs, deren Format intrinsisch lockable ist (CAD, Mesh, KiCad-Quellen, …).
+    for g in &b.globs {
+        if is_lockable_glob(g) {
+            push_unique(&mut patterns, g);
+        }
+    }
+    patterns.into_iter().map(|p| attr_line(&p)).collect()
+}
+
+/// Ob ein Glob ein lockable Format adressiert. Stützt sich auf den Classifier-Kern: wir prüfen die
+/// Endung des Globs (z.B. `*.f3d`, `*.kicad_pcb`). Globs ohne lockable Endung (Quelltext, Doku)
+/// liefern `false`. Total — beliebige Eingabe ergibt eine Entscheidung, nie Panik.
+fn is_lockable_glob(glob: &str) -> bool {
+    // `classify` betrachtet nur die letzte Endung des letzten Pfadsegments; ein Glob wie `*.f3d`
+    // verhält sich dabei wie ein Dateiname. Reine, mergebare Globs (CMakeLists.txt, *.c) -> false.
+    matches!(
+        classify(glob, None),
+        Bucket::BinaryUnmergeable | Bucket::NominalTextUnmergeable
+    )
+}
+
+/// Eine vollständige LFS-+Lockable-Attributzeile für ein Muster — exakt das Format, das
+/// [`crate::import::render_gitattributes`] erzeugt, damit Import und Onboarding übereinstimmen.
+fn attr_line(pattern: &str) -> String {
+    format!("{pattern} filter=lfs diff=lfs merge=lfs -text lockable")
+}
+
+/// Eine Dotfile lesen (fehlend/leer ⇒ leerer String, nie Fehler), den Marker-Block des Bausteins
+/// idempotent setzen und **nur bei Änderung** zurückschreiben. Gibt zurück, ob geschrieben wurde.
+fn upsert_dotfile(root: &Path, file: &str, id: &str, lines: &[String]) -> std::io::Result<bool> {
+    let path = root.join(file);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let updated = upsert_block(&existing, id, lines);
+    if updated == existing {
+        return Ok(false);
+    }
+    std::fs::write(&path, updated)?;
+    Ok(true)
+}
+
+/// Tag-1-Ignore/LFS für **einen** Baustein in ein Produkt-`root` hängen (idempotent).
+/// Setzt den Marker-Block in `.gitignore` (Ignore-Muster) und `.gitattributes` (LFS/Lockable).
+pub fn onboard_baustein_dotfiles(root: &Path, b: &Baustein) -> std::io::Result<()> {
+    upsert_dotfile(root, GITIGNORE, &b.id, &ignore_lines(b))?;
+    upsert_dotfile(root, GITATTRIBUTES, &b.id, &lfs_lines(b))?;
+    Ok(())
+}
+
+/// Tag-1-Ignore/LFS für **alle** Bausteine eines Produkt-Stacks hängen (idempotent). Wird direkt
+/// nach dem Schreiben von `_plm/stack.json` aufgerufen, sodass die Muster stehen, bevor ein Tool
+/// seine erste Datei erzeugt. Reihenfolge folgt dem Stack; jeder Baustein besitzt seinen Block.
+pub fn onboard_stack_dotfiles(root: &Path, stack: &ProduktStack) -> std::io::Result<()> {
+    for sb in &stack.bausteine {
+        onboard_baustein_dotfiles(root, &sb.baustein)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::baustein::Oeffnen;
+    use std::path::PathBuf;
+
+    fn baustein(id: &str, globs: &[&str], ignore: &[&str], lfs: &[&str]) -> Baustein {
+        Baustein {
+            id: id.to_string(),
+            version: 1,
+            name: id.to_string(),
+            heimat: "h".to_string(),
+            globs: globs.iter().map(|s| s.to_string()).collect(),
+            ignore: ignore.iter().map(|s| s.to_string()).collect(),
+            lfs: lfs.iter().map(|s| s.to_string()).collect(),
+            oeffnen: Oeffnen::Auto,
+            startaufgaben: vec![],
+            default_kanten: vec![],
+            stillgelegt: false,
+        }
+    }
+
+    fn tmp() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "plm-onboard-ut-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Ignore-Zeilen = ignore-Liste 1:1.
+    #[test]
+    fn ignore_lines_are_the_ignore_list() {
+        let b = baustein("zephyr", &["*.c"], &["build/", "twister-out/"], &[]);
+        assert_eq!(ignore_lines(&b), vec!["build/".to_string(), "twister-out/".to_string()]);
+    }
+
+    /// LFS-Zeilen: lockable globs werden abgeleitet, mergeable globs nicht; explizite lfs zuerst.
+    #[test]
+    fn lfs_lines_derive_lockable_globs_and_keep_explicit_first() {
+        // table: (globs, explicit lfs) -> expected patterns (the part before " filter=lfs ...")
+        let cases: &[(&[&str], &[&str], &[&str])] = &[
+            // CAD-Glob ist lockable -> abgeleitet; *.c ist mergeable -> nicht.
+            (&["*.f3d", "*.c"], &[], &["*.f3d"]),
+            // KiCad-Quellen sind nominal-text-unmergeable -> lockable.
+            (&["*.kicad_pro", "*.kicad_sch", "*.kicad_pcb"], &[], &["*.kicad_sch", "*.kicad_pcb"]),
+            // rein mergebare Globs -> keine LFS-Zeilen.
+            (&["CMakeLists.txt", "*.c", "*.h"], &[], &[]),
+            // explizite lfs zuerst, dann abgeleitete; ein bereits explizites Muster nicht doppelt.
+            (&["*.f3d"], &["*.step", "*.f3d"], &["*.step", "*.f3d"]),
+        ];
+        for (globs, lfs, expected_patterns) in cases {
+            let b = baustein("x", globs, &[], lfs);
+            let expected: Vec<String> =
+                expected_patterns.iter().map(|p| attr_line(p)).collect();
+            assert_eq!(lfs_lines(&b), expected, "globs={globs:?} lfs={lfs:?}");
+        }
+    }
+
+    /// End-to-end: Onboarding schreibt idempotente Blöcke in beide Dotfiles (zweimal == einmal).
+    #[test]
+    fn onboarding_writes_idempotent_blocks_twice_equals_once() {
+        let dir = tmp();
+        let b = baustein("kicad", &["*.kicad_pcb"], &["*.autosave"], &[]);
+        onboard_baustein_dotfiles(&dir, &b).unwrap();
+        let ignore1 = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
+        let attr1 = std::fs::read_to_string(dir.join(GITATTRIBUTES)).unwrap();
+
+        // Zweiter Lauf darf nichts schreiben und nichts ändern.
+        let wrote_ignore = upsert_dotfile(&dir, GITIGNORE, "kicad", &ignore_lines(&b)).unwrap();
+        let wrote_attr = upsert_dotfile(&dir, GITATTRIBUTES, "kicad", &lfs_lines(&b)).unwrap();
+        assert!(!wrote_ignore, "zweiter .gitignore-Lauf hätte nicht schreiben dürfen");
+        assert!(!wrote_attr, "zweiter .gitattributes-Lauf hätte nicht schreiben dürfen");
+
+        onboard_baustein_dotfiles(&dir, &b).unwrap();
+        let ignore2 = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
+        let attr2 = std::fs::read_to_string(dir.join(GITATTRIBUTES)).unwrap();
+        assert_eq!(ignore1, ignore2);
+        assert_eq!(attr1, attr2);
+
+        assert!(ignore1.contains("# >>> baustein: kicad >>>"));
+        assert!(ignore1.contains("*.autosave"));
+        assert!(attr1.contains("*.kicad_pcb filter=lfs diff=lfs merge=lfs -text lockable"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Hand-Edits außerhalb des Marker-Blocks überleben das Onboarding unangetastet.
+    #[test]
+    fn hand_edits_outside_block_survive() {
+        let dir = tmp();
+        std::fs::write(dir.join(GITIGNORE), "# meins\nprivate/\n").unwrap();
+        let b = baustein("zephyr", &["*.c"], &["build/"], &[]);
+        onboard_baustein_dotfiles(&dir, &b).unwrap();
+        let out = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
+        assert!(out.starts_with("# meins\nprivate/\n"));
+        assert!(out.contains("# >>> baustein: zephyr >>>\nbuild/\n# <<< baustein: zephyr <<<"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ein ganzer Stack: jeder Baustein bekommt seinen eigenen Block; alle koexistieren.
+    #[test]
+    fn onboard_whole_stack_gives_each_baustein_its_block() {
+        use crate::stackstore::StackBaustein;
+        let dir = tmp();
+        let stack = ProduktStack {
+            toolstack: None,
+            bausteine: vec![
+                StackBaustein::copy_of(&baustein("kicad", &["*.kicad_pcb"], &["*.autosave"], &[])),
+                StackBaustein::copy_of(&baustein("fusion", &["*.f3d"], &[], &[])),
+            ],
+        };
+        onboard_stack_dotfiles(&dir, &stack).unwrap();
+        let ignore = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
+        let attr = std::fs::read_to_string(dir.join(GITATTRIBUTES)).unwrap();
+        assert!(ignore.contains("baustein: kicad"));
+        assert!(attr.contains("*.kicad_pcb filter=lfs"));
+        assert!(attr.contains("*.f3d filter=lfs"));
+        // idempotent über den ganzen Stack
+        let ignore_again = {
+            onboard_stack_dotfiles(&dir, &stack).unwrap();
+            std::fs::read_to_string(dir.join(GITIGNORE)).unwrap()
+        };
+        assert_eq!(ignore, ignore_again);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
