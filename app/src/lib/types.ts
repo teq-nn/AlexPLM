@@ -227,3 +227,54 @@ export type SyncStatus =
 export interface SyncOutcome {
   status: SyncStatus;
 }
+
+// The Produkt-Registry + produktübergreifende Live-Suche (Issue #45, E45). The registry is
+// PATH-ONLY (no content cached — a second copy would drift, E8/E18); search is a LIVE fan-out
+// that opens each reachable product and greps over Dateinamen/`_plm`/`VERSION_NOTES.md`.
+// Unreachable products are reported honestly, never silently dropped.
+
+/** One registered product. Path-only plus a derived display name. Mirrors `RegisteredProduct`
+ *  in src-tauri/src/registry.rs. */
+export interface RegisteredProduct {
+  /** Absolute path to the product folder — the single source of truth for this entry. */
+  path: string;
+  /** Folder name, derived from `path` (a display convenience, never a second fact). */
+  name: string;
+}
+
+/** Which of a product's three searched sources a hit came from. Mirrors `HitField` in
+ *  src-tauri/src/search.rs (serde kebab-case). */
+export type HitField = "dateiname" | "plm" | "version-notes";
+
+/** One match inside one product. Mirrors `SearchHit` in src-tauri/src/search.rs. */
+export interface SearchHit {
+  product_path: string;
+  product_name: string;
+  field: HitField;
+  /** Product-relative file the hit was found in (forward slashes). */
+  file: string;
+  /** Matched text: a relative file path for `dateiname`, the matched line for content. */
+  text: string;
+  /** Computed relevance; higher sorts first. */
+  score: number;
+}
+
+/** A registered product that could not be searched. Mirrors `OfflineProduct`. */
+export interface OfflineProduct {
+  product_path: string;
+  product_name: string;
+  /** Human German reason, e.g. "Ordner nicht erreichbar". */
+  reason: string;
+}
+
+/** The full result of one fan-out search. Mirrors `SearchResult` in src-tauri/src/search.rs. */
+export interface SearchResult {
+  /** All hits across reachable products, merged + ranked (best first). */
+  hits: SearchHit[];
+  /** Registered products that could not be opened — reported, never silently dropped. */
+  offline: OfflineProduct[];
+  /** How many registered products were searched (reachable). */
+  searched: number;
+  /** Total registered products considered (`searched + offline.length`). */
+  total: number;
+}
