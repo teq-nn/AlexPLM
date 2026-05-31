@@ -85,10 +85,14 @@ pub fn snapshot_for(
     Ok(WardenSnapshot { kind, lock, clean, checkpoint })
 }
 
-/// Read the lock state of one path from `git lfs locks --json`, splitting own vs. foreign by
-/// `git config user.name`. Best-effort: an LFS error (no remote, etc.) reads back as Unlocked.
+/// Read the lock state of one path from `git lfs locks --json`, splitting own vs. foreign by the
+/// **Forgejo account name** (the slug git-lfs records as `owner.name`), NOT the local `git config
+/// user.name` (Issue #72): the latter is the commit author and made every own lock read as
+/// `HeldByOther`, so the Warden refused every Freigabe. The identity and the comparison are shared
+/// with [`crate::lockglue`] so the ownership rule lives in one place. Best-effort: an LFS error (no
+/// remote, etc.) reads back as Unlocked.
 fn read_lock_state(root: &Path, rel_path: &str) -> LockState {
-    let me = git_stdout(root, &["config", "user.name"]).unwrap_or_default();
+    let me = crate::lockglue::current_owner_name(root);
     // git lfs locks hits the network — bound it so a rejected credential can't hang the checkpoint.
     let mut cmd = crate::gitrunner::command(root);
     cmd.args(["lfs", "locks", "--json"]);
@@ -99,7 +103,7 @@ fn read_lock_state(root: &Path, rel_path: &str) -> LockState {
     };
     let locks = crate::lockglue::parse_locks_json(&json);
     match locks.iter().find(|l| l.path == rel_path) {
-        Some(l) if l.owner == me => LockState::HeldByMe,
+        Some(l) if crate::lockglue::owner_is_me(&l.owner, &me) => LockState::HeldByMe,
         Some(_) => LockState::HeldByOther,
         None => LockState::Unlocked,
     }

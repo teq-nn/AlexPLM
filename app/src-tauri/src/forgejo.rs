@@ -39,6 +39,47 @@ pub fn parse_clone_url(url: &str) -> Option<(String, String, String)> {
     Some((format!("{scheme}://{hostport}"), owner.to_string(), repo.to_string()))
 }
 
+/// Derive the **Forgejo/Gitea account name** that owns the repo from the remote URL — the slug
+/// git-lfs records as a lock's `owner.name` (Issue #72). This is the repo-owner segment of the
+/// path (`host/<owner>/<repo>.git` → `<owner>`), NOT the local `git config user.name`: Forgejo
+/// stamps the server account onto every lock, so an own lock only reads as "mine" when compared
+/// against this slug. Pure, total; returns `None` for a shape we cannot read an owner out of.
+///
+/// Handles the URL forms that actually reach here:
+/// - `https://host/owner/repo.git` and `http://host:3000/owner/repo`
+/// - `https://user@host/owner/repo.git` and `https://user:token@host/owner/repo.git` (the
+///   userinfo form `normalize_remote` writes) — userinfo is stripped before the owner is read.
+/// - SSH: `git@host:owner/repo.git` and `ssh://git@host/owner/repo.git`.
+pub fn forgejo_account_from_remote_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    // scp-like SSH form: `user@host:owner/repo.git` (no `://`, a `:` separates host from path).
+    if !url.contains("://") {
+        let (_host, path) = url.rsplit_once(':')?;
+        return owner_segment(path);
+    }
+    // URL form: strip the scheme, then any `user[:token]@` userinfo, then read host/owner/repo.
+    let (_scheme, rest) = url.split_once("://")?;
+    // Userinfo lives before the first '@' and only if that '@' comes before the first path '/'.
+    let after_userinfo = match rest.split_once('@') {
+        Some((cred, tail)) if !cred.contains('/') => tail,
+        _ => rest,
+    };
+    let (_hostport, path) = after_userinfo.split_once('/')?;
+    owner_segment(path)
+}
+
+/// The owner slug from an `owner/repo[.git]` path tail: everything before the final `/`. Pure.
+fn owner_segment(path: &str) -> Option<String> {
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path.rsplit_once('/')?;
+    let owner = owner.trim();
+    if owner.is_empty() || repo.trim().is_empty() {
+        return None;
+    }
+    Some(owner.to_string())
+}
+
 /// Which create-repo endpoint to POST to. Pure. When `owner` is the authenticated user themselves
 /// the repo is created under their account (`/api/v1/user/repos`); otherwise `owner` is treated as
 /// an **organisation** (`/api/v1/orgs/{owner}/repos`) the user has rights to create in. Forgejo
@@ -191,5 +232,44 @@ mod tests {
         let e = interpret_status(500, "boom").unwrap_err();
         assert_eq!(crate::gitrunner::classify_failure(&e), crate::gitrunner::GitFailure::Other);
         assert!(e.contains("500"));
+    }
+
+    #[test]
+    fn forgejo_account_reads_owner_across_url_forms() {
+        // The owner segment is the lock-owner slug git-lfs records (Issue #72), for every form a
+        // remote URL can take: plain http(s), with/without userinfo, ssh (scp-like and url).
+        let cases: &[(&str, &str)] = &[
+            // plain https, with and without the optional .git suffix
+            ("https://forgejo.nilius.online/niklasonfire/woody.git", "niklasonfire"),
+            ("https://forgejo.nilius.online/niklasonfire/woody", "niklasonfire"),
+            // http with a port
+            ("http://h:3000/niklasonfire/woody.git", "niklasonfire"),
+            // userinfo: bare user, and user:token — both stripped before the owner is read
+            ("https://niklasonfire@h/niklasonfire/woody.git", "niklasonfire"),
+            ("https://niklasonfire:ghp_secret@h/niklasonfire/woody.git", "niklasonfire"),
+            // an org owner that differs from the auth user is still read verbatim
+            ("https://user@h/acme/woody.git", "acme"),
+            // SSH, scp-like and URL form
+            ("git@forgejo.nilius.online:niklasonfire/woody.git", "niklasonfire"),
+            ("ssh://git@h/niklasonfire/woody.git", "niklasonfire"),
+        ];
+        for (url, owner) in cases {
+            assert_eq!(
+                forgejo_account_from_remote_url(url).as_deref(),
+                Some(*owner),
+                "forgejo_account_from_remote_url({url:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn forgejo_account_is_none_for_unreadable_shapes() {
+        // No owner segment, empty host/owner/repo, or junk -> None, so the caller falls back to
+        // `git config user.name` rather than guessing.
+        assert_eq!(forgejo_account_from_remote_url("https://hostonly"), None);
+        assert_eq!(forgejo_account_from_remote_url("https://h/justrepo.git"), None);
+        assert_eq!(forgejo_account_from_remote_url("https://h//repo.git"), None);
+        assert_eq!(forgejo_account_from_remote_url("not a url"), None);
+        assert_eq!(forgejo_account_from_remote_url(""), None);
     }
 }

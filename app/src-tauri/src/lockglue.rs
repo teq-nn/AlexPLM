@@ -115,9 +115,26 @@ fn read_dirty_paths(root: &Path) -> std::io::Result<Vec<String>> {
     Ok(parse_porcelain_paths(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// The current user's name as git-lfs would record it on a lock — `git config user.name`,
-/// falling back to an empty string. Used purely to split own vs. foreign locks.
-fn current_owner_name(root: &Path) -> String {
+/// The identity git-lfs records as a lock's `owner.name` for **us** — the Forgejo/Gitea **account
+/// name**, not the local `git config user.name` (Issue #72). Forgejo stamps the server account
+/// (= the repo-owner slug in the remote URL, e.g. `…/niklasonfire/woody.git` → `niklasonfire`)
+/// onto every lock, while `git config user.name` is the *commit author* (e.g. "Niklas"). Comparing
+/// own locks against the commit author made every own lock read as `HeldByOther`, so the Warden
+/// refused every auto-unlock and Freigabe. We decouple lock identity (server account) from commit
+/// author here: derive the account from the remote URL, and only fall back to `git config
+/// user.name` when no remote is configured yet (a fresh, unpublished repo has no locks anyway).
+///
+/// Public so the push glue ([`crate::pushglue`]) splits own vs. foreign locks by the **same**
+/// identity — the lock-ownership rule lives in exactly one place.
+pub fn current_owner_name(root: &Path) -> String {
+    crate::setup::remote_get_url(root)
+        .and_then(|url| crate::forgejo::forgejo_account_from_remote_url(&url))
+        .unwrap_or_else(|| git_user_name(root))
+}
+
+/// The local `git config user.name`, trimmed, or an empty string. The fallback lock identity when
+/// no remote is configured (an unpublished repo, which has no server-side locks to match anyway).
+fn git_user_name(root: &Path) -> String {
     crate::gitrunner::command(root)
         .args(["config", "user.name"])
         .output()
@@ -125,6 +142,14 @@ fn current_owner_name(root: &Path) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+/// Whether a lock's `owner.name` is **us**. Case-insensitive (Forgejo account names are
+/// case-insensitive) and trimmed, so a casing/whitespace difference never makes an own lock read
+/// as foreign. An empty identity (no remote, no user.name) matches nothing.
+pub fn owner_is_me(owner: &str, me: &str) -> bool {
+    let me = me.trim();
+    !me.is_empty() && owner.trim().eq_ignore_ascii_case(me)
 }
 
 /// Auto-acquire a `git lfs lock` for a lockable artifact being opened/edited (E31).
@@ -208,7 +233,7 @@ pub fn auto_unlock_clean_paths(root: &Path) -> std::io::Result<Vec<SweptLock>> {
     let me = &snap.me;
     let mut swept = Vec::new();
 
-    for lock in snap.locks.iter().filter(|l| l.owner == *me) {
+    for lock in snap.locks.iter().filter(|l| owner_is_me(&l.owner, me)) {
         let path = &lock.path;
         let dirty = snap.dirty.iter().any(|d| d == path);
         let warden_snap = WardenSnapshot {
@@ -236,6 +261,21 @@ pub fn auto_unlock_clean_paths(root: &Path) -> std::io::Result<Vec<SweptLock>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_is_me_is_case_insensitive_and_trimmed() {
+        // The Forgejo account stamped on a lock matches "me" regardless of casing/whitespace, so an
+        // own lock never reads as foreign over a trivial difference (Issue #72).
+        assert!(owner_is_me("niklasonfire", "niklasonfire"));
+        assert!(owner_is_me("NiklasOnFire", "niklasonfire"));
+        assert!(owner_is_me("  niklasonfire  ", "niklasonfire"));
+        // A genuinely different owner (incl. the old commit-author name) is foreign.
+        assert!(!owner_is_me("anna", "niklasonfire"));
+        assert!(!owner_is_me("Niklas", "niklasonfire"));
+        // An empty identity (no remote, no user.name) matches nothing rather than everything.
+        assert!(!owner_is_me("anyone", ""));
+        assert!(!owner_is_me("", ""));
+    }
 
     #[test]
     fn parse_locks_json_reads_path_owner_and_time() {
