@@ -1,0 +1,12 @@
+{
+  "name": "plm-docs-screenshots",
+  "private": true,
+  "type": "module",
+  "description": "Reproducible UI screenshots for the PLM-Werkzeug documentation (headless Chrome + mocked Tauri backend).",
+  "scripts": {
+    "shoot": "node capture.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}

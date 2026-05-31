@@ -1,0 +1,90 @@
+site_name: PLM-Werkzeug — Handbuch
+site_description: >-
+  Benutzerhandbuch für das PLM-Werkzeug — ein schlankes, dateibasiertes
+  Produktdaten-Management für kleine Hardware- und Firmware-Teams.
+site_author: teqsas
+# Projekt-Pages-URL (wird beim Merge nach main veröffentlicht).
+site_url: https://teq-nn.github.io/AlexPLM/
+
+repo_url: https://github.com/teq-nn/alexplm
+repo_name: teq-nn/alexplm
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  language: de
+  font:
+    text: Archivo
+    code: IBM Plex Mono
+  palette:
+    # Heller Modus — warmes Gehäuse-Grau, ein lauter Akzent (Orange).
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Dunkler Modus
+    # Dunkler Modus — die „Display"-Zone des Geräts.
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Heller Modus
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Start: index.md
+  - Konzepte:
+      - konzepte/ueberblick.md
+      - konzepte/produkt-struktur.md
+      - konzepte/bausteine.md
+      - konzepte/werkbank-graph.md
+      - konzepte/versionen.md
+      - konzepte/aufgaben.md
+      - konzepte/mehrbenutzer.md
+      - konzepte/git-ehrlichkeit.md
+  - Erste Schritte:
+      - erste-schritte/voraussetzungen.md
+      - erste-schritte/erstes-produkt.md
+      - erste-schritte/teilen.md
+  - Referenz:
+      - referenz/oberflaeche.md
+      - referenz/status-leds.md
+      - referenz/glossar.md

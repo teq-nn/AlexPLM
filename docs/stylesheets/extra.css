@@ -1,0 +1,75 @@
+/* Marken-Tokens aus der UI-Stilbeschreibung ("Werkstatt-Instrument"):
+   warmes Gehäuse-Grau, schwarze Display-Zone, genau ein lauter Akzent (Orange).
+   Übersetzt auf die Material-Theme-Variablen, damit das Handbuch wie das Werkzeug aussieht. */
+
+:root {
+  --plm-accent: #f0421c; /* Signal-Orange — rationiert, nur für laute Ausnahmen */
+  --plm-ink-strong: #1c1a19;
+  --plm-ink: #3a3833;
+  --plm-muted: #6b6864;
+  --plm-surface: #e4e2dc;
+  --plm-raised: #f0eee8;
+  --plm-screen-bg: #0e0d0c;
+  --plm-screen-fg: #e8e6e1;
+  --plm-hairline: #c9c6bf;
+  --plm-led-free: #3c9a4b;
+}
+
+/* Heller Modus */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1c1a19;
+  --md-primary-fg-color--light: #3a3833;
+  --md-primary-fg-color--dark: #0e0d0c;
+  --md-accent-fg-color: var(--plm-accent);
+  --md-default-bg-color: #faf9f6;
+  --md-typeset-a-color: #b5350f;
+}
+
+/* Dunkler Modus — die Display-Zone */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0e0d0c;
+  --md-accent-fg-color: var(--plm-accent);
+  --md-typeset-a-color: #ff7a52;
+}
+
+/* Header in der warmen, dunklen Chassis-Farbe statt knalligem Markenton. */
+.md-header,
+.md-tabs {
+  background-color: var(--plm-screen-bg);
+}
+
+/* Screenshots wie eingelassene Geräte-Panels: Hairline + sanfte Erhebung, leicht gerundet. */
+.md-typeset img {
+  border-radius: 6px;
+}
+.md-typeset figure img,
+.md-typeset p > img {
+  border: 1px solid var(--plm-hairline);
+  box-shadow: 0 2px 6px rgba(28, 26, 25, 0.12);
+}
+.md-typeset figure {
+  margin: 1.4em 0;
+}
+.md-typeset figcaption {
+  color: var(--plm-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+/* Statuspunkte (LED) als kleine Inline-Marker für die Doku-Prosa. */
+.led {
+  display: inline-block;
+  width: 0.62em;
+  height: 0.62em;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 0.15em;
+}
+.led-frei { background: var(--plm-led-free); box-shadow: 0 0 5px rgba(60, 154, 75, 0.5); }
+.led-arbeit { background: #c9c6bf; }
+.led-achtung { background: var(--plm-accent); box-shadow: 0 0 5px rgba(240, 66, 28, 0.5); }
+
+/* Code/Monospace bleibt das „ehrliche, technische" Element. */
+.md-typeset code {
+  font-feature-settings: "liga" 0;
+}
