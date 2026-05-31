@@ -19,7 +19,7 @@
 
 use crate::locks::bucket_of;
 use crate::setup::REMOTE_NAME;
-use crate::syncdecider::{decide_sync, DivergedPath, SyncDecision};
+use crate::syncdecider::{decide_sync, DivergedPath, StandChoice, SyncDecision};
 use serde::Serialize;
 use std::io::Error;
 use std::path::Path;
@@ -141,6 +141,117 @@ fn silent_merge(root: &Path) -> std::io::Result<()> {
 }
 
 // ----------------------------------------------------------------------------------------------
+// Resolving the loud exception — apply the chosen side and FINISH the sync, no marker ever shown
+// ----------------------------------------------------------------------------------------------
+
+/// **Resolve a laute Ausnahme** (Issue #43, E41): the single, deliberate moment the user answers
+/// the loud question by saying *whose stand applies* for the contested artifact. We then carry the
+/// merge to completion with the chosen side — and a **raw git conflict marker is never written to
+/// the worktree**, because every contested path is taken whole from one side, never line-merged.
+///
+/// The dangerous hand-resolution is hidden: the user only ever picked "mein Stand" / "Bens Stand".
+///
+/// The mechanism (the load-bearing E41 guarantee that a merge must never silently corrupt a file):
+/// 1. Start the merge **without committing** (`merge --no-commit --no-ff`). git stages the freely
+///    mergeable text on its own; the unmergeable contested paths land "both modified".
+/// 2. For the contested artifact at `path`, **force the whole chosen side** in — `--ours` keeps the
+///    user's bytes, `--theirs` takes the colleague's — then stage it. No three-way line merge ever
+///    runs on it, so no `<<<<<<<`/`Missing („` corruption is possible.
+/// 3. Defensively resolve **any other** still-conflicted path the same chosen way, so the tree is
+///    guaranteed marker-free before we commit.
+/// 4. Commit the merge. The sync is finished; the daily rhythm resumes "gesichert".
+///
+/// `path` is the contested product-relative artifact (as named in the [`LoudQuestion`]); `choice`
+/// is the user's [`StandChoice`]. Returns the calm [`SyncStatus::Gesichert`] — the loud exception
+/// is over and nothing git-flavoured surfaces.
+pub fn resolve_sync(root: &Path, path: &str, choice: StandChoice) -> std::io::Result<SyncOutcome> {
+    // Make sure we are resolving against the freshest remote stand (best-effort, never corrupts).
+    let _ = fetch(root);
+    let remote_ref = format!("{REMOTE_NAME}/{SHARED_BRANCH}");
+
+    // 1. Begin the merge but do NOT commit: git auto-stages free text, leaves contested paths for us.
+    //    `--no-ff` so there is always a merge commit to finish, even on a trivial case.
+    //    A non-zero exit here is the *expected* "merge has conflicts" signal — not an error; the
+    //    real error would be an inability to start the merge (dirty worktree), caught by checking
+    //    that a merge is actually in progress below.
+    let _ = run_git(root, &["merge", "--no-commit", "--no-ff", &remote_ref]);
+
+    // If git could not even start the merge (e.g. an unexpected state), there is nothing in
+    // progress to resolve — surface a clean error rather than committing a half-state.
+    if !merge_in_progress(root) {
+        return Err(Error::other(
+            "Der Stand ließ sich nicht zusammenführen — bitte erneut versuchen.".to_string(),
+        ));
+    }
+
+    // 2. Force the whole chosen side for the contested artifact, then stage it. Taken whole from one
+    //    side → never line-merged → no conflict marker, no „Missing („-Korruption.
+    apply_choice(root, path, choice)?;
+
+    // 3. Defensive: resolve every OTHER path git still reports as conflicted, the same chosen way,
+    //    so the committed tree is provably marker-free (the E41 acid test).
+    for other in conflicted_paths(root)? {
+        apply_choice(root, &other, choice)?;
+    }
+
+    // 4. Finish the merge. The contested side is decided; the sync completes cleanly.
+    run_git(root, &["commit", "--no-edit"])?;
+
+    Ok(SyncOutcome { status: SyncStatus::Gesichert })
+}
+
+/// The git arguments that **take one whole side** of a contested path during a merge, per the
+/// user's [`StandChoice`]. Pure + table-tested: keeping the side→flag mapping in one place means a
+/// new decision branch is tested in isolation, and the I/O wrapper [`apply_choice`] just obeys it.
+///
+/// `Mine` → `--ours` (keep the user's bytes); `Theirs` → `--theirs` (take the colleague's). The
+/// path is taken **whole** from that side — never three-way merged — so no marker can be written.
+pub fn checkout_args(path: &str, choice: StandChoice) -> [String; 4] {
+    let side = match choice {
+        StandChoice::Mine => "--ours",
+        StandChoice::Theirs => "--theirs",
+    };
+    [
+        "checkout".to_string(),
+        side.to_string(),
+        "--".to_string(),
+        path.to_string(),
+    ]
+}
+
+/// Force the whole chosen side of one contested path into the worktree and stage it. The path is
+/// taken whole (`checkout --ours/--theirs`) — never line-merged — so no conflict marker is written.
+fn apply_choice(root: &Path, path: &str, choice: StandChoice) -> std::io::Result<()> {
+    let args = checkout_args(path, choice);
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git(root, &argv)?;
+    run_git(root, &["add", "--", path])
+}
+
+/// Whether a merge is currently in progress (`MERGE_HEAD` exists). Used to tell "git started the
+/// merge and left conflicts for us" (the normal path) from "git refused to start" (an error).
+fn merge_in_progress(root: &Path) -> bool {
+    crate::gitrunner::command(root)
+        .args(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// The paths git still reports as conflicted ("both modified"), via `git diff --name-only
+/// --diff-filter=U`. These are exactly the paths a marker would survive on, so every one is forced
+/// to the chosen side before the commit.
+fn conflicted_paths(root: &Path) -> std::io::Result<Vec<String>> {
+    let out = crate::gitrunner::command(root)
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .output()?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(parse_diff_names(&String::from_utf8_lossy(&out.stdout)))
+}
+
+// ----------------------------------------------------------------------------------------------
 // Small git helpers (kept local so this isolated glue is self-contained)
 // ----------------------------------------------------------------------------------------------
 
@@ -164,6 +275,28 @@ fn run_git(root: &Path, args: &[&str]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two resolve branches map to the two git "take a whole side" flags — never a three-way
+    /// merge (so no marker can be written). `Mine` keeps our bytes, `Theirs` takes the colleague's.
+    #[test]
+    fn checkout_args_take_the_chosen_whole_side() {
+        let mine = checkout_args("elektronik/board.kicad_pcb", StandChoice::Mine);
+        assert_eq!(
+            mine,
+            ["checkout", "--ours", "--", "elektronik/board.kicad_pcb"].map(String::from)
+        );
+        let theirs = checkout_args("mechanik/gehaeuse.f3d", StandChoice::Theirs);
+        assert_eq!(
+            theirs,
+            ["checkout", "--theirs", "--", "mechanik/gehaeuse.f3d"].map(String::from)
+        );
+        // Neither flag is a three-way "-X" line merge — the path is always taken whole.
+        for c in [StandChoice::Mine, StandChoice::Theirs] {
+            let args = checkout_args("x.kicad_sch", c);
+            assert_eq!(args[0], "checkout");
+            assert!(args[1] == "--ours" || args[1] == "--theirs");
+        }
+    }
 
     #[test]
     fn parse_diff_names_trims_dedupes_and_drops_blanks() {

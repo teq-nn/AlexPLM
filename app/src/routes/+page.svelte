@@ -91,6 +91,9 @@
   // contradiction surfaces as `loud` — the SINGLE orange-frame moment in the whole instrument.
   let syncQuiet = $state<"aktuell" | "gesichert" | null>(null);
   let loud = $state<LoudQuestion | null>(null);
+  // While the chosen side is being applied + the merge finished (Issue #43), the orange-frame keys
+  // are disabled so the one deliberate press cannot be double-fired.
+  let resolving = $state(false);
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   // Guard so a slow networked fetch never overlaps the next 8-second sync tick (see statusInFlight).
   let syncInFlight = false;
@@ -141,13 +144,40 @@
   }
   onDestroy(stopSyncLoop);
 
-  /** Resolve the loud exception by choosing whose stand applies. The decision-bearing resolution
-   *  lives behind a future Rust command; for now we record the choice, close the orange frame and
-   *  let the silent rhythm resume. Either way NO git vocabulary surfaces. */
-  function resolveLoud(_choice: StandChoice) {
-    loud = null;
-    syncQuiet = "gesichert";
-    void runSync();
+  /** Resolve the loud exception by choosing whose stand applies (Issue #43, E41). The backend
+   *  applies the chosen side for the contested artifact and FINISHES the sync — a raw git conflict
+   *  marker is never written to the worktree (the dangerous hand-resolution stays hidden behind
+   *  "mein Stand" / "Bens Stand"). On success the orange frame closes and the silent rhythm resumes
+   *  "gesichert"; NO git vocabulary surfaces. */
+  async function resolveLoud(choice: StandChoice) {
+    if (!productPath || !loud || resolving) return;
+    // The first contested artifact is the one the question names; resolving it (and any other
+    // contested touch, defensively, in the backend) lets the merge finish cleanly.
+    const artifact = loud.artefakte[0];
+    if (!artifact) return;
+    resolving = true;
+    try {
+      const outcome = await invoke<SyncOutcome>("resolve_sync_cmd", {
+        path: productPath,
+        artifact,
+        choice,
+      });
+      loud = null;
+      // The resolve completes the merge; reflect the calm state and refresh the quiet views.
+      syncQuiet =
+        outcome.status === "aktuell" || outcome.status === "gesichert"
+          ? outcome.status
+          : "gesichert";
+      await refreshGraph();
+      await refreshEdges();
+      await refreshStatus();
+    } catch (e) {
+      // A resolve failure is real — surface it plainly (still no raw git markers, by construction
+      // of the backend). The orange frame stays open so the user can try again.
+      error = String(e);
+    } finally {
+      resolving = false;
+    }
   }
 
   // The one-time Einrichtungs-Zeremonie (Issue #5, E41). `setup` is the server-decided state;
@@ -235,6 +265,7 @@
     ceremonyOpen = false;
     syncQuiet = null;
     loud = null;
+    resolving = false;
     stands = [];
     graph = null;
     edgeView = { edges: [], warnings: [] };
@@ -797,7 +828,7 @@
 <!-- The single orange-frame moment (Issue #11, E41): the stiller Sync hit a real, unmergeable
      contradiction and raised its voice. Domain language only; no git markers, ever. -->
 {#if loud}
-  <LauteAusnahme question={loud} onChoose={resolveLoud} />
+  <LauteAusnahme question={loud} busy={resolving} onChoose={resolveLoud} />
 {/if}
 
 <style>

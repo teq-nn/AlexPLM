@@ -27,7 +27,8 @@ use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, G
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
-use syncglue::{run_sync, SyncOutcome};
+use syncdecider::StandChoice;
+use syncglue::{resolve_sync, run_sync, SyncOutcome};
 use warden::{Checkpoint, WardenAction};
 use std::path::Path;
 use std::sync::Mutex;
@@ -386,6 +387,29 @@ async fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome
     .await
 }
 
+/// **Resolve the laute Ausnahme** (Issue #43, E41): the single moment the user answers the loud
+/// question by choosing whose stand applies for the contested artifact. The backend then finishes
+/// the sync with the chosen side and a raw git conflict marker is NEVER written to the worktree —
+/// the dangerous hand-resolution stays hidden behind "mein Stand" / "Bens Stand". On success the
+/// daily rhythm resumes quietly (`gesichert`); raw git (push/pull/merge) never surfaces.
+#[tauri::command]
+async fn resolve_sync_cmd(
+    path: String,
+    artifact: String,
+    choice: StandChoice,
+) -> Result<SyncOutcome, String> {
+    // The resolve fetches + merges + commits (the fetch is networked, bounded); off the main thread
+    // so finishing the sync can never freeze the WebView.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        resolve_sync(root, &artifact, choice).map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -411,7 +435,8 @@ pub fn run() {
             connect_server,
             publish_to_server,
             run_checkpoint,
-            sync_product
+            sync_product,
+            resolve_sync_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
