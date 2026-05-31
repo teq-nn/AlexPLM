@@ -600,10 +600,26 @@
     // (E35). The Binär-Invariante is upheld in the Rust core, never here.
     void runCheckpoint(node.path, true);
   }
+
+  // Toggle a Meilenstein's Art (E42): Prototyp → Freigabe ("Releasen", write-protects the
+  // tag) or back ("Un-Release"). Rust persists the Art per tag and flips the write-protect,
+  // then returns the refreshed tree. The dreistufige Freigabe-Gate block-check is a separate
+  // slice (Issue #52) and plugs into the Rust seam; nothing about it lives here.
+  async function toggleArt(node: StandNode) {
+    if (!productPath || node.milestone === null) return;
+    graph = await invoke<VersionGraph>("toggle_milestone_art", {
+      path: productPath,
+      version: node.milestone,
+    });
+  }
 </script>
 
 <div class="app">
-  <VersionBar {product} activeMilestone={graph?.active_milestone ?? null} />
+  <VersionBar
+    {product}
+    activeMilestone={graph?.active_milestone ?? null}
+    activeMilestoneArt={graph?.active_milestone_art ?? null}
+  />
 
   <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
        Bausteine pane — they aren't part of browsing Bausteine. The write-vs-read distinction
@@ -780,7 +796,7 @@
       ></div>
 
       <div class="tree-col" style="width: {treeWidth}px;">
-        <VersionTree {graph} onPromote={promote} />
+        <VersionTree {graph} onPromote={promote} onToggleArt={toggleArt} />
       </div>
 
       <!-- Splitter between the Versionsbaum and the Fremde-Sperren-Schiene. -->

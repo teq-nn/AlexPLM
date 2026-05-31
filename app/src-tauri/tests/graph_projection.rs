@@ -9,8 +9,12 @@
 //!    to a Meilenstein persists `VERSION_NOTES.md` and drives the version bar — exercising
 //!    the thin git/LFS reading layer over the pure core.
 
-use app_lib::graph::{project_graph, BranchFact, CommitFact, MilestoneFact, RepoSnapshot};
-use app_lib::graphread::{promote_to_milestone, read_graph, read_snapshot, VERSION_NOTES};
+use app_lib::graph::{
+    project_graph, BranchFact, CommitFact, MilestoneArt, MilestoneFact, RepoSnapshot,
+};
+use app_lib::graphread::{
+    promote_to_milestone, read_graph, read_snapshot, toggle_milestone_freigabe, VERSION_NOTES,
+};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
@@ -45,6 +49,7 @@ fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
             commit_id: "c2".into(),
             version: "v0.4".into(),
             has_notes: true,
+            art: MilestoneArt::Prototyp,
         }],
         offloaded: vec!["c1".into()],
         offloaded_archive: Some("2025-11".into()),
@@ -217,6 +222,65 @@ fn reads_a_real_repo_into_stande_then_promotes_one_to_a_meilenstein() {
         .milestones
         .iter()
         .any(|m| m.version == "v1.0" && m.has_notes));
+}
+
+#[test]
+fn a_new_meilenstein_is_prototyp_and_the_toggle_releases_and_un_releases_it() {
+    // Issue #41 / E42 end-to-end over a real repo: promote -> Prototyp by default; the toggle
+    // raises it to Freigabe (write-protected) and toggles back to Prototyp ("Un-Release").
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_repo(root);
+    commit_file(root, "a.txt", "one", "auto: a.txt, 2026-05-30T09:00:00Z");
+    let target = head(root);
+
+    let now = UNIX_EPOCH + Duration::from_secs(1_777_000_000);
+    let g = promote_to_milestone(root, &target, "v1.0", "Erstes Gehäuse.", now).unwrap();
+
+    // Acceptance: a new Meilenstein defaults to Prototyp (lax).
+    assert_eq!(g.active_milestone.as_deref(), Some("v1.0"));
+    assert_eq!(g.active_milestone_art, Some(MilestoneArt::Prototyp));
+    let node = |g: &app_lib::graph::VersionGraph, id: &str| {
+        g.nodes.iter().find(|n| n.id == id).cloned().unwrap()
+    };
+    assert_eq!(node(&g, &target).milestone_art, Some(MilestoneArt::Prototyp));
+
+    // Toggle -> Freigabe: the Art is now Freigabe (write-protected).
+    let g = toggle_milestone_freigabe(root, "v1.0").unwrap();
+    assert_eq!(g.active_milestone_art, Some(MilestoneArt::Freigabe));
+    assert_eq!(node(&g, &target).milestone_art, Some(MilestoneArt::Freigabe));
+
+    // Write-protect (E8): a released Meilenstein refuses to be overwritten by a re-promote.
+    let err = promote_to_milestone(root, &target, "v1.0", "nochmal", now).unwrap_err();
+    assert!(
+        err.to_string().contains("schreibgeschützt"),
+        "Freigabe must be write-protected, got {err}"
+    );
+
+    // Toggle back -> Prototyp ("Un-Release"): reversible, and re-promote is allowed again.
+    let g = toggle_milestone_freigabe(root, "v1.0").unwrap();
+    assert_eq!(g.active_milestone_art, Some(MilestoneArt::Prototyp));
+    let g = promote_to_milestone(root, &target, "v1.0", "geänderter Text.", now).unwrap();
+    assert!(node(&g, &target).has_notes);
+
+    // The Art survives a fresh read of the repo (persisted per tag in the _plm-style store).
+    let snap = read_snapshot(root).unwrap();
+    let ms = snap.milestones.iter().find(|m| m.version == "v1.0").unwrap();
+    assert_eq!(ms.art, MilestoneArt::Prototyp);
+}
+
+#[test]
+fn toggling_an_unknown_meilenstein_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_repo(root);
+    commit_file(root, "a.txt", "one", "auto: a.txt, 2026-05-30T09:00:00Z");
+
+    let err = toggle_milestone_freigabe(root, "v9.9").unwrap_err();
+    assert!(
+        err.to_string().contains("Kein Meilenstein"),
+        "must refuse a non-existent Meilenstein, got {err}"
+    );
 }
 
 #[test]

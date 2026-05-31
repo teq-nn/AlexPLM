@@ -4,10 +4,13 @@
   let {
     graph,
     onPromote,
+    onToggleArt,
   }: {
     graph: VersionGraph | null;
     /** Promote a Stand to a Meilenstein with human VERSION_NOTES text. */
     onPromote: (node: StandNode, version: string, notes: string) => Promise<void>;
+    /** Toggle a Meilenstein's Art: Prototyp ↔ Freigabe ("Releasen" / "Un-Release"). E42. */
+    onToggleArt: (node: StandNode) => Promise<void>;
   } = $props();
 
   // The promote dialog is the rare moment the user writes text (E28) — it is a quiet,
@@ -44,6 +47,23 @@
     promoteError = null;
     try {
       await onPromote(promoting, v, n);
+      promoting = null;
+    } catch (e) {
+      promoteError = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Toggle the Art of the Meilenstein being viewed in the dialog (E42): Prototyp → Freigabe
+  // is "Releasen" (write-protects the tag), Freigabe → Prototyp the deliberate "Un-Release".
+  // A considered act, so it shares the dialog's calm seated-key weight — never orange.
+  async function toggleArt() {
+    if (!promoting || promoting.milestone === null) return;
+    busy = true;
+    promoteError = null;
+    try {
+      await onToggleArt(promoting);
       promoting = null;
     } catch (e) {
       promoteError = String(e);
@@ -247,9 +267,19 @@
                 <div class="line">
                   <span class="path mono" title={n.path}>{leaf(n.path)}</span>
                   {#if isMs}
-                    <span class="version mono" title="Meilenstein {n.milestone}"
-                      >{n.milestone}</span
-                    >
+                    <span class="ms-tags">
+                      {#if n.milestone_art === "freigabe"}
+                        <span
+                          class="art-chip label freigabe"
+                          title="Freigabe — schreibgeschützt"
+                        >
+                          <span class="lock" aria-hidden="true"></span>
+                        </span>
+                      {/if}
+                      <span class="version mono" title="Meilenstein {n.milestone}"
+                        >{n.milestone}</span
+                      >
+                    </span>
                   {/if}
                 </div>
 
@@ -299,6 +329,14 @@
     </div>
     {#if tip.node.milestone !== null}
       <div class="tip-row mono">
+        <span class="tip-key label">Art</span>
+        <span class="tip-val"
+          >{tip.node.milestone_art === "freigabe"
+            ? "Freigabe · schreibgeschützt"
+            : "Prototyp"}</span
+        >
+      </div>
+      <div class="tip-row mono">
         <span class="tip-key label">Meilenstein</span>
         <span class="tip-val">{tip.node.has_notes ? "mit Notiz" : "ohne Notiz"}</span>
       </div>
@@ -333,6 +371,35 @@
         <span class="label">Meilenstein</span>
         <span class="dialog-stand mono">{leaf(promoting.path)} · {clock(promoting.timestamp)}</span>
       </header>
+
+      {#if promoting.milestone !== null}
+        <!-- Art-Toggle (E42): only for a Stand already promoted. Prototyp is the lax default;
+             Freigabe write-protects the tag. Releasen / Un-Release is one deliberate handle. -->
+        {@const freigabe = promoting.milestone_art === "freigabe"}
+        <div class="art-row">
+          <div class="art-state">
+            <span class="art-state-dot" class:freigabe aria-hidden="true"></span>
+            <div class="art-state-text">
+              <span class="art-state-name label">{freigabe ? "Freigabe" : "Prototyp"}</span>
+              <span class="art-state-sub mono">
+                {freigabe ? "schreibgeschützt — streng" : "lax — Warnungen, kein Block"}
+              </span>
+            </div>
+          </div>
+          <button
+            class="key art-toggle label"
+            class:solid={!freigabe}
+            class:ghost={freigabe}
+            onclick={toggleArt}
+            disabled={busy}
+            title={freigabe
+              ? "Freigabe zurücknehmen (Un-Release)"
+              : "Diesen Meilenstein freigeben"}
+          >
+            {busy ? "…" : freigabe ? "Zurückschalten" : "Freigeben"}
+          </button>
+        </div>
+      {/if}
 
       <label class="field">
         <span class="label field-label">Version</span>
@@ -602,6 +669,53 @@
     white-space: nowrap;
   }
 
+  /* Version label + Art chip sit together at the right of the line. */
+  .ms-tags {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  /* A Freigabe wears a small lock chip beside its version (E42) — the calm "schreibgeschützt"
+     signal, in the screen-fg tone, never orange. A Prototyp shows nothing (the lax default). */
+  .art-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+    color: var(--screen-fg);
+    background: rgba(232, 230, 225, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(232, 230, 225, 0.2);
+  }
+  .lock {
+    position: relative;
+    width: 8px;
+    height: 9px;
+    flex: none;
+  }
+  .lock::before {
+    content: "";
+    position: absolute;
+    left: 1px;
+    top: 3px;
+    width: 6px;
+    height: 5px;
+    border-radius: 1px;
+    background: currentColor;
+  }
+  .lock::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: 0;
+    width: 4px;
+    height: 5px;
+    border: 1.2px solid currentColor;
+    border-bottom: 0;
+    border-radius: 3px 3px 0 0;
+  }
+
   /* The version label: bright Mono, a small recessed chip — the 7-segment feel. */
   .version {
     flex: none;
@@ -821,6 +935,59 @@
   .dialog-stand {
     color: var(--ink-muted);
     font-size: 11px;
+  }
+
+  /* Art-Toggle row (E42): the current Prototyp/Freigabe state on the left, the deliberate
+     toggle key on the right. A seated sunken strip on the chassis — calm, never orange. */
+  .art-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 12px;
+    border-radius: var(--radius);
+    background: var(--surface-sunken);
+    box-shadow: inset 0 1px 2px rgba(28, 26, 25, 0.08);
+  }
+  .art-state {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+  /* A small LED reading the Art: dim grey for Prototyp (lax, "an" but quiet), a brighter
+     filled dot with a ring for Freigabe (released). Stays within the warm-grey palette. */
+  .art-state-dot {
+    width: 9px;
+    height: 9px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--led-working);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  }
+  .art-state-dot.freigabe {
+    background: var(--ink-strong);
+    box-shadow:
+      0 0 0 2px rgba(28, 26, 25, 0.12),
+      inset 0 1px 0.5px rgba(255, 255, 255, 0.25);
+  }
+  .art-state-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .art-state-name {
+    color: var(--ink-strong);
+  }
+  .art-state-sub {
+    color: var(--ink-muted);
+    font-size: 10px;
+    letter-spacing: 0;
+  }
+  .art-toggle {
+    flex: none;
+    padding: 7px 13px;
   }
 
   .field {

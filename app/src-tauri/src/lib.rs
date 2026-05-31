@@ -1,3 +1,4 @@
+pub mod artstore;
 pub mod askpass;
 pub mod autocommit;
 pub mod baustein;
@@ -27,7 +28,7 @@ use baustein::{Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
 use graph::VersionGraph;
-use graphread::{promote_to_milestone, read_graph};
+use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
@@ -166,6 +167,22 @@ fn promote_milestone(
     }
     promote_to_milestone(root, &stand_id, &version, &notes, SystemTime::now())
         .map_err(|e| e.to_string())
+}
+
+/// Toggle a Meilenstein's **Art** between Prototyp and Freigabe (Issue #41, E42). Raising to
+/// Freigabe write-protects the tag (E8); toggling back is the deliberate reversible
+/// „Un-Release". A new Meilenstein is Prototyp by default; this is the one act that releases
+/// it. Returns the refreshed version tree so the UI updates in one round-trip.
+///
+/// The dreistufige Freigabe-Gate block-check that will run on raising to Freigabe is a
+/// separate slice (Issue #52); its seam lives in [`toggle_milestone_freigabe`].
+#[tauri::command]
+fn toggle_milestone_art(path: String, version: String) -> Result<VersionGraph, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    toggle_milestone_freigabe(root, &version).map_err(|e| e.to_string())
 }
 
 /// Read the product's manual „abgeleitet von" edges and their Stale-Warnungen (Issue #10).
@@ -534,6 +551,7 @@ pub fn run() {
             stop_watching,
             read_version_graph,
             promote_milestone,
+            toggle_milestone_art,
             read_edges,
             add_edge,
             remove_edge,

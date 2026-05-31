@@ -40,8 +40,65 @@ pub struct CommitFact {
     pub timestamp: String,
 }
 
-/// A Meilenstein fact: a commit the user promoted, carrying its human version label and
-/// whether `VERSION_NOTES.md` text exists for it (the only place human text lives — E28).
+/// The **Art** (kind) of a Meilenstein (E42). The block-strictness is a property of the
+/// milestone act, not of the branch. A freshly promoted Meilenstein is a **Prototyp**
+/// (lax: warnings only, frictionless tagging); a deliberate **Toggle** raises it to a
+/// **Freigabe** (streng), which write-protects the tag (E8). Toggling back is a deliberate
+/// reversible „Un-Release" (E22). Serialized to the UI in kebab-case (`"prototyp"` /
+/// `"freigabe"`).
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum MilestoneArt {
+    /// Lax: the default for a new Meilenstein. No write-protect, warnings only.
+    #[default]
+    Prototyp,
+    /// Streng: a released Meilenstein. Its tag is write-protected; reaching it is the
+    /// deliberate Freigabe toggle.
+    Freigabe,
+}
+
+impl MilestoneArt {
+    /// The on-disk token for the per-tag store. Stable, lowercase, never localized.
+    pub fn as_token(self) -> &'static str {
+        match self {
+            MilestoneArt::Prototyp => "prototyp",
+            MilestoneArt::Freigabe => "freigabe",
+        }
+    }
+
+    /// Parse a stored token back into an Art. Anything unrecognized (or missing) falls back
+    /// to the default `Prototyp` — a tag with no recorded Art is lax (E42), never an error.
+    pub fn from_token(token: &str) -> MilestoneArt {
+        match token.trim() {
+            "freigabe" => MilestoneArt::Freigabe,
+            _ => MilestoneArt::Prototyp,
+        }
+    }
+
+    /// Whether this Art write-protects its tag (E8). Only a Freigabe is schreibgeschützt.
+    pub fn is_write_protected(self) -> bool {
+        matches!(self, MilestoneArt::Freigabe)
+    }
+}
+
+/// The pure toggle state machine for the Meilenstein-Art (E42). Returns the Art a milestone
+/// reaches when the user flips its toggle: Prototyp → Freigabe („Releasen") and
+/// Freigabe → Prototyp (the deliberate reversible „Un-Release"). No I/O — the git/file glue
+/// (write-protect on, write-protect off) lives in [`crate::graphread`].
+///
+/// NOTE (seam for Issue #52): raising to Freigabe is where the dreistufige Freigabe-Gate
+/// block-check (E19.3) will plug in *before* this transition is allowed. This slice performs
+/// the toggle + write-protect only; the gate check is deliberately left out (issue #52).
+pub fn toggle_milestone_art(current: MilestoneArt) -> MilestoneArt {
+    match current {
+        MilestoneArt::Prototyp => MilestoneArt::Freigabe,
+        MilestoneArt::Freigabe => MilestoneArt::Prototyp,
+    }
+}
+
+/// A Meilenstein fact: a commit the user promoted, carrying its human version label, its
+/// **Art** (Prototyp/Freigabe — E42), and whether `VERSION_NOTES.md` text exists for it (the
+/// only place human text lives — E28).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MilestoneFact {
     /// Commit id this Meilenstein points at.
@@ -50,6 +107,8 @@ pub struct MilestoneFact {
     pub version: String,
     /// Whether a non-empty `VERSION_NOTES.md` text was persisted for this Meilenstein.
     pub has_notes: bool,
+    /// The Meilenstein-Art (Prototyp/Freigabe). A new Meilenstein defaults to Prototyp.
+    pub art: MilestoneArt,
 }
 
 /// One **Zweig** (branch line) as observed in the repository: its domain name and the id of
@@ -97,6 +156,9 @@ pub struct StandNode {
     pub path: String,
     /// Set when this Stand has been promoted to a Meilenstein: its human version label.
     pub milestone: Option<String>,
+    /// The Meilenstein-Art (Prototyp/Freigabe — E42), present only when `milestone` is set.
+    /// A Freigabe write-protects the tag; a Prototyp is lax. `None` for a plain Stand.
+    pub milestone_art: Option<MilestoneArt>,
     /// Whether a `VERSION_NOTES.md` text exists for this Meilenstein (only if `milestone`).
     pub has_notes: bool,
     /// Whether this node's binary content has been offloaded (E36). The node stays in the
@@ -127,6 +189,9 @@ pub struct VersionGraph {
     /// The active Meilenstein version (newest promoted Stand), or `None` if the product has
     /// no Meilenstein yet. The version bar shows this in Mono.
     pub active_milestone: Option<String>,
+    /// The Art of the active Meilenstein (Prototyp/Freigabe — E42), or `None` if there is no
+    /// active Meilenstein. The version bar shows the Freigabe/Prototyp state alongside it.
+    pub active_milestone_art: Option<MilestoneArt>,
     /// Archive label for offloaded nodes, surfaced once for the legend; `None` if none.
     pub offloaded_archive: Option<String>,
     /// Name of the active line (Zweig), echoed for the UI marker; `None` if unknown.
@@ -180,6 +245,7 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
                 timestamp: c.timestamp.clone(),
                 path: path_from_message(&c.message),
                 milestone: ms.map(|m| m.version.clone()),
+                milestone_art: ms.map(|m| m.art),
                 has_notes: ms.map(|m| m.has_notes).unwrap_or(false),
                 offloaded: is_offloaded(&c.id),
                 lane: layout.lane_of(&c.id),
@@ -194,15 +260,19 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
     nodes.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.id.cmp(&a.id)));
 
     // Active Meilenstein = the newest promoted Stand *on the active line* (lane 0). Diverging
-    // Zweige carry their own Meilensteine on the node but must not steal the version bar.
-    let active_milestone = nodes
+    // Zweige carry their own Meilensteine on the node but must not steal the version bar. We
+    // pick the node so the version label and its Art come from the same Meilenstein.
+    let active_node = nodes
         .iter()
         .filter(|n| n.on_active)
-        .find_map(|n| n.milestone.clone());
+        .find(|n| n.milestone.is_some());
+    let active_milestone = active_node.and_then(|n| n.milestone.clone());
+    let active_milestone_art = active_node.and_then(|n| n.milestone_art);
 
     VersionGraph {
         nodes,
         active_milestone,
+        active_milestone_art,
         offloaded_archive: snapshot.offloaded_archive.clone(),
         active_branch: layout.active_branch.clone(),
         lane_count: layout.lane_count.max(1),
@@ -372,11 +442,13 @@ mod tests {
                     commit_id: "a".into(),
                     version: "v0.1".into(),
                     has_notes: true,
+                    art: MilestoneArt::Freigabe,
                 },
                 MilestoneFact {
                     commit_id: "b".into(),
                     version: "v0.2".into(),
                     has_notes: true,
+                    art: MilestoneArt::Prototyp,
                 },
             ],
             offloaded: vec![],
@@ -386,15 +458,19 @@ mod tests {
         };
         let g = project_graph(&snap);
 
-        // The newest Meilenstein wins the version bar.
+        // The newest Meilenstein wins the version bar, and its Art rides along with it.
         assert_eq!(g.active_milestone.as_deref(), Some("v0.2"));
+        assert_eq!(g.active_milestone_art, Some(MilestoneArt::Prototyp));
 
-        // b and a carry their milestone label; c does not.
+        // b and a carry their milestone label + Art; c does not.
         let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
         assert_eq!(node("b").milestone.as_deref(), Some("v0.2"));
         assert!(node("b").has_notes);
+        assert_eq!(node("b").milestone_art, Some(MilestoneArt::Prototyp));
         assert_eq!(node("a").milestone.as_deref(), Some("v0.1"));
+        assert_eq!(node("a").milestone_art, Some(MilestoneArt::Freigabe));
         assert_eq!(node("c").milestone, None);
+        assert_eq!(node("c").milestone_art, None);
     }
 
     #[test]
@@ -416,6 +492,7 @@ mod tests {
                 commit_id: "old".into(),
                 version: "v0.1".into(),
                 has_notes: true,
+                art: MilestoneArt::Prototyp,
             }],
             offloaded: vec!["old".into()],
             offloaded_archive: Some("2025-11".into()),
@@ -529,5 +606,47 @@ mod tests {
         assert_eq!(node("c").lane, 1, "main's unique Stand on its own lane");
         assert!(!node("c").on_active);
         assert_eq!(node("c").branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_new_meilenstein_defaults_to_prototyp() {
+        // E42: the default Art is the lax Prototyp — tagging is frictionless.
+        assert_eq!(MilestoneArt::default(), MilestoneArt::Prototyp);
+        assert!(!MilestoneArt::Prototyp.is_write_protected());
+        assert!(MilestoneArt::Freigabe.is_write_protected());
+    }
+
+    #[test]
+    fn toggle_is_a_two_state_reversible_machine() {
+        // table: current Art -> Art after the toggle. Prototyp→Freigabe is „Releasen",
+        // Freigabe→Prototyp is the deliberate reversible „Un-Release" (E42).
+        let cases = [
+            (MilestoneArt::Prototyp, MilestoneArt::Freigabe),
+            (MilestoneArt::Freigabe, MilestoneArt::Prototyp),
+        ];
+        for (current, expected) in cases {
+            assert_eq!(toggle_milestone_art(current), expected, "from {current:?}");
+        }
+        // Two toggles return to the start — the act is fully reversible.
+        for start in [MilestoneArt::Prototyp, MilestoneArt::Freigabe] {
+            assert_eq!(toggle_milestone_art(toggle_milestone_art(start)), start);
+        }
+    }
+
+    #[test]
+    fn art_tokens_round_trip_and_default_when_unknown() {
+        // table: token written/read for the per-tag `_plm` store. Unknown/empty => Prototyp.
+        let known = [
+            ("prototyp", MilestoneArt::Prototyp),
+            ("freigabe", MilestoneArt::Freigabe),
+        ];
+        for (token, art) in known {
+            assert_eq!(MilestoneArt::from_token(token), art);
+            assert_eq!(art.as_token(), token);
+        }
+        // A tag with no recorded Art is lax (E42), never an error.
+        for unknown in ["", "  ", "release", "garbage"] {
+            assert_eq!(MilestoneArt::from_token(unknown), MilestoneArt::Prototyp);
+        }
     }
 }

@@ -9,8 +9,11 @@
 //! `VERSION_NOTES.md` — the **only** place human text lives (E28) — and tags the commit so
 //! the version label is durable. The words "commit"/"tag" never leave this layer.
 
+use crate::artstore::{read_art, set_art};
 use crate::autocommit::{format_timestamp, machine_message};
-use crate::graph::{BranchFact, CommitFact, MilestoneFact, RepoSnapshot, VersionGraph};
+use crate::graph::{
+    toggle_milestone_art, BranchFact, CommitFact, MilestoneFact, RepoSnapshot, VersionGraph,
+};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -21,6 +24,11 @@ pub const VERSION_NOTES: &str = "VERSION_NOTES.md";
 /// Prefix of the durable version tag we write when promoting a Stand. Internal — the user
 /// only ever sees the version label, never the tag mechanism.
 const TAG_PREFIX: &str = "version/";
+
+/// Prefix of the durable **write-protect marker** tag set on a Freigabe Meilenstein (E8/E42).
+/// Its presence is the git-side signal that the version tag is schreibgeschützt; un-releasing
+/// removes it. Internal — the user only ever sees the Prototyp/Freigabe state, never the tag.
+const PROTECT_PREFIX: &str = "version-protect/";
 
 /// Read a repository at `root` into a [`RepoSnapshot`], then project it for the UI. The
 /// projection itself is pure; this function only collects the facts.
@@ -174,9 +182,11 @@ fn read_milestones(root: &Path, commits: &[CommitFact]) -> std::io::Result<Vec<M
         if commit_id.is_empty() || !commits.iter().any(|c| c.id == commit_id) {
             continue;
         }
+        let art = read_art(root, &version);
         milestones.push(MilestoneFact {
             commit_id,
             has_notes: notes_have_section(&notes, &version),
+            art,
             version,
         });
     }
@@ -244,6 +254,15 @@ pub fn promote_to_milestone(
         return Err(std::io::Error::other("Meilenstein braucht einen Text"));
     }
 
+    // Write-protect (E8): a Freigabe tag is schreibgeschützt — promoting must not silently
+    // overwrite a released Meilenstein. The user has to deliberately un-release it first
+    // (toggle back to Prototyp), which is one handle away (E22).
+    if read_art(root, version).is_write_protected() && tag_exists(root, version)? {
+        return Err(std::io::Error::other(format!(
+            "Meilenstein {version} ist freigegeben und schreibgeschützt — erst zurückschalten"
+        )));
+    }
+
     let timestamp = format_timestamp(now);
 
     // 1) Persist the human text — append to VERSION_NOTES.md, newest section on top (E28).
@@ -263,6 +282,67 @@ pub fn promote_to_milestone(
     git_ok(root, &["tag", "-f", &tag, commit_id])?;
 
     read_graph(root)
+}
+
+/// Toggle a Meilenstein's **Art** between Prototyp and Freigabe (Issue #41, E42). The pure
+/// two-state machine lives in [`toggle_milestone_art`]; this glue persists the new Art and
+/// applies the git-side write-protect on the tag, then re-projects so the UI updates in one
+/// round-trip.
+///
+/// - Prototyp → Freigabe = „Releasen": record Freigabe and **write-protect** the tag (E8).
+/// - Freigabe → Prototyp = the deliberate reversible „Un-Release": record Prototyp and lift
+///   the write-protect.
+///
+/// SEAM for Issue #52: the dreistufige Freigabe-Gate block-check (E19.3) belongs *here*,
+/// right before raising to Freigabe — if the gate fails, this would refuse the toggle. This
+/// slice intentionally performs only the Art flip + write-protect; the gate check is #52.
+pub fn toggle_milestone_freigabe(root: &Path, version: &str) -> std::io::Result<VersionGraph> {
+    let version = version.trim();
+    if version.is_empty() {
+        return Err(std::io::Error::other("Version darf nicht leer sein"));
+    }
+    if !tag_exists(root, version)? {
+        return Err(std::io::Error::other(format!(
+            "Kein Meilenstein {version}"
+        )));
+    }
+
+    let next = toggle_milestone_art(read_art(root, version));
+
+    // <<< Issue #52 plugs the dreistufige Freigabe-Gate block-check in here (before Freigabe).
+
+    set_art(root, version, next)?;
+    apply_write_protect(root, version, next.is_write_protected())?;
+    read_graph(root)
+}
+
+/// Whether a durable version tag exists for `version`.
+fn tag_exists(root: &Path, version: &str) -> std::io::Result<bool> {
+    let tag = format!("{TAG_PREFIX}{version}");
+    let out = git(root, &["tag", "--list", &tag])?;
+    Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// Apply (or lift) the write-protect on a version tag (E8). A Freigabe tag is marked
+/// `version-protect/<label>`; un-releasing removes that marker tag. The protect marker is the
+/// durable git-side signal a server-side hook (or a future #52 gate) can enforce; locally it
+/// is also what [`promote_to_milestone`] checks before overwriting a released Meilenstein.
+fn apply_write_protect(root: &Path, version: &str, protect: bool) -> std::io::Result<()> {
+    let target = format!("{TAG_PREFIX}{version}");
+    let marker = format!("{PROTECT_PREFIX}{version}");
+    if protect {
+        // Point a marker tag at the same commit, so the protection is itself durable in git.
+        git_ok(root, &["tag", "-f", &marker, &target])?;
+    } else if tag_ref_exists(root, &marker)? {
+        git_ok(root, &["tag", "-d", &marker])?;
+    }
+    Ok(())
+}
+
+/// Whether a fully-qualified tag name exists (used for the protect marker).
+fn tag_ref_exists(root: &Path, tag: &str) -> std::io::Result<bool> {
+    let out = git(root, &["tag", "--list", tag])?;
+    Ok(out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty())
 }
 
 fn git(root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
