@@ -70,7 +70,7 @@ fn is_lockable_glob(glob: &str) -> bool {
 }
 
 /// Eine vollständige LFS-+Lockable-Attributzeile für ein Muster — exakt das Format, das
-/// [`crate::import::render_gitattributes`] erzeugt, damit Import und Onboarding übereinstimmen.
+/// [`crate::import::import_attr_lines`] erzeugt, damit Import und Onboarding übereinstimmen.
 fn attr_line(pattern: &str) -> String {
     format!("{pattern} filter=lfs diff=lfs merge=lfs -text lockable")
 }

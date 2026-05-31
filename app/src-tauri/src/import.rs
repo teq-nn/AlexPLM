@@ -10,16 +10,26 @@
 //! history-rewrite branch of E38 is intentionally out of scope for this slice.
 //!
 //! The git plumbing (`init`/`add`/`commit`) is isolated behind small helpers so the pure
-//! decision parts — `.gitattributes` parsing ([`parse_gitattributes`]) and generation
-//! ([`render_gitattributes`]) — stay table-testable without a real repo.
+//! decision parts — `.gitattributes` parsing ([`parse_gitattributes`]) and line generation
+//! ([`import_attr_lines`]) — stay table-testable without a real repo. The lockable lines land in
+//! an **idempotent `_import` marker block** via the shared [`crate::markerblock`] mechanism (the
+//! same as Onboarding #48), so import never clobbers hand-edits or a Baustein block (#63).
 
 use crate::classifier::{classify, AttrMarker};
 use crate::import_gate::{decide_import, GateDecision, RepoState};
+use crate::markerblock::upsert_block;
 use crate::projection::{project_product, ProductView};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
+
+/// Reserved Marker-Block-`id` for the lines the **Import** path (E38) writes into
+/// `.gitattributes` from the files actually on disk. It is not a Baustein — the leading
+/// underscore keeps it out of the Bibliothek id-space — but it rides the **same** idempotent
+/// [`crate::markerblock`] mechanism as Onboarding (#48), so import never clobbers hand-edits or
+/// a Baustein's own block, and re-importing is idempotent (closes #63).
+const IMPORT_MARKER_ID: &str = "_import";
 
 /// Heavy-binary threshold: a blob this size or larger, already committed into history, is a
 /// "Riesen-Binary" (E38) that warrants the `git lfs migrate` rewrite. 50 MiB — well above
@@ -74,7 +84,7 @@ pub fn import_folder(root: &Path) -> std::io::Result<ImportResult> {
             .or_insert(lockable);
     }
 
-    write_gitattributes(root, &render_gitattributes(&markers))?;
+    upsert_gitattributes(root, &import_attr_lines(&markers))?;
 
     // First commit so the imported product has history and renders with a branch/version.
     run_git(root, &["add", "-A"])?;
@@ -145,22 +155,21 @@ fn normalize_pattern(pattern: &str) -> String {
     }
 }
 
-/// Render a deterministic `.gitattributes` body from pattern → lockable decisions.
+/// The canonical `.gitattributes` **lines** for the import marker block, from pattern →
+/// lockable decisions.
 ///
-/// Pure and total. Lockable patterns get the LFS lockable+binary marker; non-lockable
-/// patterns are left out (git's default handling for plain text is correct and unmarked
-/// keeps the file small and honest). Sorted by pattern via the `BTreeMap`.
-pub fn render_gitattributes(markers: &BTreeMap<String, bool>) -> String {
-    let mut out = String::from(
-        "# Erzeugt vom PLM-Werkzeug beim Import (E38). Unmergebare Dateien -> lockable.\n",
-    );
-    for (pattern, lockable) in markers {
-        if *lockable {
-            // -text -diff stops git from trying to merge/diff; lockable enables path locks.
-            out.push_str(&format!("{pattern} filter=lfs diff=lfs merge=lfs -text lockable\n"));
-        }
-    }
-    out
+/// Pure and total. Lockable patterns get the full LFS+lockable attribute line — byte-identical
+/// to [`crate::onboardglue`]'s `attr_line`, so import and onboarding produce the same rule for
+/// the same pattern. Non-lockable patterns are left out (git's default text handling is correct
+/// and an unmarked rule keeps the file honest). Deterministically ordered by pattern via the
+/// `BTreeMap`. The lines land in the idempotent `_import` marker block via [`upsert_gitattributes`].
+pub fn import_attr_lines(markers: &BTreeMap<String, bool>) -> Vec<String> {
+    markers
+        .iter()
+        .filter(|(_, lockable)| **lockable)
+        // -text -diff stops git from trying to merge/diff; lockable enables path locks.
+        .map(|(pattern, _)| format!("{pattern} filter=lfs diff=lfs merge=lfs -text lockable"))
+        .collect()
 }
 
 // ---- filesystem + git glue (kept thin; the decisions above are the testable core) ----
@@ -206,9 +215,23 @@ fn read_existing_attributes(root: &Path) -> std::io::Result<BTreeMap<String, Att
     }
 }
 
-/// Write (overwrite) the product's `.gitattributes` with the rendered body.
-fn write_gitattributes(root: &Path, body: &str) -> std::io::Result<()> {
-    std::fs::write(root.join(".gitattributes"), body)
+/// Upsert the import-detected lockable lines into the `.gitattributes` `_import` marker block,
+/// **idempotently**, via the shared [`crate::markerblock`] mechanism (#48/#63). Reads the
+/// existing file (missing ⇒ empty, never an error), rewrites only the tool's own block, and
+/// writes back **only when something changed** — hand-edits and Baustein blocks outside the
+/// `_import` block survive byte-for-byte.
+fn upsert_gitattributes(root: &Path, lines: &[String]) -> std::io::Result<()> {
+    let path = root.join(".gitattributes");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let updated = upsert_block(&existing, IMPORT_MARKER_ID, lines);
+    if updated == existing {
+        return Ok(());
+    }
+    std::fs::write(&path, updated)
 }
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
@@ -339,7 +362,7 @@ pub fn migrate_history_behind_gate(root: &Path) -> std::io::Result<ImportResult>
             .and_modify(|v| *v = *v || lockable)
             .or_insert(lockable);
     }
-    write_gitattributes(root, &render_gitattributes(&markers))?;
+    upsert_gitattributes(root, &import_attr_lines(&markers))?;
 
     // The destructive step: rewrite history so the lockable patterns become LFS pointers.
     let patterns: Vec<String> = markers
@@ -477,23 +500,61 @@ mod tests {
     }
 
     #[test]
-    fn render_gitattributes_emits_only_lockable_patterns_sorted() {
+    fn import_attr_lines_emits_only_lockable_patterns_sorted() {
         let mut markers = BTreeMap::new();
         markers.insert("*.png".to_string(), true);
         markers.insert("*.c".to_string(), false); // text -> omitted
         markers.insert("*.kicad_pcb".to_string(), true);
         markers.insert("*.f3d".to_string(), true);
 
-        let body = render_gitattributes(&markers);
-        // every lockable pattern present, the text one omitted
-        assert!(body.contains("*.f3d filter=lfs diff=lfs merge=lfs -text lockable"));
-        assert!(body.contains("*.kicad_pcb filter=lfs diff=lfs merge=lfs -text lockable"));
-        assert!(body.contains("*.png filter=lfs diff=lfs merge=lfs -text lockable"));
-        assert!(!body.contains("*.c "));
-        // deterministic ordering: *.f3d before *.kicad_pcb before *.png
-        let f3d = body.find("*.f3d").unwrap();
-        let kicad = body.find("*.kicad_pcb").unwrap();
-        let png = body.find("*.png").unwrap();
-        assert!(f3d < kicad && kicad < png);
+        let lines = import_attr_lines(&markers);
+        // every lockable pattern present as a full attr line, the text one omitted, sorted.
+        assert_eq!(
+            lines,
+            vec![
+                "*.f3d filter=lfs diff=lfs merge=lfs -text lockable".to_string(),
+                "*.kicad_pcb filter=lfs diff=lfs merge=lfs -text lockable".to_string(),
+                "*.png filter=lfs diff=lfs merge=lfs -text lockable".to_string(),
+            ]
+        );
+        assert!(!lines.iter().any(|l| l.starts_with("*.c ")));
+    }
+
+    /// The #63 regression: import writes its detected lockable patterns into an idempotent
+    /// `_import` marker block, and a second import run with the same markers is a no-op — never
+    /// duplicating lines, never appending outside the block (it rides `markerblock::upsert_block`).
+    #[test]
+    fn import_attr_lines_land_in_idempotent_import_marker_block() {
+        let mut markers = BTreeMap::new();
+        markers.insert("*.step".to_string(), true);
+        markers.insert("*.fcstd".to_string(), true);
+        markers.insert("*.md".to_string(), false); // text -> omitted
+
+        let lines = import_attr_lines(&markers);
+        let once = upsert_block("", IMPORT_MARKER_ID, &lines);
+        // the lockable patterns are present in the block, the text one is not.
+        assert!(once.contains("# >>> baustein: _import >>>"));
+        assert!(once.contains("*.step filter=lfs diff=lfs merge=lfs -text lockable"));
+        assert!(once.contains("*.fcstd filter=lfs diff=lfs merge=lfs -text lockable"));
+        assert!(!once.contains("*.md"));
+        // re-import with identical detection is a pure no-op (twice == once).
+        let twice = upsert_block(&once, IMPORT_MARKER_ID, &lines);
+        assert_eq!(once, twice);
+    }
+
+    /// Hand-edits and a Baustein's own onboarding block survive an import upsert untouched —
+    /// import only owns its `_import` block (closes the #63 acceptance "Hand-Edits bleiben").
+    #[test]
+    fn import_upsert_preserves_hand_edits_and_baustein_blocks() {
+        let existing = "# meine Hand-Edits\n*.secret -text\n\
+            # >>> baustein: kicad >>>\n*.kicad_pcb filter=lfs diff=lfs merge=lfs -text lockable\n# <<< baustein: kicad <<<\n";
+        let mut markers = BTreeMap::new();
+        markers.insert("*.step".to_string(), true);
+        let out = upsert_block(existing, IMPORT_MARKER_ID, &import_attr_lines(&markers));
+        // foreign content is byte-preserved …
+        assert!(out.contains("# meine Hand-Edits\n*.secret -text"));
+        assert!(out.contains("# >>> baustein: kicad >>>\n*.kicad_pcb filter=lfs diff=lfs merge=lfs -text lockable\n# <<< baustein: kicad <<<"));
+        // … and the import block is added with the detected lockable pattern.
+        assert!(out.contains("# >>> baustein: _import >>>\n*.step filter=lfs diff=lfs merge=lfs -text lockable\n# <<< baustein: _import <<<"));
     }
 }
