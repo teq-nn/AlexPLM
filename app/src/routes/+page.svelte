@@ -452,6 +452,14 @@
     await refreshStatus();
   }
 
+  /** A live, in-place stack change (Baustein stilllegen/reaktivieren, Issue #51) — adopt the new
+   *  stack and re-derive the Werkbank so the resulting Waisen surface in the Unzugeordnet-Fach,
+   *  WITHOUT closing the setup dialog (the user may retire/restore several tools in one sitting). */
+  async function onStackChanged(s: ProduktStack) {
+    stack = s;
+    await refreshWerkbank();
+  }
+
   // Verknüpfungs-Kandidaten the create/edit picker offers: the product's Bausteine, as
   // {name, path}. (Produkt + a free Version link are always available in the form itself.)
   const taskCandidates = $derived(
@@ -1220,6 +1228,7 @@
     mode={stackMode}
     {stack}
     onConfirmed={onStackConfirmed}
+    onStackChanged={onStackChanged}
     onClose={() => (stackOpen = false)}
   />
 {/if}

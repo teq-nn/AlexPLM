@@ -274,7 +274,7 @@ pub fn read_werkbank(root: &Path) -> std::io::Result<WerkbankView> {
 /// Die erfassten Dateien des Produkts, produkt-relativ mit Vorwärts-Slashes. Das committete
 /// `_plm/`-Werkzeugverzeichnis (ADR 0002) wird ausgeklammert — es ist Tool-Buchhaltung, kein
 /// Artefakt. Ein Ordner ohne git oder ohne erfasste Dateien liefert eine leere Liste (nie Fehler).
-fn list_tracked_files(root: &Path) -> std::io::Result<Vec<String>> {
+pub fn list_tracked_files(root: &Path) -> std::io::Result<Vec<String>> {
     let out = crate::gitrunner::command(root)
         .args(["ls-files", "-z"])
         .output()?;

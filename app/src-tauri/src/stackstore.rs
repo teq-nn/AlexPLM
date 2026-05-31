@@ -124,6 +124,33 @@ pub fn extend_product_stack(
     Ok(stack)
 }
 
+/// Einen Baustein im Stack **stilllegen** bzw. wieder **reaktivieren** — die reine
+/// Zustandsänderung (Issue #51, E17). **Label-only:** setzt nur den `stillgelegt`-Schalter der
+/// Voll-Kopie; **kein** Glob/Ignore/LFS wird angefasst, nichts wird entfernt — daher (fast) voll
+/// umkehrbar (`reaktivieren` = `stilllegen` mit `false`). Gibt zurück, ob ein Baustein mit der `id`
+/// gefunden und (falls nötig) geändert wurde. Total und rein — kein I/O.
+pub fn set_baustein_stillgelegt(stack: &mut ProduktStack, id: &str, stillgelegt: bool) -> bool {
+    if let Some(sb) = stack.bausteine.iter_mut().find(|sb| sb.baustein.id == id) {
+        sb.baustein.stillgelegt = stillgelegt;
+        true
+    } else {
+        false
+    }
+}
+
+/// Einen Baustein eines Produkts **stilllegen** bzw. reaktivieren und den Stack zurückschreiben
+/// (Issue #51). Liest den Stack, setzt den Schalter ([`set_baustein_stillgelegt`]) und persistiert
+/// **nur bei Änderung**. Die Dotfile-Marker-Blöcke (Sediment) werden bewusst **nicht** angefasst —
+/// sie bleiben liegen (E17). Gibt den (ggf. geänderten) Stack zurück; eine unbekannte `id` lässt
+/// den Stack unverändert (nie Fehler).
+pub fn stilllegen_baustein(root: &Path, id: &str, stillgelegt: bool) -> std::io::Result<ProduktStack> {
+    let mut stack = read_stack(root);
+    if set_baustein_stillgelegt(&mut stack, id, stillgelegt) {
+        write_stack(root, &stack)?;
+    }
+    Ok(stack)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +289,61 @@ mod tests {
         assert_eq!(stack.bausteine[1].herkunft, Herkunft { from: "zephyr".to_string(), version: 1 });
         // unbekanntes "ghost" übersprungen; Persistenz stimmt.
         assert_eq!(read_stack(&dir), stack);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&libdir);
+    }
+
+    #[test]
+    fn stilllegen_is_label_only_and_reversible() {
+        // Tabelle: (start-stillgelegt, gesetzt) -> erwartet-stillgelegt + ob gefunden.
+        let mut stack = ProduktStack {
+            toolstack: None,
+            bausteine: vec![
+                StackBaustein::copy_of(&baustein("kicad", 1, "elektronik")),
+                StackBaustein::copy_of(&baustein("fusion", 1, "mechanik")),
+            ],
+        };
+        // Die übrige Definition bleibt unberührt (label-only): Globs/Ignore/LFS unverändert.
+        let kicad_vorher = stack.bausteine[0].baustein.clone();
+
+        // Stilllegen: nur der Schalter kippt.
+        assert!(set_baustein_stillgelegt(&mut stack, "kicad", true));
+        assert!(stack.bausteine[0].baustein.stillgelegt);
+        assert!(!stack.bausteine[1].baustein.stillgelegt, "fusion unberührt");
+        assert_eq!(stack.bausteine[0].baustein.globs, kicad_vorher.globs, "Globs liegen bleiben");
+
+        // Reaktivieren: voll umkehrbar — der Baustein ist wieder identisch zum Ausgangszustand.
+        assert!(set_baustein_stillgelegt(&mut stack, "kicad", false));
+        assert_eq!(stack.bausteine[0].baustein, kicad_vorher);
+
+        // Unbekannte id: nichts gefunden, Stack unverändert.
+        let snapshot = stack.clone();
+        assert!(!set_baustein_stillgelegt(&mut stack, "ghost", true));
+        assert_eq!(stack, snapshot);
+    }
+
+    #[test]
+    fn stilllegen_baustein_persists_and_unknown_id_is_a_noop() {
+        let dir = tmp();
+        let libdir = tmp();
+        let lib = Bibliothek::new(&libdir);
+        lib.seed_from(&[baustein("kicad", 1, "elektronik")], &[]).unwrap();
+        create_product_stack(&dir, &lib, &["kicad".to_string()], None).unwrap();
+
+        // Stilllegen wird persistiert.
+        let stack = stilllegen_baustein(&dir, "kicad", true).unwrap();
+        assert!(stack.bausteine[0].baustein.stillgelegt);
+        assert!(read_stack(&dir).bausteine[0].baustein.stillgelegt, "auf Platte stillgelegt");
+
+        // Reaktivieren persistiert ebenso (umkehrbar).
+        let stack = stilllegen_baustein(&dir, "kicad", false).unwrap();
+        assert!(!stack.bausteine[0].baustein.stillgelegt);
+        assert!(!read_stack(&dir).bausteine[0].baustein.stillgelegt);
+
+        // Unbekannte id: kein Fehler, Stack unverändert.
+        let stack = stilllegen_baustein(&dir, "ghost", true).unwrap();
+        assert_eq!(stack, read_stack(&dir));
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&libdir);

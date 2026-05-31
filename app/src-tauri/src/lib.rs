@@ -27,6 +27,7 @@ pub mod registry;
 pub mod search;
 pub mod setup;
 pub mod stackstore;
+pub mod stilllegen;
 pub mod syncdecider;
 pub mod syncglue;
 pub mod taskstore;
@@ -592,6 +593,51 @@ fn extend_product_stack_cmd(
     Ok(stack)
 }
 
+/// Die Antwort des Stilllegens (Issue #51): die label-only-**Wirkung** (welche Globs erlöschen,
+/// welche Dateien zu Waisen werden, welches Sediment liegen bleibt) **plus** die frisch berechnete
+/// Werkbank, sodass die UI die neuen Waisen im Unzugeordnet-Fach sofort sieht.
+#[derive(serde::Serialize)]
+struct StilllegenResult {
+    wirkung: stilllegen::StilllegenWirkung,
+    stack: ProduktStack,
+    werkbank: WerkbankView,
+}
+
+/// Einen Baustein eines Produkts **stilllegen** bzw. reaktivieren (Issue #51, E17). Label-only und
+/// (fast) umkehrbar: setzt nur den `stillgelegt`-Schalter in `_plm/stack.json`. Die alten Globs
+/// hören dadurch auf zu greifen → ihre Dateien werden zu **Waisen** im Unzugeordnet-Fach; die
+/// Ignore-/LFS-Marker-Blöcke bleiben als **Sediment** unangetastet in den Dotfiles liegen; **nichts
+/// wird verschoben oder gelöscht**. Gibt die Wirkung + den neuen Stack + die frisch gefaltete
+/// Werkbank zurück. Eine unbekannte `id` ist eine no-op (kein Fehler).
+#[tauri::command]
+async fn stilllegen_baustein_cmd(
+    product: String,
+    baustein_id: String,
+    stillgelegt: bool,
+) -> Result<StilllegenResult, String> {
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        // Die Wirkung VOR dem Schreiben aus dem aktuellen Stand berechnen (reiner Kern), damit die
+        // erloschenen Globs/neuen Waisen unabhängig von der Persistenz prüfbar sind.
+        let stack_vorher = read_stack(root);
+        let tracked = werkbank::list_tracked_files(root).map_err(|e| e.to_string())?;
+        let wirkung = if stillgelegt {
+            stilllegen::berechne_wirkung(&stack_vorher, &baustein_id, &tracked)
+        } else {
+            // Reaktivieren hat keine Stilllege-Wirkung; eine leere, neutrale Wirkung genügt der UI.
+            stilllegen::StilllegenWirkung { nichts_bewegt: true, ..Default::default() }
+        };
+        let stack =
+            stackstore::stilllegen_baustein(root, &baustein_id, stillgelegt).map_err(|e| e.to_string())?;
+        let werkbank = read_werkbank(root).map_err(|e| e.to_string())?;
+        Ok(StilllegenResult { wirkung, stack, werkbank })
+    })
+    .await
+}
+
 /// Read a product's copied Produkt-Stack from `_plm/stack.json` (Issue #39). Pure read; a product
 /// with no stack file reads as an empty stack (never an error). This is the anti-drift copy — it
 /// reflects only what was copied in, never the live Bibliothek.
@@ -925,6 +971,7 @@ pub fn run() {
             toolstack_baustein_ids,
             create_product_stack_cmd,
             extend_product_stack_cmd,
+            stilllegen_baustein_cmd,
             read_product_stack,
             read_werkbank_cmd,
             assign_artefakt_cmd,

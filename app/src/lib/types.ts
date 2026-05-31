@@ -366,6 +366,31 @@ export interface WerkbankView {
   unzugeordnet: UnzugeordnetFach[];
 }
 
+// Baustein stilllegen (Issue #51, E17). Label-only und (fast) umkehrbar: die alten Globs hören auf
+// zu greifen → ihre Dateien werden zu Waisen im Unzugeordnet-Fach; die Ignore-/LFS-Marker-Blöcke
+// bleiben als Sediment liegen; nichts wird verschoben oder gelöscht.
+
+/** The label-only effect of decommissioning a Baustein. Mirrors `StilllegenWirkung` in
+ *  src-tauri/src/stilllegen.rs. */
+export interface StilllegenWirkung {
+  /** The Baustein's globs that stop matching. */
+  erloschene_globs: string[];
+  /** Previously-labelled files that become Waisen (orphans), product-relative, sorted. */
+  neue_waisen: string[];
+  /** The Ignore/LFS marker lines that remain as Sediment in the dotfiles. */
+  sediment: string[];
+  /** Invariant: nothing is moved or deleted — always true. */
+  nichts_bewegt: boolean;
+}
+
+/** The result of the stilllegen command: the effect plus the rewritten stack and freshly folded
+ *  Werkbank (so the new Waisen show in the Unzugeordnet-Fach at once). Mirrors `StilllegenResult`. */
+export interface StilllegenResult {
+  wirkung: StilllegenWirkung;
+  stack: ProduktStack;
+  werkbank: WerkbankView;
+}
+
 // The Produkt-Registry + produktübergreifende Live-Suche (Issue #45, E45). The registry is
 // PATH-ONLY (no content cached — a second copy would drift, E8/E18); search is a LIVE fan-out
 // that opens each reachable product and greps over Dateinamen/`_plm`/`VERSION_NOTES.md`.
