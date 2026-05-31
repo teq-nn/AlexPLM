@@ -322,6 +322,50 @@ export interface ProduktStack {
   bausteine: StackBaustein[];
 }
 
+// Pattern-Zuordnung → Artefakt-Karten + Unzugeordnet-Fach (Issue #47). Tracked files become
+// Artefakt-Karten by convention via the pure Pattern-Zuordnung core; unlabeled tracked files
+// (Waisen) land in an Unzugeordnet-Fach per Arbeitsbereich. One click on a card opens its
+// dominant file or its folder via the OS default program — no per-file bureaucracy.
+
+/** The derived primary action of a card (PRD §14). `datei` → open the Hauptdatei in the OS default
+ *  program; `ordner` → open the folder. Mirrors `PrimaerAktion` in src-tauri/src/zuordnung.rs. */
+export type PrimaerAktion = "datei" | "ordner";
+
+/** An Artefakt-Karte built by convention from tracked files. Mirrors `ArtefaktKarte` in
+ *  src-tauri/src/werkbank.rs. */
+export interface ArtefaktKarte {
+  /** Stable key "<baustein-id>:<ordner>"; the UI keys cards on it. */
+  artefakt_id: string;
+  /** Human Baustein name (e.g. "KiCad"); the card label. */
+  baustein: string;
+  /** Artifact folder relative to the product root (forward slashes). */
+  ordner: string;
+  /** The Hauptdatei (highest glob priority), product-relative; null in the degenerate case. */
+  hauptdatei: string | null;
+  /** All tracked files of this artifact, product-relative, sorted. */
+  dateien: string[];
+  /** Derived one-click action: open the dominant file vs. the folder. */
+  primaer: PrimaerAktion;
+  /** Absolute on-disk target of the primary action (file or folder), for OS-default open. */
+  ziel: string | null;
+}
+
+/** An Unzugeordnet-Fach per Arbeitsbereich: the Waisen (tracked files lacking a label). Nothing is
+ *  lost by omission; the folder context is the assignment hint. Mirrors `UnzugeordnetFach`. */
+export interface UnzugeordnetFach {
+  /** The Arbeitsbereich (top-level folder name; "" = product root). */
+  arbeitsbereich: string;
+  /** The Waise files, product-relative, sorted. */
+  dateien: string[];
+}
+
+/** The product's Werkbank view: Artefakt-Karten + Unzugeordnet-Fächer. Mirrors `WerkbankView` in
+ *  src-tauri/src/werkbank.rs. Returned by the `read_werkbank_cmd` command. */
+export interface WerkbankView {
+  karten: ArtefaktKarte[];
+  unzugeordnet: UnzugeordnetFach[];
+}
+
 // The Produkt-Registry + produktübergreifende Live-Suche (Issue #45, E45). The registry is
 // PATH-ONLY (no content cached — a second copy would drift, E8/E18); search is a LIVE fan-out
 // that opens each reachable product and greps over Dateinamen/`_plm`/`VERSION_NOTES.md`.
@@ -413,4 +457,21 @@ export interface Task {
   blocks_everywhere: boolean;
   /** Creation timestamp `YYYY-MM-DDTHH:MM:SSZ` (the store sets it). */
   created_at: string;
+}
+
+// -------------------------------------------------------------------------------------------------
+// Aufgaben-Block decision (Issue #49, E42). The pure core decides whether open Aufgaben block a
+// checkpoint, carrying the Strenge on the Meilenstein-Art (NOT a Branch-Typ): a "freigabe" is
+// blocked by any open Aufgabe, a "prototyp" only by an open „blockiert überall" Aufgabe, and a
+// Hinweis never blocks. Surfaced by the `evaluate_task_block` command; Issue #52's Freigabe-Gate
+// consumes it. Mirrors `BlockDecision` in src-tauri/src/aufgabenblock.rs.
+// -------------------------------------------------------------------------------------------------
+
+/** Whether a checkpoint at the intended Meilenstein-Art is blocked by open Aufgaben, and by which.
+ *  Mirrors `BlockDecision` in src-tauri/src/aufgabenblock.rs. */
+export interface BlockDecision {
+  /** Whether the checkpoint is blocked at all. `true` iff `blocking_task_ids` is non-empty. */
+  blocked: boolean;
+  /** Ids of the open Aufgaben that block this checkpoint, in input order. Empty ⇔ not blocked. */
+  blocking_task_ids: string[];
 }

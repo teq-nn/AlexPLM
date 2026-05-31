@@ -1,5 +1,7 @@
 pub mod artstore;
 pub mod askpass;
+pub mod aufgabenblock;
+pub mod aufgabenblockglue;
 pub mod autocommit;
 pub mod autolock;
 pub mod baustein;
@@ -9,6 +11,7 @@ pub mod credentials;
 pub mod edges;
 pub mod edgestore;
 pub mod forgejo;
+pub mod gitlog;
 pub mod gitrunner;
 pub mod graph;
 pub mod graphread;
@@ -16,6 +19,8 @@ pub mod import;
 pub mod import_gate;
 pub mod lockglue;
 pub mod locks;
+pub mod markerblock;
+pub mod onboardglue;
 pub mod projection;
 pub mod pushglue;
 pub mod registry;
@@ -28,11 +33,16 @@ pub mod taskstore;
 pub mod tasks;
 pub mod warden;
 pub mod watcher;
+pub mod werkbank;
+pub mod zuordnung;
+pub mod zuordnungstore;
 
+use aufgabenblock::BlockDecision;
+use aufgabenblockglue::block_for_art;
 use baustein::{Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{add_persisted_edge, read_edge_view, remove_persisted_edge, EdgeView};
-use graph::VersionGraph;
+use graph::{MilestoneArt, VersionGraph};
 use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
@@ -40,12 +50,13 @@ use projection::{project_product, ProductView};
 use registry::{add_registered, read_registry, registry_path, remove_registered, RegisteredProduct};
 use search::{fan_out, SearchResult};
 use setup::{configure_remote, publish_product, read_setup, SetupReport};
-use stackstore::{create_product_stack, read_stack, ProduktStack};
+use stackstore::{create_product_stack, extend_product_stack, read_stack, ProduktStack};
 use syncdecider::StandChoice;
 use syncglue::{resolve_sync, run_sync, SyncOutcome};
 use taskstore::{create_task, delete_task, read_tasks, set_task_status, update_task};
 use tasks::{NewTask, Task, TaskEdit, TaskKind, TaskLink, TaskStatus};
 use warden::{Checkpoint, WardenAction};
+use werkbank::{read_werkbank, WerkbankView};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -410,6 +421,26 @@ async fn run_checkpoint(product: String, path: String, milestone: bool) -> Resul
     .await
 }
 
+/// **Freigeben** (Issue #54-Folge): the explicit „ich bin fertig"-act of a Meilenstein. Publishes
+/// the whole current branch to the *actually shared* branch of the remote (Issue #64) and then
+/// self-heals — auto-unlocks every held-clean binary now published ("unlock at push", E35). This
+/// replaces the per-path Meilenstein checkpoint for the publish: at milestone time the work is
+/// already committed, so the per-path Warden always saw a clean path and `Refuse`d, leaving the
+/// branch never pushed to the shared stand. Returns `freigabe-push` so the readout lights
+/// „freigegeben"; the per-path Warden stays unchanged for the silent laufend backup rhythm.
+#[tauri::command]
+async fn freigeben(product: String) -> Result<WardenAction, String> {
+    // Pushes the branch + releases locks (networked, bounded); off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        pushglue::publish_branch(root).map_err(|e| e.to_string())?;
+        // Unlock-at-push for the milestone: release every held-clean binary now on the shared stand.
+        let _ = lockglue::auto_unlock_clean_paths(root);
+        Ok(WardenAction::FreigabePush)
+    })
+    .await
+}
+
 /// At a checkpoint, **auto-unlock every held lock whose path is locally clean** (Issue #42,
 /// E31/E35 self-healing). Reuses the pure Lock Warden decision per held lock — the lock policy is
 /// decided in one place, never duplicated. Returns the product-relative paths that were freed so
@@ -529,7 +560,36 @@ fn create_product_stack_cmd(
     if !root.is_dir() {
         return Err(format!("Kein Ordner: {product}"));
     }
-    create_product_stack(root, &lib, &baustein_ids, toolstack).map_err(|e| e.to_string())
+    let stack = create_product_stack(root, &lib, &baustein_ids, toolstack).map_err(|e| e.to_string())?;
+    // Tag-1-Pflicht (Issue #48, adressiert #63): idempotente Ignore/LFS-Marker-Blöcke in die
+    // Dotfiles hängen, BEVOR ein Tool seine erste Binärdatei/Müll erzeugt — kein späteres lfs migrate.
+    onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
+    // Geführte Anlage (PRD §50/§29): die Heimat-Ordner anlegen, damit der Nutzer sofort sieht, wohin
+    // seine Dateien gehören.
+    onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
+    Ok(stack)
+}
+
+/// Extend an existing Produkt-Stack **additively** with further Bibliothek Bausteine (Issue #50,
+/// „Tool erweitern" / „später ergänzen"). Already-copied Bausteine are kept verbatim — never re-pulled
+/// from the Bibliothek (anti-drift: no silent version bump); only genuinely new `id`s are appended as
+/// full copies. The newly onboarded Bausteine get their Tag-1 marker blocks written too (idempotent,
+/// Issue #48). Returns the extended stack.
+#[tauri::command]
+fn extend_product_stack_cmd(
+    app: tauri::AppHandle,
+    product: String,
+    baustein_ids: Vec<String>,
+) -> Result<ProduktStack, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    let root = Path::new(&product);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {product}"));
+    }
+    let stack = extend_product_stack(root, &lib, &baustein_ids).map_err(|e| e.to_string())?;
+    onboardglue::onboard_stack_dotfiles(root, &stack).map_err(|e| e.to_string())?;
+    onboardglue::scaffold_heimat_dirs(root, &stack).map_err(|e| e.to_string())?;
+    Ok(stack)
 }
 
 /// Read a product's copied Produkt-Stack from `_plm/stack.json` (Issue #39). Pure read; a product
@@ -542,6 +602,64 @@ fn read_product_stack(product: String) -> Result<ProduktStack, String> {
         return Err(format!("Kein Ordner: {product}"));
     }
     Ok(read_stack(root))
+}
+
+/// Read the product's **Werkbank** (Issue #47): turn tracked files into Artefakt-Karten by
+/// convention via the pure Pattern-Zuordnung core, and gather the unlabeled tracked files into an
+/// **Unzugeordnet-Fach pro Arbeitsbereich**. Each card carries its Hauptdatei (highest glob
+/// priority) and a derived primary action (open the dominant file, else the folder) with an absolute
+/// target so the UI can open it via the OS default program. Pure read — `git ls-files` is collected
+/// once, then the pure core folds it; no mutation. A product without a Produkt-Stack has no
+/// Glob-Satz, so every tracked file becomes a Waise (nothing is ever lost) rather than an error.
+#[tauri::command]
+async fn read_werkbank_cmd(product: String) -> Result<WerkbankView, String> {
+    // `git ls-files` is local but walks the index; off the main thread for the same reason the other
+    // git reads are — a large product can never freeze the WebView.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        read_werkbank(root).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Manuelle Zuordnung** einer Waise zu einem Baustein (Folge von Issue #47/#50): der Nutzer
+/// ordnet eine erfasste Datei aus der Software heraus einem Baustein zu — ohne sie im Dateimanager
+/// zu verschieben. Die Zuordnung ist ein zerstörungsfreies Etikett in `_plm/zuordnung.json`; sie
+/// gewinnt über die Glob/Heimat-Konvention und ignoriert die Heimat-Grenze. Gibt die frisch
+/// berechnete Werkbank zurück, sodass die Karte sofort erscheint.
+#[tauri::command]
+async fn assign_artefakt_cmd(
+    product: String,
+    file: String,
+    baustein_id: String,
+) -> Result<WerkbankView, String> {
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        zuordnungstore::assign(root, &file, &baustein_id).map_err(|e| e.to_string())?;
+        read_werkbank(root).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Die **manuelle Zuordnung** einer Datei wieder lösen (Folge von Issue #47/#50): die Datei fällt
+/// zurück auf die Konvention bzw. wird wieder zur Waise. Gibt die frisch berechnete Werkbank zurück.
+#[tauri::command]
+async fn clear_artefakt_cmd(product: String, file: String) -> Result<WerkbankView, String> {
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        zuordnungstore::clear(root, &file).map_err(|e| e.to_string())?;
+        read_werkbank(root).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// **Resolve the laute Ausnahme** (Issue #43, E41): the single moment the user answers the loud
@@ -717,13 +835,57 @@ fn delete_task_cmd(path: String, id: String) -> Result<Vec<Task>, String> {
     delete_task(root, &id).map_err(|e| e.to_string())
 }
 
+/// Decide whether a checkpoint at the intended Meilenstein-Art is blocked by open Aufgaben
+/// (Issue #49, E42). The Strenge lives on the Art: a Freigabe is blocked by any open Aufgabe, a
+/// Prototyp only by an open „blockiert überall" Aufgabe, and a Hinweis never blocks. Pure read of
+/// the product's task store; the judgement is the pure [`aufgabenblock::decide_block`] core.
+/// Returns whether it is blocked and the ids of the blocking tasks (so Issue #52's Freigabe-Gate
+/// can name them). A product with no task store is never blocked.
+#[tauri::command]
+fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(block_for_art(root, art))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Das Git-/Sync-Diagnose-Log lesen (Issue #54-Folge) — das In-App-Diagnose-Panel pollt das, um
+/// zu zeigen, **ob und warum** ein Push lief oder nicht (Warden-Entscheidung + reale git-Exits).
+/// Älteste Zeile zuerst, jüngste zuletzt.
+#[tauri::command]
+fn read_git_log() -> Vec<String> {
+    gitlog::snapshot()
+}
+
+/// Den In-Memory-Ring des Diagnose-Logs leeren (die Logdatei bleibt als dauerhaftes Protokoll).
+#[tauri::command]
+fn clear_git_log() {
+    gitlog::clear();
+}
+
+/// Der absolute Pfad der Diagnose-Logdatei, damit das Panel „`tail -f <pfad>`" anbieten kann.
+#[tauri::command]
+fn git_log_path() -> Option<String> {
+    gitlog::file_path().map(|p| p.display().to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState::default())
         .setup(|app| {
+            // Diagnose-Log (Issue #54-Folge) auf den App-Log-Ordner zeigen lassen, damit ein
+            // still scheiternder Push nachvollziehbar wird — im In-App-Panel ODER per `tail -f`.
+            // Best-effort: kein Log-Ordner ⇒ nur In-Memory-Ring, die App startet trotzdem.
+            if let Ok(dir) = app.path().app_log_dir() {
+                let _ = std::fs::create_dir_all(&dir);
+                let file = dir.join("git-diagnose.log");
+                eprintln!("Git-Diagnose-Log: {}", file.display());
+                gitlog::set_file(file);
+            }
             // Idempotent, version-gated seeding of the bundled default Bausteine on startup
             // (ADR 0003). A seeding failure must not stop the app from launching — it only means
             // the Bibliothek starts empty/stale; surface it on stderr and carry on.
@@ -752,13 +914,21 @@ pub fn run() {
             connect_server,
             publish_to_server,
             run_checkpoint,
+            freigeben,
+            read_git_log,
+            clear_git_log,
+            git_log_path,
             sweep_clean_locks,
             sync_product,
             list_bibliothek,
             list_toolstacks,
             toolstack_baustein_ids,
             create_product_stack_cmd,
+            extend_product_stack_cmd,
             read_product_stack,
+            read_werkbank_cmd,
+            assign_artefakt_cmd,
+            clear_artefakt_cmd,
             resolve_sync_cmd,
             list_products,
             register_product,
@@ -768,7 +938,8 @@ pub fn run() {
             create_task_cmd,
             edit_task_cmd,
             set_task_status_cmd,
-            delete_task_cmd
+            delete_task_cmd,
+            evaluate_task_block
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

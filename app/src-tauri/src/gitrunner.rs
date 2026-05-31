@@ -82,8 +82,20 @@ pub fn output_bounded(cmd: &mut Command) -> std::io::Result<Output> {
     output_bounded_for(cmd, NETWORK_TIMEOUT)
 }
 
+/// Beschriftung einer git-Ausführung fürs Diagnose-Log: Programm + Argumente, wie tatsächlich
+/// gestartet (inkl. `-C <root>`). Enthält **nie** ein Token — git hält die im Askpass-Kind.
+fn describe(cmd: &Command) -> String {
+    let prog = cmd.get_program().to_string_lossy().into_owned();
+    let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    if args.is_empty() { prog } else { format!("{prog} {}", args.join(" ")) }
+}
+
 /// [`output_bounded`] with an explicit timeout (kept separate so tests can use a short bound).
 pub fn output_bounded_for(cmd: &mut Command, timeout: Duration) -> std::io::Result<Output> {
+    // Beschriftung VOR dem Spawn greifen — danach hat die Command ihre Args „verbraucht". Jede
+    // vernetzte git-Ausführung läuft durch hier, also ist das die eine Stelle, an der der reale
+    // `push`/`lfs`-Ausgang (Exit + stderr) fürs Diagnose-Log sichtbar wird (Issue #54-Folge).
+    let label = describe(cmd);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // Put git in its OWN process group so a timeout can kill the whole tree. git spawns git-lfs,
     // which spawns our askpass helper; killing only the direct git child would orphan git-lfs —
@@ -122,6 +134,10 @@ pub fn output_bounded_for(cmd: &mut Command, timeout: Duration) -> std::io::Resu
             // reach EOF and join promptly rather than leaking.
             let _ = out_h.join();
             let _ = err_h.join();
+            crate::gitlog::record(
+                "git",
+                format!("{label} -> TIMEOUT nach {}s (Credential-Schleife?)", timeout.as_secs()),
+            );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!(
@@ -133,11 +149,20 @@ pub fn output_bounded_for(cmd: &mut Command, timeout: Duration) -> std::io::Resu
         std::thread::sleep(Duration::from_millis(50));
     };
 
-    Ok(Output {
+    let elapsed_ms = start.elapsed().as_millis();
+    let out = Output {
         status,
         stdout: out_h.join().unwrap_or_default(),
         stderr: err_h.join().unwrap_or_default(),
-    })
+    };
+    crate::gitlog::record_git(
+        &label,
+        out.status.code(),
+        out.status.success(),
+        &String::from_utf8_lossy(&out.stderr),
+        elapsed_ms,
+    );
+    Ok(out)
 }
 
 /// Kill a timed-out git and all of its descendants. On Unix, git leads its own process group (set

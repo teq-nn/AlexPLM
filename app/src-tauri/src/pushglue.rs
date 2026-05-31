@@ -29,7 +29,10 @@ use crate::warden::{
 use std::io::Error;
 use std::path::Path;
 
-/// The shared release branch the Freigabe-Push publishes to (E35: „geteilter `main`-Stand").
+/// The fallback name of the shared release branch when the remote's default branch is unknown
+/// (E35: „geteilter `main`-Stand"). The Freigabe-Push no longer publishes blindly to this name —
+/// it resolves the *actual* shared branch from the remote's default HEAD first (see
+/// [`shared_branch`]) so a `master`-repo never gets a silent `master:main` split (Issue #64).
 pub const SHARED_BRANCH: &str = "main";
 
 // ----------------------------------------------------------------------------------------------
@@ -128,8 +131,26 @@ pub fn run_checkpoint(
 ) -> std::io::Result<WardenAction> {
     let snap = snapshot_for(root, rel_path, checkpoint)?;
     let action = decide(snap);
-    carry_out(root, rel_path, action)?;
-    Ok(action)
+    // Diagnose (Issue #54-Folge): GENAU hier wird sichtbar, ob überhaupt gepusht werden soll. Ein
+    // `Refuse` bedeutet, dass kein einziges git-Kommando läuft — der häufigste Grund, dass „nichts
+    // gepusht wird", obwohl die Credentials stimmen. Snapshot + Entscheidung werden festgehalten.
+    crate::gitlog::record(
+        "warden",
+        format!(
+            "Checkpoint {rel_path:?} [{checkpoint:?}] kind={:?} lock={:?} clean={:?} -> {action:?}",
+            snap.kind, snap.lock, snap.clean
+        ),
+    );
+    match carry_out(root, rel_path, action) {
+        Ok(()) => {
+            crate::gitlog::record("warden", format!("{action:?} {rel_path:?}: OK"));
+            Ok(action)
+        }
+        Err(e) => {
+            crate::gitlog::record("warden", format!("{action:?} {rel_path:?}: FEHLER — {e}"));
+            Err(e)
+        }
+    }
 }
 
 /// Carry out one already-decided [`WardenAction`] against git/LFS. Pure dispatch over the action;
@@ -159,8 +180,11 @@ pub fn sicherungs_push(root: &Path) -> std::io::Result<()> {
 /// (text) path simply has no lock to drop.
 pub fn freigabe_push(root: &Path, rel_path: &str) -> std::io::Result<()> {
     let branch = current_branch(root)?;
+    // Resolve the *actually shared* branch from the remote (Issue #64): on a `master`-repo this is
+    // `master`, not the hard-coded `main`, so source and target agree and there is no silent split.
+    let shared = shared_branch(root, &branch);
     // Publish to the shared branch (the public act). Binary content reaches the LFS store here.
-    run_git(root, &["push", REMOTE_NAME, &format!("{branch}:{SHARED_BRANCH}")])?;
+    run_git(root, &["push", REMOTE_NAME, &format!("{branch}:{shared}")])?;
     // "Unlock at push": git-lfs does not release on push by itself, so the tool does it — only
     // after the publish succeeded. Text paths hold no lock; skip them.
     if is_lockable(rel_path) {
@@ -172,6 +196,20 @@ pub fn freigabe_push(root: &Path, rel_path: &str) -> std::io::Result<()> {
 /// **Auto-Unlock** — release a held-by-me lock on a clean path (E31/E35 self-healing).
 pub fn auto_unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
     unlock(root, rel_path)
+}
+
+/// **Freigabe (branch-weit)** — publish the whole current branch to the shared stand. The explicit
+/// „ich bin fertig"-act of a Meilenstein. Unlike the per-path [`freigabe_push`], this does NOT gate
+/// on a single path being dirty: at Meilenstein time the work is already committed (a Stand *is* a
+/// commit, so every path is clean), which made the per-path Warden always `Refuse` and the publish
+/// unreachable through the milestone button (Issue #54-Folge). Here we simply push the branch onto
+/// the *actually shared* branch of the remote (Issue #64: `master`-repo → `master`, never a silent
+/// `main` split). The per-path Warden stays as-is for the silent laufend rhythm; the lock release
+/// is the caller's self-healing sweep over held-clean binaries ("unlock at push", E35).
+pub fn publish_branch(root: &Path) -> std::io::Result<()> {
+    let branch = current_branch(root)?;
+    let shared = shared_branch(root, &branch);
+    run_git(root, &["push", REMOTE_NAME, &format!("{branch}:{shared}")])
 }
 
 /// Release one `git lfs lock`. Treats an already-unlocked path as success (idempotent), so a
@@ -199,9 +237,37 @@ fn unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
 // ----------------------------------------------------------------------------------------------
 
 /// The current branch name; falls back to [`SHARED_BRANCH`] for a fresh repo on no branch.
-fn current_branch(root: &Path) -> std::io::Result<String> {
+pub fn current_branch(root: &Path) -> std::io::Result<String> {
     let name = git_stdout(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     Ok(if !name.is_empty() && name != "HEAD" { name } else { SHARED_BRANCH.to_string() })
+}
+
+/// The branch the Freigabe-Push publishes onto — the *actually shared* branch of the remote, not a
+/// hard-coded name (Issue #64). We ask git for the remote's default branch via
+/// `git symbolic-ref --short refs/remotes/<remote>/HEAD` (e.g. `origin/master`) and strip the
+/// `<remote>/` prefix, so a `master`-repo publishes `master:master` rather than `master:main` — no
+/// silent split between the branch the user works on and the branch they watch.
+///
+/// The remote HEAD only exists once it has been recorded locally (`git clone` sets it; otherwise
+/// `git remote set-head <remote> -a` does). When it is unknown we fall back to the caller's current
+/// branch — which, for the normal one-branch product repo, *is* the shared branch — keeping source
+/// and target in agreement either way.
+pub fn shared_branch(root: &Path, current: &str) -> String {
+    let head_ref = format!("refs/remotes/{REMOTE_NAME}/HEAD");
+    let resolved = git_stdout(root, &["symbolic-ref", "--short", &head_ref])
+        // `origin/master` -> `master`; tolerate the unprefixed form just in case.
+        .and_then(|s| {
+            let prefix = format!("{REMOTE_NAME}/");
+            let name = s.strip_prefix(&prefix).unwrap_or(&s).trim().to_string();
+            (!name.is_empty()).then_some(name)
+        });
+    match resolved {
+        Some(name) => name,
+        // No recorded remote HEAD: publish onto the branch we are actually on, so the push lands
+        // where the user watches rather than forking a stray `main`.
+        None if !current.is_empty() && current != "HEAD" => current.to_string(),
+        None => SHARED_BRANCH.to_string(),
+    }
 }
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
