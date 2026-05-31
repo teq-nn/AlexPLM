@@ -1146,7 +1146,7 @@
         class="splitter"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Breite des Versionsbaums"
+        aria-label="Breite des Verlauf-/Graph-Bereichs"
         aria-valuenow={treeWidth}
         aria-valuemin={TREE_MIN}
         aria-valuemax={TREE_MAX}

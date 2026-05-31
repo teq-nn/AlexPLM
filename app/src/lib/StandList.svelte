@@ -20,13 +20,13 @@
 
 <aside class="rail">
   <div class="rail-head">
-    <span class="label title">Stände</span>
+    <span class="label title">Commits</span>
     <span class="count mono">{stands.length.toString().padStart(2, "0")}</span>
   </div>
 
   <div class="strip">
     {#if stands.length === 0}
-      <p class="idle label">Noch keine Stände — speichern erzeugt einen</p>
+      <p class="idle label">Noch keine Commits — speichern erzeugt einen</p>
     {:else}
       <ol class="list">
         {#each stands as s, i (s.id)}

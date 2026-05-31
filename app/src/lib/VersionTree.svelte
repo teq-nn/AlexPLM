@@ -193,12 +193,12 @@
   }
 </script>
 
-<section class="display" aria-label="Versionsbaum">
+<section class="display" aria-label="Verlauf · Graph">
   <div class="display-head">
-    <span class="label title">Versionsbaum</span>
+    <span class="label title">Verlauf · Graph</span>
     {#if graph}
       {#if branched && graph.active_branch}
-        <span class="active-line label" title="Aktive Linie">
+        <span class="active-line label" title="Aktiver Branch">
           <span class="active-dot" aria-hidden="true"></span>
           {graph.active_branch}
         </span>
@@ -209,7 +209,7 @@
 
   <div class="tree-scroll">
     {#if !graph || graph.nodes.length === 0}
-      <p class="idle mono">— noch keine Stände —</p>
+      <p class="idle mono">— noch keine Commits —</p>
     {:else}
       <div
         class="graph"
@@ -248,7 +248,7 @@
                 title="Zum Meilenstein machen"
                 aria-label={isMs
                   ? `Meilenstein ${n.milestone}, ${day(n.timestamp)}`
-                  : `Stand ${leaf(n.path)}, ${day(n.timestamp)} — zum Meilenstein machen`}
+                  : `Commit ${leaf(n.path)}, ${day(n.timestamp)} — zum Meilenstein machen`}
                 onclick={() => openPromote(n)}
                 onkeydown={(e) => onNodeKey(n, e)}
                 onmouseenter={(e) => showTip(n, e)}
@@ -262,7 +262,7 @@
 
               <div class="body">
                 {#if foreign && isTip && n.branch}
-                  <span class="zweig-tag label" title="Zweig {n.branch}">{n.branch}</span>
+                  <span class="zweig-tag label" title="Branch {n.branch}">{n.branch}</span>
                 {/if}
                 <div class="line">
                   <span class="path mono" title={n.path}>{leaf(n.path)}</span>
@@ -320,11 +320,11 @@
       {/if}
     </div>
     <div class="tip-row mono">
-      <span class="tip-key label">Linie</span>
-      <span class="tip-val">{tip.node.branch ?? "aktive Linie"}</span>
+      <span class="tip-key label">Branch</span>
+      <span class="tip-val">{tip.node.branch ?? "aktiver Branch"}</span>
     </div>
     <div class="tip-row mono">
-      <span class="tip-key label">Stand</span>
+      <span class="tip-key label">Commit</span>
       <span class="tip-val">{day(tip.node.timestamp)} · {clock(tip.node.timestamp)}</span>
     </div>
     {#if tip.node.milestone !== null}
@@ -418,7 +418,7 @@
           class="input mono notes"
           bind:value={draftNotes}
           rows="5"
-          placeholder="Was macht diesen Stand vorzeigbar?"
+          placeholder="Was macht diesen Commit vorzeigbar?"
         ></textarea>
         <span class="field-hint label">Der einzige Ort für deinen Text</span>
       </label>

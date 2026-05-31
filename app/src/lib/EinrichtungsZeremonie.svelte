@@ -274,8 +274,8 @@
             </button>
           </div>
           <p class="hint label">
-            Der Kollege legt das Produkt damit als eigene Kopie an — ab dann arbeitet ihr still
-            auf demselben Stand.
+            Der Kollege klont das Produkt damit als eigene Kopie — ab dann gleicht ihr euch per
+            Push und Pull auf demselben Branch ab.
           </p>
         {/if}
         <button class="relink mono" onclick={reopenConnect} disabled={busy}>
