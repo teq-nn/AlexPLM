@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { SetupReport } from "./types";
+  import type { LoudQuestion, PublishOutcome, SetupReport } from "./types";
 
   // The one-time Einrichtungs-Zeremonie (Issue #5, E41). This is the explicit, rare exception
   // where the tool may speak git-near: connect a self-hosted Forgejo/Gitea server, publish the
@@ -10,12 +10,17 @@
     productPath,
     report,
     onUpdated,
+    onLoud,
     onClose,
   }: {
     productPath: string;
     report: SetupReport;
     /** Bubble the refreshed ceremony state up so the shell can settle into daily use. */
     onUpdated: (r: SetupReport) => void;
+    /** Publishing hit a non-empty Server-Repo that contradicts on an unmergeable Stand (Issue #44):
+     *  hand the domain-language question up so the shell raises its single orange-frame exception
+     *  (the same one the daily sync uses). The shell resolves it, then re-publishes. */
+    onLoud: (question: LoudQuestion) => void;
     onClose: () => void;
   } = $props();
 
@@ -83,11 +88,18 @@
     error = null;
     busy = true;
     try {
-      const r = await invoke<SetupReport>("publish_to_server", {
+      const outcome = await invoke<PublishOutcome>("publish_to_server", {
         path: productPath,
       });
       reauth = false;
-      onUpdated(r);
+      if (outcome.kind === "laute-ausnahme") {
+        // The Server-Repo already held a contradicting unmergeable Stand (Issue #44). Hand the
+        // question to the shell's single orange-frame exception; it resolves and re-publishes.
+        onLoud(outcome);
+      } else {
+        // `published` carries the refreshed ceremony state (SetupReport fields ride alongside `kind`).
+        onUpdated(outcome);
+      }
     } catch (e) {
       // Same typed error handling as connect: a rejected token reopens the credential step; any
       // other failure (e.g. the repo does not exist on the server yet) shows its real message.

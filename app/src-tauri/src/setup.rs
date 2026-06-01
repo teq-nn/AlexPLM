@@ -228,6 +228,22 @@ pub struct SetupReport {
     pub clone_url: Option<String>,
 }
 
+/// The outcome of a publish attempt (Issue #44). Parallels [`crate::syncglue::SyncOutcome`]: most of
+/// the time the product publishes and the ceremony advances; but if the chosen Server-Repo already
+/// carries Stände that contradict the local product on an **unmergeable** artifact, publishing
+/// **stops** and raises the single domain-language exception instead of letting git reject the push.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PublishOutcome {
+    /// The product was published; the refreshed ceremony state (now `eingerichtet`) rides along.
+    Published(SetupReport),
+    /// Integrating the non-empty Server-Repo hit a real contradiction on an unmergeable artifact.
+    /// The push was **not** performed; the user answers the loud question (via the same
+    /// `resolve_sync` as the daily sync), then re-publishes — the re-push is then a clean
+    /// fast-forward. Carries the domain-language question; never a git marker.
+    LauteAusnahme(crate::syncdecider::LoudQuestion),
+}
+
 // ----------------------------------------------------------------------------------------------
 // Side-effecting glue (the only part that shells out to git) — kept thin.
 // ----------------------------------------------------------------------------------------------
@@ -318,13 +334,19 @@ pub fn configure_remote(
     read_setup(root)
 }
 
-/// Perform the **first push** that publishes the product to the configured remote (E41).
+/// Perform the **first push** that publishes the product to the configured remote (E41, Issue #44).
 ///
 /// Pushes the current branch to [`REMOTE_NAME`] and sets it as the upstream so the daily silent
-/// sync (a later slice) has a tracking ref to push/pull without ever naming git. Requires a
-/// configured remote; refuses clearly otherwise. Returns the refreshed report (now
-/// `Eingerichtet`).
-pub fn publish_product(root: &Path) -> std::io::Result<SetupReport> {
+/// sync has a tracking ref to push/pull without ever naming git. Requires a configured remote;
+/// refuses clearly otherwise.
+///
+/// **Non-empty Server-Repo (Issue #44, supersedes #35):** before the push, integrate whatever the
+/// chosen Server-Repo already carries — the blind push would otherwise be rejected as a raw
+/// non-fast-forward. [`crate::syncglue::integrate_for_publish`] reuses the daily Sync Decider:
+/// mergeable Stände are folded in silently and the push proceeds; a real contradiction on an
+/// unmergeable artifact stops here and rides back as [`PublishOutcome::LauteAusnahme`] (no push, no
+/// raw git text). `other` names a colleague in that question (`None` → neutral fallback).
+pub fn publish_product(root: &Path, other: Option<String>) -> std::io::Result<PublishOutcome> {
     let remote = remote_get_url(root).ok_or_else(|| {
         Error::new(
             ErrorKind::Other,
@@ -335,9 +357,16 @@ pub fn publish_product(root: &Path) -> std::io::Result<SetupReport> {
     // owner/repo answers "Not found" otherwise. Idempotent: an existing repo is fine. Uses the
     // token already in the keystore, so the user supplies nothing new here.
     ensure_server_repo(&remote)?;
+
+    // Integrate a non-empty Server-Repo before pushing (Issue #44). On a real contradiction, stop
+    // and hand the loud question to the ceremony — the push is deferred until the user resolves it.
+    if let Some(loud) = crate::syncglue::integrate_for_publish(root, other)? {
+        return Ok(PublishOutcome::LauteAusnahme(loud));
+    }
+
     let branch = current_branch(root)?;
     run_git(root, &["push", "--set-upstream", REMOTE_NAME, &branch])?;
-    read_setup(root)
+    Ok(PublishOutcome::Published(read_setup(root)?))
 }
 
 /// Ensure the server-side repository behind the configured remote exists (creating it via the
@@ -634,5 +663,34 @@ mod tests {
         assert_eq!(strip_credentials("https://h/o/p.git"), "https://h/o/p.git");
         // a path containing '@' but no userinfo is left intact
         assert_eq!(strip_credentials("https://h/o/p@v1.git"), "https://h/o/p@v1.git");
+    }
+
+    // ---- PublishOutcome: the frontend wire contract (Issue #44) ----
+
+    /// The `PublishOutcome` serialises with the internal `kind` tag and the inner struct's fields
+    /// flattened alongside it — exactly the shape `PublishOutcome` in `types.ts` reads. A drift here
+    /// would silently break the ceremony's publish handling, so pin the wire shape.
+    #[test]
+    fn publish_outcome_serialises_with_kind_tag_and_flattened_fields() {
+        let published = PublishOutcome::Published(SetupReport {
+            stage: SetupStage::Eingerichtet,
+            has_remote: true,
+            has_published: true,
+            clone_url: Some("https://h/o/p.git".to_string()),
+        });
+        let v: serde_json::Value = serde_json::to_value(&published).unwrap();
+        assert_eq!(v["kind"], "published");
+        assert_eq!(v["stage"], "eingerichtet"); // SetupReport fields ride alongside `kind`
+        assert_eq!(v["has_published"], true);
+
+        let loud = PublishOutcome::LauteAusnahme(crate::syncdecider::LoudQuestion {
+            frage: "dein und Bens Gehäuse-Stand widersprechen sich — welcher gilt?".to_string(),
+            artefakte: vec!["mechanik/gehaeuse.f3d".to_string()],
+            optionen: vec![],
+        });
+        let v: serde_json::Value = serde_json::to_value(&loud).unwrap();
+        assert_eq!(v["kind"], "laute-ausnahme");
+        assert!(v["frage"].as_str().unwrap().contains("welcher gilt"));
+        assert!(v["artefakte"].is_array());
     }
 }

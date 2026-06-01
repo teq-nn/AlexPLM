@@ -21,6 +21,7 @@
     GeoeffneterOrdner,
     WardenAction,
     SyncOutcome,
+    PublishOutcome,
     LoudQuestion,
     StandChoice,
     Task,
@@ -149,6 +150,10 @@
   // contradiction surfaces as `loud` — the SINGLE orange-frame moment in the whole instrument.
   let syncQuiet = $state<"aktuell" | "gesichert" | null>(null);
   let loud = $state<LoudQuestion | null>(null);
+  // Whether the open loud exception came from the publish step (Issue #44) rather than the daily
+  // sync. When set, resolving it must finish by RE-publishing (the merge is now integrated locally,
+  // so the re-push is a clean fast-forward) so the ceremony advances — not just resume the rhythm.
+  let loudFromPublish = $state(false);
   // While the chosen side is being applied + the merge finished (Issue #43), the orange-frame keys
   // are disabled so the one deliberate press cannot be double-fired.
   let resolving = $state(false);
@@ -222,6 +227,8 @@
         choice,
       });
       loud = null;
+      const wasPublish = loudFromPublish;
+      loudFromPublish = false;
       // The resolve completes the merge; reflect the calm state and refresh the quiet views.
       syncQuiet =
         outcome.status === "aktuell" || outcome.status === "gesichert"
@@ -230,12 +237,37 @@
       await refreshGraph();
       await refreshEdges();
       await refreshStatus();
+      // Issue #44: if the exception was raised mid-publish, the server's Stand is now integrated
+      // locally — finish the act by re-publishing (a clean fast-forward) so the ceremony advances.
+      if (wasPublish) await republishAfterResolve();
     } catch (e) {
       // A resolve failure is real — surface it plainly (still no raw git markers, by construction
       // of the backend). The orange frame stays open so the user can try again.
       error = String(e);
     } finally {
       resolving = false;
+    }
+  }
+
+  /** Re-run the publish after a publish-time loud exception was resolved (Issue #44). The contested
+   *  Stand is now integrated locally, so this push fast-forwards; should the server have gained yet
+   *  another contradicting Stand in the meantime, it simply raises the loud exception again. */
+  async function republishAfterResolve() {
+    if (!productPath) return;
+    try {
+      const outcome = await invoke<PublishOutcome>("publish_to_server", {
+        path: productPath,
+      });
+      if (outcome.kind === "laute-ausnahme") {
+        loud = outcome;
+        loudFromPublish = true;
+      } else {
+        setup = outcome;
+      }
+    } catch (e) {
+      // A typed { code, message } from the backend; show the human message (never raw git text).
+      error =
+        e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : String(e);
     }
   }
 
@@ -427,6 +459,7 @@
     ceremonyOpen = false;
     syncQuiet = null;
     loud = null;
+    loudFromPublish = false;
     resolving = false;
     stands = [];
     graph = null;
@@ -1676,6 +1709,10 @@
     {productPath}
     report={setup}
     onUpdated={(r) => (setup = r)}
+    onLoud={(q) => {
+      loud = q;
+      loudFromPublish = true;
+    }}
     onClose={() => (ceremonyOpen = false)}
   />
 {/if}

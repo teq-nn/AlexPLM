@@ -19,7 +19,7 @@
 
 use crate::locks::bucket_of;
 use crate::setup::REMOTE_NAME;
-use crate::syncdecider::{decide_sync, DivergedPath, StandChoice, SyncDecision};
+use crate::syncdecider::{decide_sync, DivergedPath, LoudQuestion, StandChoice, SyncDecision};
 use serde::Serialize;
 use std::io::Error;
 use std::path::Path;
@@ -155,6 +155,56 @@ fn fetch(root: &Path) -> std::io::Result<()> {
     run_git(root, &["fetch", REMOTE_NAME, &resolved_branch(root)])
 }
 
+// ----------------------------------------------------------------------------------------------
+// Publish-time integration — make the first publish push survive a NON-EMPTY Server-Repo (#44)
+// ----------------------------------------------------------------------------------------------
+
+/// Integrate a **non-empty Server-Repo's** history into the local product **before the first
+/// publish push** (Issue #44, supersedes #35). The Einrichtungs-Zeremonie's publish must never hit
+/// a raw non-fast-forward rejection: if the chosen Server-Repo already carries Stände, we fetch
+/// them and let the **same pure Sync Decider** judge whether they integrate freely or contradict an
+/// unmergeable artifact. The decision is never re-made here — it is the daily sync's, reused.
+///
+/// Hybrid behaviour (the product decision for #44):
+/// - nothing diverged / local already ahead → no merge → `Ok(None)`; the caller's push is a clean
+///   fast-forward (or the genuine first push to an empty Server-Repo).
+/// - every diverged path is free, mergeable text → **silent merge**, then the caller pushes →
+///   `Ok(None)`.
+/// - any unmergeable touch (binary / KiCad source) → **do NOT merge**; hand back the
+///   domain-language [`LoudQuestion`] so the ceremony raises the single orange-frame exception →
+///   `Ok(Some(q))`. The push is deferred until the user resolves it (via [`resolve_sync`]); the
+///   re-publish then fast-forwards.
+///
+/// `other` phrases a possible loud question with the colleague's name (`None` → neutral fallback).
+pub fn integrate_for_publish(
+    root: &Path,
+    other: Option<String>,
+) -> std::io::Result<Option<LoudQuestion>> {
+    // A one-time ceremony fetch of ALL refs (not the daily single-branch fetch): we do not yet know
+    // the Server-Repo's shared branch, so pull everything and record its default HEAD. That lets
+    // `resolved_branch` pick the *actually shared* branch (a `master`-repo stays `master`) instead
+    // of blindly assuming `main` and missing the divergence (Issue #64 on the publish side). Both
+    // are best-effort: an empty Server-Repo records nothing and leaves the divergence empty, so the
+    // caller falls through to the genuine first push.
+    let _ = run_git(root, &["fetch", REMOTE_NAME]);
+    let _ = run_git(root, &["remote", "set-head", REMOTE_NAME, "-a"]);
+
+    let diverged = diverged_paths(root, other)?;
+    match decide_sync(&diverged) {
+        // Free divergence (or none / local ahead): bring the server's mergeable Stände in silently,
+        // then let the caller push. An empty divergence merges nothing.
+        SyncDecision::SilentMerge => {
+            if !diverged.is_empty() {
+                silent_merge(root)?;
+            }
+            Ok(None)
+        }
+        // A real contradiction over an unmergeable file: STOP before the push. Hand the
+        // domain-language question back; the worktree is left untouched (no corrupting merge ran).
+        SyncDecision::LoudException(q) => Ok(Some(q)),
+    }
+}
+
 /// Whether `ancestor` is an ancestor of `descendant` (so `descendant` already contains every commit
 /// of `ancestor`). Used to detect „local strictly ahead" — an ancestor remote has nothing to pull.
 /// Reads only; a git error (unknown ref, unrelated histories) safely reads back as `false`.
@@ -171,7 +221,11 @@ fn is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> bool {
 /// touches only mergeable files and can produce no conflict marker. No user prompt (E41).
 fn silent_merge(root: &Path) -> std::io::Result<()> {
     let remote_ref = format!("{REMOTE_NAME}/{}", resolved_branch(root));
-    run_git(root, &["merge", "--no-edit", &remote_ref])
+    // `--allow-unrelated-histories`: the daily sync always shares history, so this is a no-op there;
+    // it matters only for the **first publish to a non-empty Server-Repo** (Issue #44), where the
+    // local product and a separately-seeded server line have no common base. Without it git would
+    // refuse with a raw „refusing to merge unrelated histories". Harmless when a base exists.
+    run_git(root, &["merge", "--no-edit", "--allow-unrelated-histories", &remote_ref])
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -208,7 +262,10 @@ pub fn resolve_sync(root: &Path, path: &str, choice: StandChoice) -> std::io::Re
     //    A non-zero exit here is the *expected* "merge has conflicts" signal — not an error; the
     //    real error would be an inability to start the merge (dirty worktree), caught by checking
     //    that a merge is actually in progress below.
-    let _ = run_git(root, &["merge", "--no-commit", "--no-ff", &remote_ref]);
+    let _ = run_git(
+        root,
+        &["merge", "--no-commit", "--no-ff", "--allow-unrelated-histories", &remote_ref],
+    );
 
     // If git could not even start the merge (e.g. an unexpected state), there is nothing in
     // progress to resolve — surface a clean error rather than committing a half-state.

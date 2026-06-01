@@ -280,6 +280,15 @@ export interface SyncOutcome {
   status: SyncStatus;
 }
 
+/** Outcome of a publish attempt (Issue #44). Mirrors `PublishOutcome` in src-tauri/src/setup.rs —
+ *  serde internal tagging (`kind`): `published` carries the refreshed ceremony state, while
+ *  `laute-ausnahme` carries the same domain-language question the daily sync raises, because the
+ *  chosen Server-Repo already held a contradicting unmergeable Stand. The user answers it with the
+ *  SAME resolve flow as the sync, then re-publishes. Never a git marker. */
+export type PublishOutcome =
+  | ({ kind: "published" } & SetupReport)
+  | ({ kind: "laute-ausnahme" } & LoudQuestion);
+
 // Baustein-Modell & Bibliothek (Issue #39, ADR 0002/0003). A Baustein bundles per-tool knowledge;
 // the Bibliothek is the shared template source; a Produkt-Stack is a self-contained ANTI-DRIFT
 // copy in `_plm/stack.json`. Lockability is NOT a Baustein field (it lives in the classifier).

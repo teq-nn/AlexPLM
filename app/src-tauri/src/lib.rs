@@ -61,7 +61,7 @@ use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
 use registry::{add_registered, read_registry, registry_path, remove_registered, RegisteredProduct};
 use search::{fan_out, SearchResult};
-use setup::{configure_remote, publish_product, read_setup, SetupReport};
+use setup::{configure_remote, publish_product, read_setup, PublishOutcome, SetupReport};
 use stackstore::{create_product_stack, extend_product_stack, read_stack, ProduktStack};
 use syncdecider::StandChoice;
 use syncglue::{resolve_sync, run_sync, SyncOutcome};
@@ -107,6 +107,30 @@ impl AppError {
             code: code.to_string(),
             message,
         }
+    }
+
+    /// Classify a **publish** failure (Issue #44) like [`AppError::from_io`] for the typed `code`
+    /// — so the ceremony still routes an `auth`/`keystore` failure back to the credential step —
+    /// but **replace the message with the tool's own vocabulary**. The raw git/LFS rejection
+    /// (`master -> master (fetch first)`, push/pull hints, the `locksverify` notice) must never
+    /// reach the user; integrating a non-empty Server-Repo avoids the rejection in the first place,
+    /// and any residual failure collapses to one neutral domain sentence here.
+    fn publish_failure(e: std::io::Error) -> Self {
+        let (code, message) = match gitrunner::classify_failure(&e.to_string()) {
+            gitrunner::GitFailure::Auth => (
+                "auth",
+                "Der Server hat die Zugangsdaten abgelehnt — bitte Zugangs-Token prüfen.",
+            ),
+            gitrunner::GitFailure::KeystoreUnavailable => (
+                "keystore",
+                "Der sichere Schlüsselspeicher ist nicht erreichbar — bitte erneut anmelden.",
+            ),
+            gitrunner::GitFailure::Other => (
+                "error",
+                "Veröffentlichen ließ sich nicht abschließen — bitte erneut versuchen.",
+            ),
+        };
+        AppError { code: code.to_string(), message: message.to_string() }
     }
 }
 
@@ -477,12 +501,14 @@ async fn connect_server(
 /// E41), setting the upstream so the later silent daily sync has a tracking ref. Returns the
 /// refreshed ceremony state (now `eingerichtet`).
 #[tauri::command]
-async fn publish_to_server(path: String) -> Result<SetupReport, AppError> {
+async fn publish_to_server(path: String, other: Option<String>) -> Result<PublishOutcome, AppError> {
     // The first publish push is networked (bounded to 20s on a bad credential); off the main thread
-    // so this exact ceremony step can no longer freeze the WebView while it runs.
+    // so this exact ceremony step can no longer freeze the WebView while it runs. A non-empty
+    // Server-Repo is integrated first (Issue #44); a real contradiction returns `LauteAusnahme`
+    // instead of failing, and any genuine failure speaks the tool's own vocabulary (no raw git text).
     tauri::async_runtime::spawn_blocking(move || {
         let root = Path::new(&path);
-        publish_product(root).map_err(AppError::from_io)
+        publish_product(root, other).map_err(AppError::publish_failure)
     })
     .await
     .map_err(|e| AppError { code: "error".to_string(), message: format!("Hintergrund-Task abgebrochen: {e}") })?
