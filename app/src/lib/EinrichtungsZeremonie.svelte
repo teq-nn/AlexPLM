@@ -1,16 +1,22 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { LoudQuestion, PublishOutcome, SetupReport } from "./types";
+  import { onMount } from "svelte";
+  import type { KontoView, LoudQuestion, PublishOutcome, SetupReport } from "./types";
 
   // The one-time Einrichtungs-Zeremonie (Issue #5, E41). This is the explicit, rare exception
   // where the tool may speak git-near: connect a self-hosted Forgejo/Gitea server, publish the
   // product with the first push, and invite a colleague by handing them the clone URL. The flow
   // is a deliberate, separated ceremony — never part of the silent daily rhythm.
+  //
+  // Since ADR 0004 (Issue #92) the connect step is **credential-free**: server address + identity
+  // come from the app-wide Konto, so this asks only for Besitzer/Team (optional) + Produkt-Name. No
+  // Konto → a hint + a button that opens the Konto panel, never a credential field per product.
   let {
     productPath,
     report,
     onUpdated,
     onLoud,
+    onOpenKonto,
     onClose,
   }: {
     productPath: string;
@@ -21,12 +27,15 @@
      *  hand the domain-language question up so the shell raises its single orange-frame exception
      *  (the same one the daily sync uses). The shell resolves it, then re-publishes. */
     onLoud: (question: LoudQuestion) => void;
+    /** Open the app-wide Konto panel — the single place credentials/server address are entered now
+     *  (ADR 0004). Used by the no-Konto hint and the "Server/Zugangsdaten ändern" relinks. */
+    onOpenKonto: () => void;
     onClose: () => void;
   } = $props();
 
-  // A typed backend error (Issue #22): `auth` means the token was missing/wrong/expired, `keystore`
-  // means the OS-Schlüsselbund was unreachable. Both must bring the user back to the credential
-  // field to re-enter the token — never leave them stuck on a step that can't recover.
+  // A typed backend error (Issue #22): `auth` means the token was wrong/expired, `keystore` means
+  // the OS-Schlüsselbund was unreachable. Both point back to the Konto (the sole credential writer)
+  // — never a per-product credential field.
   type AppError = { code: string; message: string };
   function asAppError(e: unknown): AppError {
     if (e && typeof e === "object" && "code" in e && "message" in e) {
@@ -35,23 +44,31 @@
     return { code: "error", message: String(e) };
   }
 
-  // When an auth/keystore error arrives we force the connect (credential) step back open, even if
-  // the server stage says we are already past it (e.g. an auth failure during publish). Cleared on
-  // the next successful action.
-  let reauth = $state(false);
+  // The app-wide Konto (ADR 0004): the server address + identity all server actions draw from.
+  // `null` once loaded means "kein Konto eingerichtet" → the connect step shows the redirect hint
+  // instead of the owner/name fields. `undefined` while still loading.
+  let konto = $state<KontoView | null | undefined>(undefined);
+  let kontoErr = $state<string | null>(null);
+
+  async function loadKonto() {
+    kontoErr = null;
+    try {
+      konto = await invoke<KontoView | null>("read_konto");
+    } catch (e) {
+      konto = null;
+      kontoErr = String(e);
+    }
+  }
+  onMount(loadKonto);
 
   // The visible step is driven by the (server-decided) stage so a reopened ceremony always lands
-  // on the right rung: connect → publish → invite — unless a credential error has forced us back to
-  // the connect step to re-enter the token.
-  let stage = $derived(reauth ? "not-configured" : report.stage);
+  // on the right rung: connect → publish → invite.
+  let stage = $derived(report.stage);
 
-  // Connect-step form fields. Credentials stay in this component and go straight to Rust; the
-  // returned report only ever carries the credential-free clone URL.
-  let host = $state("");
+  // Connect-step form fields. Only Besitzer/Team (optional) + Produkt-Name are editable now; the
+  // server address comes from the Konto and is shown read-only.
   let owner = $state("");
   let repo = $state("");
-  let user = $state("");
-  let token = $state("");
 
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -63,22 +80,15 @@
     try {
       const r = await invoke<SetupReport>("connect_server", {
         path: productPath,
-        host,
         owner,
         repo,
-        user,
-        token,
       });
-      // Don't keep the secret around once it's been handed to git.
-      token = "";
-      reauth = false;
       onUpdated(r);
     } catch (e) {
-      // The backend returns a typed { code, message } — show the human message, and on an
-      // auth/keystore failure force the credential step back open (never "[object Object]").
+      // The backend returns a typed { code, message } — show the human message; an auth/keystore
+      // failure points back at the Konto (the sole credential writer), not a per-product field.
       const err = asAppError(e);
       error = err.message;
-      if (err.code === "auth" || err.code === "keystore") reauth = true;
     } finally {
       busy = false;
     }
@@ -91,7 +101,6 @@
       const outcome = await invoke<PublishOutcome>("publish_to_server", {
         path: productPath,
       });
-      reauth = false;
       if (outcome.kind === "laute-ausnahme") {
         // The Server-Repo already held a contradicting unmergeable Stand (Issue #44). Hand the
         // question to the shell's single orange-frame exception; it resolves and re-publishes.
@@ -101,43 +110,14 @@
         onUpdated(outcome);
       }
     } catch (e) {
-      // Same typed error handling as connect: a rejected token reopens the credential step; any
-      // other failure (e.g. the repo does not exist on the server yet) shows its real message.
+      // Show the typed error's human message. A rejected/expired token (`auth`) or unreachable
+      // keystore (`keystore`) points back at the Konto — the sole credential writer (ADR 0004) —
+      // so the message itself directs the user there; we never reopen a per-product credential field.
       const err = asAppError(e);
       error = err.message;
-      if (err.code === "auth" || err.code === "keystore") reauth = true;
     } finally {
       busy = false;
     }
-  }
-
-  // Split a credential-free clone URL `scheme://host[:port]/owner/repo(.git)` back into its parts,
-  // so reopening the connect step can prefill the server fields (only the token needs re-typing).
-  // Returns null for an unexpected shape. Mirrors the backend `forgejo::parse_clone_url`.
-  function parseCloneUrl(
-    url: string | null | undefined,
-  ): { host: string; owner: string; repo: string } | null {
-    if (!url) return null;
-    const m = url.match(/^(https?:\/\/[^/]+)\/(.+)$/);
-    if (!m) return null;
-    const path = m[2].replace(/\.git$/, "").replace(/\/$/, "");
-    const slash = path.lastIndexOf("/");
-    if (slash < 1) return null;
-    return { host: m[1], owner: path.slice(0, slash), repo: path.slice(slash + 1) };
-  }
-
-  // Step back from a later rung to the credential step — to re-enter a missing/wrong token or point
-  // the product at a different server. The server fields are prefilled from the existing target so
-  // the user only re-enters Benutzer/Zugangs-Token; the (write-only) token field stays empty.
-  function reopenConnect() {
-    const parsed = parseCloneUrl(report.clone_url);
-    if (parsed) {
-      host = parsed.host;
-      owner = parsed.owner;
-      repo = parsed.repo;
-    }
-    error = null;
-    reauth = true;
   }
 
   async function copyClone() {
@@ -151,11 +131,9 @@
     }
   }
 
-  // The connect button is inert until server, product name and username are present. The owner is
-  // optional — left blank it defaults to the authenticated user (the username) on the Rust side.
-  let canConnect = $derived(
-    host.trim() !== "" && repo.trim() !== "" && user.trim() !== "",
-  );
+  // The connect button is inert until a Konto exists and a product name is given. The owner is
+  // optional — left blank it defaults to the Konto username on the Rust side.
+  let canConnect = $derived(!!konto && repo.trim() !== "");
 </script>
 
 <div class="scrim" role="presentation" onclick={() => !busy && onClose()}>
@@ -194,67 +172,62 @@
 
     <div class="body">
       {#if stage === "not-configured"}
-        <!-- Step 1: connect the self-hosted Forgejo/Gitea server. -->
-        <p class="lede">
-          Gib die Adresse deines selbst-gehosteten <strong>Forgejo / Gitea</strong>-Servers
-          und das Produkt-Ziel an. Die Zugangsdaten bleiben lokal — sie werden nie angezeigt.
-        </p>
+        <!-- Step 1: connect the product to the server. Server address + identity come from the
+             app-wide Konto (ADR 0004) — here we ask only for Besitzer/Team + Produkt-Name. -->
+        {#if konto === undefined}
+          <p class="lede">Konto wird geladen …</p>
+        {:else if konto === null}
+          <!-- No Konto set: refuse the ceremony and point at the Konto panel (no credential field). -->
+          <p class="lede">
+            <strong>Kein Konto eingerichtet.</strong> Zum Teilen brauchst du einmalig ein
+            <strong>Konto</strong> — eine Server-Adresse und deine Zugangsdaten, app-weit für alle
+            Produkte. Richte es im Konto ein, dann kannst du dieses Produkt veröffentlichen.
+          </p>
+          {#if kontoErr}
+            <p class="hint label">{kontoErr}</p>
+          {/if}
+          <button class="key go" onclick={onOpenKonto} disabled={busy}>
+            <span class="label">Konto einrichten</span>
+          </button>
+        {:else}
+          <p class="lede">
+            Veröffentlicht auf deinem Konto-Server. Gib das <strong>Produkt-Ziel</strong> an —
+            optional unter einem Team/Besitzer, sonst unter deinem Account.
+          </p>
 
-        <div class="form">
-          <label class="field">
-            <span class="label fk">Server-Adresse</span>
-            <input
-              class="mono in"
-              bind:value={host}
-              placeholder="https://forge.example.de"
-              autocomplete="off"
-              spellcheck="false"
-            />
-          </label>
-          <div class="row">
-            <label class="field">
-              <span class="label fk">Besitzer / Team <span class="opt">(optional)</span></span>
-              <input
-                class="mono in"
-                bind:value={owner}
-                placeholder="dein Account"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            </label>
-            <label class="field">
-              <span class="label fk">Produkt-Name</span>
-              <input
-                class="mono in"
-                bind:value={repo}
-                placeholder="ember-reverb"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            </label>
+          <div class="form">
+            <div class="readout mono" role="status">
+              <span class="dot ok" aria-hidden="true"></span>
+              <span class="rk">Server</span>
+              <span class="rv">{konto.base_url}</span>
+            </div>
+            <div class="row">
+              <label class="field">
+                <span class="label fk">Besitzer / Team <span class="opt">(optional)</span></span>
+                <input
+                  class="mono in"
+                  bind:value={owner}
+                  placeholder={konto.account}
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="field">
+                <span class="label fk">Produkt-Name</span>
+                <input
+                  class="mono in"
+                  bind:value={repo}
+                  placeholder="ember-reverb"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+            </div>
           </div>
-          <div class="row">
-            <label class="field">
-              <span class="label fk">Username</span>
-              <input
-                class="mono in"
-                bind:value={user}
-                placeholder="anna"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            </label>
-            <label class="field">
-              <span class="label fk">Passwort</span>
-              <input
-                class="mono in"
-                type="password"
-                bind:value={token}
-                autocomplete="off"
-              />
-            </label>
-          </div>
-        </div>
+          <button class="relink mono" onclick={onOpenKonto} disabled={busy}>
+            Server / Zugangsdaten ändern
+          </button>
+        {/if}
       {:else if stage === "remote-set-not-published"}
         <!-- Step 2: the first push publishes the product. -->
         <p class="lede">
@@ -269,7 +242,7 @@
             <span class="rv">{report.clone_url}</span>
           </div>
         {/if}
-        <button class="relink mono" onclick={reopenConnect} disabled={busy}>
+        <button class="relink mono" onclick={onOpenKonto} disabled={busy}>
           Zugangsdaten ändern
         </button>
       {:else}
@@ -290,7 +263,7 @@
             Push und Pull auf demselben Branch ab.
           </p>
         {/if}
-        <button class="relink mono" onclick={reopenConnect} disabled={busy}>
+        <button class="relink mono" onclick={onOpenKonto} disabled={busy}>
           Server ändern
         </button>
       {/if}
@@ -309,9 +282,13 @@
       </button>
 
       {#if stage === "not-configured"}
-        <button class="key go" onclick={connect} disabled={!canConnect || busy}>
-          <span class="label">{busy ? "binde an …" : "Server anbinden"}</span>
-        </button>
+        <!-- The "anbinden" key only when a Konto exists; without one the body shows a
+             „Konto einrichten"-Knopf instead (ADR 0004: no per-product credential entry). -->
+        {#if konto}
+          <button class="key go" onclick={connect} disabled={!canConnect || busy}>
+            <span class="label">{busy ? "binde an …" : "Server anbinden"}</span>
+          </button>
+        {/if}
       {:else if stage === "remote-set-not-published"}
         <button class="key go" onclick={publish} disabled={busy}>
           <span class="label">{busy ? "veröffentliche …" : "Veröffentlichen"}</span>

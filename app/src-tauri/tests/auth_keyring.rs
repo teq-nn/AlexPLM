@@ -1,8 +1,10 @@
 //! Keyring-backed auth tests for Issue #22 — using the lib's in-process shared-map test keystore
 //! (never a real OS keystore), and a local repo (never a real remote). Proves: credentials
 //! round-trip the keystore wrapper; the askpass helper answers username/password from the keystore;
-//! and the ceremony writes a **credential-free** `.git/config` while the secret lives only in the
-//! keystore.
+//! and the ceremony writes a **credential-free** `.git/config`. Since ADR 0004 (Issue #92) the
+//! ceremony is also a **credential-free writer**: `configure_remote` no longer touches the keystore
+//! at all (the Konto is the sole writer of credentials); the host-keyed secret stored by the Konto
+//! stays valid for askpass/`ensure_repo` unchanged.
 
 use app_lib::askpass::{self, AskpassError};
 use app_lib::credentials::{self, CredentialError};
@@ -70,16 +72,20 @@ fn askpass_fails_fast_for_an_unknown_host() {
 }
 
 #[test]
-fn ceremony_writes_credential_free_config_and_stores_secret_in_keystore() {
+fn ceremony_writes_credential_free_config_and_finds_konto_credentials() {
     ensure_mock_keystore();
     let tmp = tempfile::tempdir().unwrap();
     let product = tmp.path().join("product");
     std::fs::create_dir_all(&product).unwrap();
     seed_product(&product);
 
-    // Connect a server WITH credentials. The host origin the keystore is keyed by:
+    // The Konto is the sole writer of credentials: a Konto-save stored the host-keyed secret once.
     let host = "https://forge.keytest.de";
-    configure_remote(&product, host, "team", "ember", "anna", "tok-secret-xyz").unwrap();
+    credentials::store(host, "anna", "tok-secret-xyz").unwrap();
+
+    // The ceremony's connect step is now credential-free: it takes the Konto Base-URL + the
+    // owner-default (the Konto username) and never touches the keystore.
+    configure_remote(&product, host, "team", "ember", "anna").unwrap();
 
     // The remote URL in .git/config must be credential-free — no '@', no token.
     let url = git_out(&product, &["remote", "get-url", REMOTE_NAME]);
@@ -92,7 +98,7 @@ fn ceremony_writes_credential_free_config_and_stores_secret_in_keystore() {
     assert!(!cfg.contains("tok-secret-xyz"), "token leaked into .git/config file");
     assert!(!cfg.contains("anna:"), "user:token form leaked into .git/config file");
 
-    // The secret lives in the keystore instead, keyed by the host origin.
+    // The host-keyed secret the Konto stored stays valid — askpass/`ensure_repo` find it unchanged.
     assert_eq!(credentials::username(host).unwrap(), "anna");
     assert_eq!(credentials::token(host).unwrap(), "tok-secret-xyz");
 }

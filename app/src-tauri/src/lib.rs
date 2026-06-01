@@ -477,26 +477,42 @@ fn read_setup_state(path: String) -> Result<SetupReport, String> {
     read_setup(root).map_err(|e| e.to_string())
 }
 
-/// Connect the self-hosted Forgejo/Gitea server (Issue #5, E41): validate + normalize the typed
-/// host/owner/repo/credentials (pure core), store the credentials in the **OS keystore** (Issue
-/// #22, never in `.git/config`), configure the git remote with the credential-free URL, and enable
-/// `locksverify` for the host. The returned report carries only the credential-free clone URL. A
-/// keystore/auth failure surfaces as a typed [`AppError`] so the frontend can reopen the
-/// credential field instead of hanging.
+/// Connect the self-hosted Forgejo/Gitea server (Issue #5, E41; credential-free since ADR 0004 /
+/// Issue #92). Draws everything server-related from the app-wide **Konto**: the Base-URL and the
+/// owner-default (the Konto username) come from `konto::read_konto`, and the frontend supplies only
+/// the optional `owner` (Besitzer/Team) + `repo` (Produkt-Name). Configures the git remote with the
+/// credential-free clone URL and enables `locksverify`; writes **no** credentials (the Konto is the
+/// sole writer of those, host-keyed in the OS keystore at Konto-save time). With **no Konto set** it
+/// refuses with a clear typed `error` so the frontend points the user at the Konto panel instead of
+/// asking for credentials. The returned report carries only the credential-free clone URL.
 #[tauri::command]
 async fn connect_server(
+    app: tauri::AppHandle,
     path: String,
-    host: String,
     owner: String,
     repo: String,
-    user: String,
-    token: String,
 ) -> Result<SetupReport, AppError> {
-    // Touches the OS keystore and git config; off the main thread so the ceremony step never freezes
-    // the WebView. (Inline `spawn_blocking` rather than `on_blocking` because the error is `AppError`.)
+    // Resolve the app-wide Konto file before going off-thread; a missing config dir is a plain error.
+    let konto_file = resolve_konto_file(&app).map_err(|message| AppError {
+        code: "error".to_string(),
+        message,
+    })?;
+    // Configures git config; off the main thread so the ceremony step never freezes the WebView.
+    // (Inline `spawn_blocking` rather than `on_blocking` because the error is `AppError`.)
     tauri::async_runtime::spawn_blocking(move || {
+        // The Konto is the single source for the server address + owner-default. No Konto → refuse
+        // with a clear domain message; the frontend opens the Konto panel instead of a credential
+        // field (ADR 0004: "global login, not per repo").
+        let Some(konto) = read_konto_file(&konto_file) else {
+            return Err(AppError {
+                code: "error".to_string(),
+                message: "Kein Konto eingerichtet — bitte zuerst im Konto den Server anmelden."
+                    .to_string(),
+            });
+        };
         let root = Path::new(&path);
-        configure_remote(root, &host, &owner, &repo, &user, &token).map_err(AppError::from_io)
+        configure_remote(root, &konto.base_url, &owner, &repo, &konto.account)
+            .map_err(AppError::from_io)
     })
     .await
     .map_err(|e| AppError { code: "error".to_string(), message: format!("Hintergrund-Task abgebrochen: {e}") })?

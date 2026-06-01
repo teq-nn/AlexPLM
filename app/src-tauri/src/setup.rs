@@ -26,39 +26,37 @@ pub const REMOTE_NAME: &str = "origin";
 // ----------------------------------------------------------------------------------------------
 
 /// A validated, normalized Forgejo/Gitea remote, ready for `git remote add`. Pure data produced
-/// by [`normalize_remote`]; the credentials are kept apart from the bare clone URL so we can show
-/// colleagues a copy-pasteable clone URL **without** leaking the owner's token/password.
+/// by [`normalize_remote`]. Since ADR 0004 the ceremony is **credential-free** — the Konto is the
+/// sole writer of credentials (host-keyed in the OS keystore) — so this carries only the bare,
+/// shareable clone URL and the host origin; no `user:token@` URL is ever built here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RemoteConfig {
-    /// The push/fetch URL with any `user[:token]@` credentials embedded. Retained for validation
-    /// and tests; since Issue #22 git is **not** configured with this — credentials live in the OS
-    /// keystore and `.git/config` gets the credential-free [`clone_url`](RemoteConfig::clone_url).
-    pub push_url: String,
-    /// The bare `https://host/owner/repo.git` URL with NO credentials — safe to show/share and
-    /// what a colleague clones (the invite). Never carries the owner's secret.
+    /// The bare `https://host/owner/repo.git` URL with NO credentials — what `.git/config` gets
+    /// (Issue #22: credentials live in the OS keystore, never in the URL) and what a colleague
+    /// clones (the invite). Never carries a secret.
     pub clone_url: String,
     /// The `https://host` origin, used to scope the `lfs.<url>.locksverify` config (E41 note).
     pub host_url: String,
 }
 
-/// Validate and normalize the fields the user typed in the ceremony into a [`RemoteConfig`].
+/// Validate and normalize the fields the ceremony provides into a [`RemoteConfig`].
 ///
 /// Pure and total: never shells out, never panics, returns a human German error string on bad
-/// input. Rules (deliberately strict so a typo fails loud here, not mid-push):
-/// - `host` must be a non-empty `http(s)://host[:port]` with a host part. A bare `host:port`
-///   without scheme is accepted and defaulted to `https://` (the safe Forgejo/Gitea default).
+/// input. Since ADR 0004 (Issue #92) this is **credential-free** — the Konto is the sole writer of
+/// credentials, so `normalize_remote` no longer takes a `user`/`token` and never builds a
+/// credentialed URL. Rules (deliberately strict so a typo fails loud here, not mid-push):
+/// - `host` must be a non-empty `http(s)://host[:port]` with a host part (it comes from the Konto
+///   Base-URL, already normalized). A bare `host:port` without scheme is defaulted to `https://`
+///   (the safe Forgejo/Gitea default).
 /// - `repo` must be non-empty and free of slashes/whitespace/control characters.
-/// - `owner` is optional: left empty it defaults to the authenticated `user` (publishing under
-///   one's own account). The effective owner must be free of slashes/whitespace/control chars.
-/// - `user` may be empty (credentials supplied out-of-band, e.g. a credential helper); if given,
-///   it is embedded; a `token` (password) without a `user` is rejected (git would misread it).
+/// - `owner` is optional: left empty it defaults to `default_owner` (the Konto username — publishing
+///   under one's own account). The effective owner must be free of slashes/whitespace/control chars.
 /// - the `.git` suffix on `repo` is optional and normalized to exactly one.
 pub fn normalize_remote(
     host: &str,
     owner: &str,
     repo: &str,
-    user: &str,
-    token: &str,
+    default_owner: &str,
 ) -> Result<RemoteConfig, String> {
     let host = host.trim();
     if host.is_empty() {
@@ -93,34 +91,18 @@ pub fn normalize_remote(
         return Err("Produkt-Name fehlt.".into());
     }
 
-    // Credentials: a password without a username is ambiguous to git; reject it. An empty user
-    // means "credentials handled elsewhere" and yields a credential-free push URL.
-    let user = user.trim();
-    let token = token.trim();
-    if user.is_empty() && !token.is_empty() {
-        return Err("Passwort ohne Benutzernamen — bitte Benutzernamen angeben.".into());
-    }
-
-    // The owner is optional: left blank it defaults to the authenticated user (the username just
-    // entered), so a user publishing under their own account need not repeat their name. Validate
-    // the chosen owner the same way regardless of where it came from.
+    // The owner is optional: left blank it defaults to `default_owner` (the Konto username), so a
+    // user publishing under their own account need not repeat their name. A given owner (e.g. an
+    // organization) is used verbatim. Validate the chosen owner the same way regardless of source.
     let owner = if owner.trim().is_empty() {
-        clean_segment(user, "Besitzer/Organisation")?
+        clean_segment(default_owner, "Besitzer/Organisation")?
     } else {
         clean_segment(owner, "Besitzer/Organisation")?
     };
 
     let clone_url = format!("{host_url}/{owner}/{repo}.git");
-    let push_url = if user.is_empty() {
-        clone_url.clone()
-    } else if token.is_empty() {
-        format!("{scheme}://{}@{hostport}/{owner}/{repo}.git", pct(user))
-    } else {
-        format!("{scheme}://{}:{}@{hostport}/{owner}/{repo}.git", pct(user), pct(token))
-    };
 
     Ok(RemoteConfig {
-        push_url,
         clone_url,
         host_url,
     })
@@ -137,21 +119,6 @@ fn clean_segment(value: &str, field: &str) -> Result<String, String> {
         return Err(format!("{field} enthält ungültige Zeichen."));
     }
     Ok(v.to_string())
-}
-
-/// Percent-encode the characters in a userinfo component that would otherwise break a URL
-/// (`@`, `:`, `/`, `#`, `?`, `%`, and whitespace). Total; leaves ordinary tokens untouched.
-fn pct(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'@' | b':' | b'/' | b'#' | b'?' | b'%' | b' ' | b'\t' => {
-                out.push_str(&format!("%{b:02X}"));
-            }
-            _ => out.push(b as char),
-        }
-    }
-    out
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -274,17 +241,19 @@ pub fn read_setup(root: &Path) -> std::io::Result<SetupReport> {
 
 /// Configure the Forgejo/Gitea remote + enable `locksverify` (the connect step of the ceremony).
 ///
-/// Validates/normalizes the typed fields with the pure [`normalize_remote`] first (a typo fails
-/// here, before any git call), then adds/updates the remote named [`REMOTE_NAME`] and switches on
-/// LFS lock verification for the host. Returns the refreshed [`SetupReport`] so the UI advances
-/// to the publish step in one round-trip. Does **not** push — that is the deliberate next step.
+/// Since ADR 0004 (Issue #92) this is **credential-free**: the Konto is the sole writer of
+/// credentials (host-keyed in the OS keystore at Konto-save time), so the `host` here is the Konto
+/// Base-URL and `default_owner` the Konto username; nothing is written to the keystore. Validates
+/// /normalizes the fields with the pure [`normalize_remote`] first (a typo fails here, before any
+/// git call), then adds/updates the remote named [`REMOTE_NAME`] with the credential-free clone URL
+/// and switches on LFS lock verification for the host. Returns the refreshed [`SetupReport`] so the
+/// UI advances to the publish step in one round-trip. Does **not** push — the deliberate next step.
 pub fn configure_remote(
     root: &Path,
     host: &str,
     owner: &str,
     repo: &str,
-    user: &str,
-    token: &str,
+    default_owner: &str,
 ) -> std::io::Result<SetupReport> {
     if !root.is_dir() {
         return Err(Error::new(
@@ -292,26 +261,8 @@ pub fn configure_remote(
             format!("Kein Ordner: {}", root.display()),
         ));
     }
-    let cfg = normalize_remote(host, owner, repo, user, token)
+    let cfg = normalize_remote(host, owner, repo, default_owner)
         .map_err(|e| Error::new(ErrorKind::InvalidInput, e))?;
-
-    // Auth into the OS keystore, NOT into `.git/config` (Issue #22). When credentials were typed,
-    // store the user+token in the native keystore keyed by the host origin; git pulls them at
-    // runtime through our askpass helper. An empty user means "credentials handled elsewhere" —
-    // nothing to store, and the bare URL below carries no secret either way.
-    let user_t = user.trim();
-    let token_t = token.trim();
-    if !user_t.is_empty() || !token_t.is_empty() {
-        crate::credentials::store(&cfg.host_url, user_t, token_t).map_err(|e| match e {
-            // Tag an unreachable keystore with the shared marker so the typed frontend error comes
-            // out as `keystore` (the marker is stripped before the message is shown).
-            crate::credentials::CredentialError::Unavailable(_) => Error::other(format!(
-                "{} {e}",
-                crate::gitrunner::KEYSTORE_UNAVAILABLE_MARKER
-            )),
-            other => Error::other(other.to_string()),
-        })?;
-    }
 
     // Add the remote, or update its URL if a previous ceremony already set one (idempotent). The
     // URL is the **credential-free** clone URL — no `user:token@` is ever written to `.git/config`.
@@ -504,98 +455,72 @@ mod tests {
     // ---- normalize_remote: the validation & normalization core ----
 
     #[test]
-    fn normalize_builds_clone_and_push_urls() {
-        let cfg = normalize_remote(
-            "https://forge.example.de",
-            "team",
-            "ember-reverb",
-            "anna",
-            "tok123",
-        )
-        .unwrap();
+    fn normalize_builds_credential_free_clone_url() {
+        // Since ADR 0004 the ceremony is credential-free: only the bare clone URL + host origin are
+        // built, never a `user:token@` URL — the Konto is the sole writer of credentials.
+        let cfg =
+            normalize_remote("https://forge.example.de", "team", "ember-reverb", "anna").unwrap();
         assert_eq!(cfg.clone_url, "https://forge.example.de/team/ember-reverb.git");
         assert_eq!(cfg.host_url, "https://forge.example.de");
-        assert_eq!(
-            cfg.push_url,
-            "https://anna:tok123@forge.example.de/team/ember-reverb.git"
-        );
+        // the clone URL never carries credentials
+        assert!(!cfg.clone_url.contains('@'));
     }
 
     #[test]
     fn normalize_defaults_scheme_to_https_and_trims_slashes() {
-        let cfg = normalize_remote("forge.example.de/", "t", "p", "", "").unwrap();
+        let cfg = normalize_remote("forge.example.de/", "t", "p", "").unwrap();
         assert_eq!(cfg.host_url, "https://forge.example.de");
-        // no credentials -> push url equals the bare clone url
-        assert_eq!(cfg.push_url, cfg.clone_url);
         assert_eq!(cfg.clone_url, "https://forge.example.de/t/p.git");
     }
 
     #[test]
     fn normalize_keeps_http_when_explicit() {
-        let cfg = normalize_remote("http://192.168.0.9:3000", "t", "p", "", "").unwrap();
+        let cfg = normalize_remote("http://192.168.0.9:3000", "t", "p", "").unwrap();
         assert_eq!(cfg.host_url, "http://192.168.0.9:3000");
         assert_eq!(cfg.clone_url, "http://192.168.0.9:3000/t/p.git");
     }
 
     #[test]
     fn normalize_collapses_repeated_git_suffix() {
-        let cfg = normalize_remote("https://h", "o", "repo.git", "", "").unwrap();
+        let cfg = normalize_remote("https://h", "o", "repo.git", "").unwrap();
         assert_eq!(cfg.clone_url, "https://h/o/repo.git");
     }
 
     #[test]
-    fn normalize_user_only_embeds_user_without_colon() {
-        let cfg = normalize_remote("https://h", "o", "p", "anna", "").unwrap();
-        assert_eq!(cfg.push_url, "https://anna@h/o/p.git");
-    }
-
-    #[test]
-    fn normalize_empty_owner_defaults_to_authenticated_user() {
-        // Owner left blank → the repo lives under the authenticated user's account. Both the
-        // shareable clone URL and the credentialed push URL use the username as the owner.
-        let cfg = normalize_remote("https://h", "", "p", "anna", "secret").unwrap();
+    fn normalize_empty_owner_defaults_to_konto_username() {
+        // Owner left blank → the repo lives under the Konto user's account (the passed default
+        // owner). The shareable clone URL uses that username as the owner.
+        let cfg = normalize_remote("https://h", "", "p", "anna").unwrap();
         assert_eq!(cfg.clone_url, "https://h/anna/p.git");
-        assert_eq!(cfg.push_url, "https://anna:secret@h/anna/p.git");
     }
 
     #[test]
-    fn normalize_explicit_owner_overrides_user() {
-        // A given owner (a team) is used verbatim, independent of the authenticated user.
-        let cfg = normalize_remote("https://h", "team", "p", "anna", "").unwrap();
+    fn normalize_explicit_owner_overrides_default() {
+        // A given owner (a team/organization) is used verbatim, independent of the Konto username.
+        let cfg = normalize_remote("https://h", "team", "p", "anna").unwrap();
         assert_eq!(cfg.clone_url, "https://h/team/p.git");
-        assert_eq!(cfg.push_url, "https://anna@h/team/p.git");
-    }
-
-    #[test]
-    fn normalize_percent_encodes_credentials() {
-        // an email-style username and a token with reserved chars must be encoded so the URL parses
-        let cfg = normalize_remote("https://h", "o", "p", "a@b.de", "x/y@z").unwrap();
-        assert_eq!(cfg.push_url, "https://a%40b.de:x%2Fy%40z@h/o/p.git");
-        // the clone url shown to colleagues stays clean of credentials
-        assert_eq!(cfg.clone_url, "https://h/o/p.git");
     }
 
     #[test]
     fn normalize_rejects_bad_input() {
-        // table: (host, owner, repo, user, token) -> should error
-        let bad: &[(&str, &str, &str, &str, &str)] = &[
-            ("", "o", "p", "", ""),                      // empty host
-            ("   ", "o", "p", "", ""),                   // blank host
-            ("ssh://h", "o", "p", "", ""),               // unsupported scheme
-            ("https://", "o", "p", "", ""),              // no host part
-            ("https://a/b", "o", "p", "", ""),           // host with a path
-            ("https://h", "", "p", "", ""),              // empty owner
-            ("https://h", "o", "", "", ""),              // empty repo
-            ("https://h", "o", ".git", "", ""),          // repo is only the suffix
-            ("https://h", "a/b", "p", "", ""),           // owner with slash
-            ("https://h", "o", "p p", "", ""),           // repo with whitespace
-            ("https://h", "o", "p", "", "tok"),          // token without user
+        // table: (host, owner, repo, default_owner) -> should error
+        let bad: &[(&str, &str, &str, &str)] = &[
+            ("", "o", "p", ""),             // empty host
+            ("   ", "o", "p", ""),          // blank host
+            ("ssh://h", "o", "p", ""),      // unsupported scheme
+            ("https://", "o", "p", ""),     // no host part
+            ("https://a/b", "o", "p", ""),  // host with a path
+            ("https://h", "", "p", ""),     // empty owner AND empty default owner
+            ("https://h", "o", "", ""),     // empty repo
+            ("https://h", "o", ".git", ""), // repo is only the suffix
+            ("https://h", "a/b", "p", ""),  // owner with slash
+            ("https://h", "o", "p p", ""),  // repo with whitespace
         ];
-        for (h, o, r, u, t) in bad {
+        for (h, o, r, d) in bad {
             assert!(
-                normalize_remote(h, o, r, u, t).is_err(),
+                normalize_remote(h, o, r, d).is_err(),
                 "expected error for {:?}",
-                (h, o, r, u, t)
+                (h, o, r, d)
             );
         }
     }

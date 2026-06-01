@@ -1741,6 +1741,10 @@
       loud = q;
       loudFromPublish = true;
     }}
+    onOpenKonto={() => {
+      ceremonyOpen = false;
+      kontoOpen = true;
+    }}
     onClose={() => (ceremonyOpen = false)}
   />
 {/if}
