@@ -187,6 +187,12 @@ fn start_watching(path: String, app: tauri::AppHandle) -> Result<(), String> {
         return Err(format!("Kein Ordner: {path}"));
     }
 
+    // Opening an unpublished product: hand the sole local author back the write bit on every
+    // lockable file (Issue #104). git-lfs rests `lockable` files read-only until a lock is held,
+    // but pre-publish there is no server to lock against — so KiCad/CAD would only open them
+    // read-only with no lock to explain why. No-op once published (the server lock owns the bit).
+    let _ = lockglue::ensure_local_writable(root);
+
     let stand_app = app.clone();
     let lock_app = app.clone();
     let handle = watch_product(
@@ -430,7 +436,14 @@ async fn read_status(product: String, paths: Vec<String>) -> Result<Vec<Artifact
     on_blocking(move || {
         let root = Path::new(&product);
         let snap = lockglue::snapshot(root).map_err(|e| e.to_string())?;
-        Ok(derive_statuses(&paths, &snap))
+        let mut sigs = derive_statuses(&paths, &snap);
+        // Pre-publish there is no server lock to read, so a lockable file the sole local author is
+        // editing would read as Free; its writable-on-disk bit is the only "in progress" signal
+        // (Issue #104). Empty once published, where `git lfs locks` is the truth. Foreign/own locks
+        // already outrank Free, so this only ever greys an otherwise-green own lockable file.
+        let writable = lockglue::writable_lockable_paths(root, &paths).map_err(|e| e.to_string())?;
+        locks::promote_in_progress_for_writable(&mut sigs, &writable);
+        Ok(sigs)
     })
     .await
 }

@@ -142,6 +142,20 @@ pub fn derive_statuses(paths: &[String], snap: &StatusSnapshot) -> Vec<ArtifactS
     paths.iter().map(|p| derive_status(p, snap)).collect()
 }
 
+/// Lift a path's quiet green to in-progress grey when it is in `writable` — the pre-publish on-disk
+/// "this is mine" set (a lockable file the sole local author is editing, invisible to `git lfs
+/// locks` because nothing is published yet, Issue #104). Only ever upgrades a [`ArtifactStatus::Free`]:
+/// a foreign lock (orange), or an own lock / local dirtiness (already grey) outrank it and stay put.
+/// Applied as a post-step over [`derive_statuses`] so the published LED logic stays untouched (the
+/// `writable` set is empty once published).
+pub fn promote_in_progress_for_writable(sigs: &mut [ArtifactSignal], writable: &[String]) {
+    for sig in sigs.iter_mut() {
+        if sig.status == ArtifactStatus::Free && writable.iter().any(|w| *w == sig.path) {
+            sig.status = ArtifactStatus::InProgress;
+        }
+    }
+}
+
 /// The orange-LED tooltip text: `gesperrt von X seit …`. Pure over owner + timestamp.
 pub fn lock_tooltip(owner: &str, locked_at: &str) -> String {
     format!("gesperrt von {owner} seit {locked_at}")
@@ -299,6 +313,32 @@ mod tests {
             lock_tooltip("bjoern", "2026-05-30T09:15:00Z"),
             "gesperrt von bjoern seit 2026-05-30T09:15:00Z"
         );
+    }
+
+    /// Issue #104: pre-publish, a lockable file the sole author is editing is invisible to `git lfs
+    /// locks` (nothing is published), so it derives as Free — its writable-on-disk bit is the only
+    /// "in progress" signal. The promotion greys exactly those Free paths and nothing else.
+    #[test]
+    fn promote_writable_greys_only_free_paths() {
+        let snap = StatusSnapshot {
+            me: "anna".into(),
+            // a foreign lock (orange) and a dirty path (already grey) must be left untouched
+            locks: vec![lock("foreign/x.f3d", "bjoern", "t1")],
+            dirty: vec!["dirty/d.step".into()],
+        };
+        let paths = vec![
+            "foreign/x.f3d".to_string(), // LockedByOther
+            "dirty/d.step".to_string(),  // InProgress (dirty)
+            "mine/writable.kicad_pcb".to_string(), // Free, but writable on disk -> promote
+            "other/free.f3d".to_string(), // Free, not writable -> stays green
+        ];
+        let mut sigs = derive_statuses(&paths, &snap);
+        promote_in_progress_for_writable(&mut sigs, &["mine/writable.kicad_pcb".to_string()]);
+
+        assert_eq!(sigs[0].status, ArtifactStatus::LockedByOther, "foreign stays orange");
+        assert_eq!(sigs[1].status, ArtifactStatus::InProgress, "dirty stays grey");
+        assert_eq!(sigs[2].status, ArtifactStatus::InProgress, "writable own -> greyed");
+        assert_eq!(sigs[3].status, ArtifactStatus::Free, "non-writable stays green");
     }
 
     #[test]
