@@ -8,7 +8,7 @@
 
 ## Entscheidung
 
-Wir bauen das PLM-Werkzeug als **Tauri v2** Desktop-App mit einem **Svelte (SvelteKit, adapter-static / SPA)**
+Wir bauen die Werkbank als **Tauri v2** Desktop-App mit einem **Svelte (SvelteKit, adapter-static / SPA)**
 Frontend in der WebView. Backend-Logik in **Rust**.
 
 ## Begründung
@@ -48,7 +48,7 @@ kleines, selbstgehostetes Team-Werkzeug.
 
 ## Plattform-Ziele (Windows + Linux)
 
-Das PLM-Werkzeug **muss auf Windows und Linux laufen** (macOS ist nicht gefordert). Tauri trägt beide
+Die Werkbank **muss auf Windows und Linux laufen** (macOS ist nicht gefordert). Tauri trägt beide
 nativ. **Entwicklung und Tests laufen vorerst nur unter Linux**; Windows wird gebaut/geprüft, sobald
 eine Windows-Umgebung bereitsteht. Bis dahin gilt: plattformneutral schreiben und die folgenden
 Windows-Stolpersteine bewusst vermeiden.

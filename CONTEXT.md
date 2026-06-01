@@ -1,4 +1,4 @@
-# Context — PLM-Werkzeug
+# Context — Werkbank
 
 Glossary of the domain language. No implementation details — those live in code and in `design-docs/adr/`.
 

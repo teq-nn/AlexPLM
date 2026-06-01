@@ -1,4 +1,4 @@
-# Entscheidungslog — PLM-Werkzeug
+# Entscheidungslog — Werkbank
 
 Stand: 29.05.2026 (3. Sitzung). Jede Entscheidung mit Begründung und — wo zutreffend — was sie im Originalkonzept (`plm_software_konzept.md`) oder in früheren Einträgen ersetzt oder überholt. Neu in Sitzung 3: E16–E22 (Baustein-/Stack-Modell, Lebenszyklus, Anti-Drift, dreistufiger Freigabe-Block, dreistufige Kanten, „lernendes System" verworfen, Design-Haltung).
 

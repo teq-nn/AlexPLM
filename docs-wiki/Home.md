@@ -1,4 +1,4 @@
-# PLM-Werkzeug
+# Werkbank
 
 Ein schlankes, dateibasiertes **Produktdaten-Management** für Einzelentwickler und
 kleine Hardware-, Elektronik- und Firmware-Teams.
@@ -30,7 +30,7 @@ ohne dich zu zwingen, in Git zu denken.
 
 > **ℹ️ Lokales Desktop-Programm**
 >
-> Das PLM-Werkzeug ist ein **lokales Desktop-Programm**. Es braucht direkten Zugriff auf
+> Die Werkbank ist ein **lokales Desktop-Programm**. Es braucht direkten Zugriff auf
 > dein Dateisystem (Dateien beobachten, Programme öffnen, Versionsstände schreiben). Die
 > Cloud kommt — wenn überhaupt — nur als *Backup- und Austausch-Remote* ins Spiel, **nie**
 > als Dateiablage. Mehr dazu unter [Mehrbenutzer & Sync](Mehrbenutzer-und-Sync).

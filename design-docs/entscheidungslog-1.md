@@ -1,4 +1,4 @@
-# Entscheidungslog — PLM-Werkzeug
+# Entscheidungslog — Werkbank
 
 Stand: 29.05.2026 (2. Sitzung). Jede Entscheidung mit Begründung und — wo zutreffend — was sie im Originalkonzept (`plm_software_konzept.md`) ersetzt oder überholt.
 

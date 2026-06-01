@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PLM-Werkzeug",
+  "productName": "Werkbank",
   "version": "0.1.0",
   "identifier": "de.teqsas.plmwerkzeug",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "PLM-Werkzeug",
+        "title": "Werkbank",
         "width": 1100,
         "height": 720,
         "minWidth": 720,

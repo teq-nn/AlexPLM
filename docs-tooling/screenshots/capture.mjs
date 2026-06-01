@@ -1,4 +1,4 @@
-// Reproducible documentation screenshots for the PLM-Werkzeug.
+// Reproducible documentation screenshots for the Werkbank.
 //
 // The app is a Tauri desktop program: its Svelte frontend talks to a Rust backend over
 // `window.__TAURI_INTERNALS__.invoke`. To capture authentic UI without a desktop/GPU, we:

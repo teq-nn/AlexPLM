@@ -1,6 +1,6 @@
 name: Windows-Installer
 
-# Baut den vorbedingungsfreien Windows-Installer (NSIS) des PLM-Werkzeugs und legt ihn als
+# Baut den vorbedingungsfreien Windows-Installer (NSIS) der Werkbank und legt ihn als
 # Artefakt zum Download ab. NUR manuell startbar (Actions-Tab → „Run workflow"). Bewusst
 # KEINE automatischen Trigger, KEINE Tests — die laufen separat auf eigenen Runnern.
 #
@@ -97,6 +97,6 @@ jobs:
       - name: Installer als Artefakt hochladen
         uses: actions/upload-artifact@v4
         with:
-          name: plm-werkzeug-windows-installer
+          name: werkbank-windows-installer
           path: app/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
