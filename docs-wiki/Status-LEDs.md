@@ -33,14 +33,16 @@ Punkte:
 
 ## Der Sync-Status in Worten
 
-Neben den Punkten meldet das Werkzeug den Abgleich in eigener Sprache (siehe
+Neben den Punkten meldet das Werkzeug den Abgleich in Worten (siehe
 [Mehrbenutzer & Sync](Mehrbenutzer-und-Sync)):
 
 - **aktuell** — dein Stand entspricht dem geteilten Stand,
-- **gesichert** — dein Stand wurde (privat) gesichert,
+- **gesichert** — deine Arbeit wurde (privat) gesichert,
+- **{Name} arbeitet an {Datei}** — eine fremde Sperre (hat Vorrang),
 - **geteilt** — das Produkt ist eingerichtet und mit dem Server verbunden.
 
-Git-Worte wie „push", „pull" oder „merge" tauchen hier bewusst nicht auf.
+Der Abgleich selbst ist Handarbeit (**Sichern** / **Holen**) — die gefährliche Mechanik
+darunter bleibt versteckt.
 
 ## Die eine laute Farbe
 

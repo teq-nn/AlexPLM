@@ -13,7 +13,7 @@ In der Versionsleiste oben siehst du immer, welches Produkt geöffnet ist:
 ![Die Versionsleiste zeigt Produkt, Zweig und aktive Version](../img/versionsleiste.png)
 
 Beispiel im Bild: das Produkt **Ember Reverb**, auf dem Zweig `main`, aktive Version `v0.4`
-(ein *Prototyp* — siehe [Versionen & Meilensteine](versionen.md)).
+(ein *Prototyp* — siehe [Versionen & Revisionen](versionen.md)).
 
 ## Arbeitsbereich
 

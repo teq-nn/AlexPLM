@@ -16,20 +16,21 @@ Projektordner auf der Platte **sind** die Wahrheit. Das Werkzeug
 Folge: Wenn du das Werkzeug morgen löschst, hast du immer noch saubere, vollständige
 Ordner mit deiner ganzen Arbeit.
 
-## 2. Produktentwicklungs-Begriffe, nicht Git-Begriffe
+## 2. Eine PLM-Schicht, die ehrlich auf Git läuft
 
-Unter der Haube nutzt das Werkzeug Git (und Git-LFS) als Motor. Aber der Motor bleibt unter
-der Haube. Die Substantive, die du auf dem Bildschirm siehst, sind **Begriffe aus der
-Produktentwicklung**:
+Unter der Haube nutzt das Werkzeug Git (und Git-LFS) als Motor. Anders als ein reiner
+Git-Client legt es darüber eine **Produktentwicklungs-Schicht** mit eigenen Substantiven:
 
-> Produkt · Arbeitsbereich · Artefakt · Baustein · Meilenstein · Freigabe · Aufgabe · Stand
+> Produkt · Arbeitsbereich · Artefakt · Baustein · Revision · Freigabe · Aufgabe
 
-Die gefährlichen Git-Mechaniken (Rebase, harte Resets, History umschreiben) bleiben
-versteckt oder hinter ausdrücklichen Bestätigungen. Das ist die **Git-Client-Grenze**:
+Basis-Git-Begriffe (Commit, Branch, Tag, Push, Pull, Merge) **dürfen** dabei sichtbar sein —
+sie zu tarnen würde für ein git-kundiges Team nur verwirren. Versteckt und automatisiert
+bleibt nur die **gefährliche Mechanik**, bei der man Daten verliert (Rebase, harte Resets,
+History umschreiben):
 
-!!! quote "Design-Leitplanke"
-    Sobald das Werkzeug dich bittet, in Commits / Merges / Rebases zu denken, ist es zu einem
-    Git-Client degeneriert und hat seinen Sinn verloren.
+!!! quote "Leitregel"
+    Der Nutzer darf wissen, dass er auf Git arbeitet, und im Graphen denken — er soll aber nie
+    aufgefordert werden, eine Recovery-Formel zu tippen.
 
 Mehr dazu, was sichtbar bleibt und was nicht, unter [Git-Ehrlichkeit](git-ehrlichkeit.md).
 
@@ -54,7 +55,7 @@ Produkt  (z. B. "Ember Reverb")
 │   └── Artefakt     (logischer Bestandteil, z. B. der Schaltplan)
 │       └── Datei(en) auf der Platte
 ├── Werkzeugkasten   (die für dieses Produkt gewählten Bausteine — eine Kopie)
-└── Versionsbaum     (Stände & Meilensteine über die Zeit)
+└── Versionsbaum     (Commits & Revisionen über die Zeit)
 ```
 
 Jeden dieser Begriffe schauen wir uns auf den folgenden Seiten genauer an — der natürliche

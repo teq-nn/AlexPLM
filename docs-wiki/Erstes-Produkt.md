@@ -65,27 +65,31 @@ Jetzt steht die Werkbank. So sieht ein eingerichtetes Produkt aus:
 
 Orientiere dich an den Zonen (ausführlich in der [Oberflächen-Referenz](Die-Oberflaeche)):
 
-1. **Versionsleiste** (oben) — Produkt, Zweig, aktive Version, Status.
-2. **Bausteine / Artefakt-Karten** (Mitte) — dein Arbeitszustand.
-3. **Versionsbaum** (rechts, dunkel) — die Historie.
-4. **Fremde Sperren & Stände** (ganz rechts) — was Kolleg:innen in Arbeit haben und deine
+1. **Versionsleiste** (oben) — Produkt, Linie, aktive Version, Art.
+2. **Einstiegsleiste** — Produkt-Aktionen, der **Raum-Schalter** (Werkbank ↔ Verlauf · Graph),
+   die **Produktliste** und das **Zahnrad** (Konto).
+3. **Bausteine / Artefakt-Karten** (Mitte) — dein Arbeitszustand, darüber die
+   **Sichern / Holen**-Tasten.
+4. **Versionsbaum** (rechts, dunkel) — die Historie.
+5. **Fremde Sperren & Commits** (ganz rechts) — was Kolleg:innen in Arbeit haben und deine
    jüngsten Sicherungspunkte.
 
 ## Schritt 5 — Eine Datei öffnen und bearbeiten
 
 Jede Artefakt-Karte hat eine Ein-Klick-Aktion:
 
-![Eine Artefakt-Karte mit „ÖFFNEN"](img/artefakt-karte-einzeln.png)
+![Eine Artefakt-Karte mit „öffnen"](img/artefakt-karte-einzeln.png)
 
-- **ÖFFNEN** übergibt die Hauptdatei ans Betriebssystem; sie öffnet sich im Standardprogramm.
+- **öffnen** übergibt die Hauptdatei ans Betriebssystem; sie öffnet sich im Standardprogramm.
 - Bei sperrbaren Binärdateien (CAD, Gehäuse) holt das Werkzeug dabei **automatisch die
   Sperre** — die Datei wird für dich beschreibbar, für andere als „gesperrt von dir"
   sichtbar.
 - Hat ein Artefakt keine einzelne Hauptdatei (z. B. ein Firmware-Ordner), heißt die Aktion
-  **ORDNER ÖFFNEN**.
+  **Ordner öffnen**.
 
-Während du arbeitest und speicherst, legt das Werkzeug **still Stände** an — du musst dafür
-nichts tun und nichts beschriften. Die neuen Stände erscheinen rechts in der Schiene.
+Während du arbeitest und speicherst, legt das Werkzeug **still Commits** an — du musst dafür
+nichts tun und keine Commit-Nachricht schreiben. Die neuen Commits erscheinen rechts in der
+**Commits**-Schiene.
 
 ## Schritt 6 — Aufgaben festhalten
 
@@ -98,24 +102,34 @@ Unter den Karten liegt die Aufgaben-Liste. Halte hier fest, was noch zu tun ist:
 
 Mehr dazu unter [Aufgaben & Hinweise](Aufgaben-und-Hinweise).
 
-## Schritt 7 — Einen Meilenstein setzen
+## Schritt 7 — Eine Revision setzen
 
-Wenn ein Stand eine echte Version sein soll, erhebst du ihn im Versionsbaum zu einem
-**Meilenstein** und gibst ihm einen Namen (z. B. `v0.4`) und eine kurze Zusammenfassung:
+Wenn ein Stand eine echte Version sein soll, erhebst du ihn im Versionsbaum zu einer
+**Revision** und gibst ihr einen Namen (z. B. `v0.4`) und eine kurze Zusammenfassung:
 
-![Der Versionsbaum mit benannten Meilensteinen](img/versionsbaum.png)
+![Der Versionsbaum mit benannten Revisionen](img/versionsbaum.png)
 
-- Ein neuer Meilenstein ist zunächst ein **Prototyp** (lax, bearbeitbar).
-- Schaltest du ihn auf **Freigabe**, wird er **schreibgeschützt** — der Stand ist
-  abgeschlossen.
+- Eine neue Revision ist zunächst ein **Prototyp** (lax, bearbeitbar).
+- Schaltest du sie auf **Freigabe**, läuft das **Freigabe-Gate** (offene Punkte werden geprüft)
+  und sie wird **schreibgeschützt** — der Stand ist abgeschlossen.
 - Aus deiner Zusammenfassung entsteht automatisch eine lesbare `VERSION_NOTES.md` neben
   deinen Dateien.
 
-Die ganze Logik dahinter steht unter [Versionen & Meilensteine](Versionen-und-Meilensteine).
+Die ganze Logik dahinter steht unter [Versionen & Revisionen](Versionen-und-Revisionen).
+
+## Schritt 8 — Zwischen den Räumen wechseln
+
+Über den Schalter **„Verlauf · Graph"** oben wechselst du in den vollflächigen Graph-Raum:
+Historie filtern, einen alten Stand **als Ordner öffnen**, **von hier abzweigen** oder
+(bewusst) **zurückwerfen**. Mit **„Werkbank"** geht es zurück. Details:
+[Werkbank & Graph-Raum](Werkbank-und-Graph-Raum).
+
+Hast du mehrere Produkte, wechselst du über die **Produktliste** in der Leiste direkt zu einem
+anderen — ohne den Dateidialog.
 
 ## Wie geht es weiter?
 
-- Willst du das Produkt im Team nutzen? → [Produkt teilen](Produkt-teilen)
+- Willst du das Produkt im Team nutzen? → [Produkt teilen](Produkt-teilen) (inkl. **Konto** einrichten)
 - Unsicher, was ein Bereich oder eine LED bedeutet? → [Die Oberfläche](Die-Oberflaeche)
   und [Status-LEDs](Status-LEDs)
 - Begriff nachschlagen? → [Glossar](Glossar)

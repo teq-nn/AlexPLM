@@ -32,7 +32,7 @@ PAGES = {
     "konzepte/produkt-struktur.md": ("Produkt-Arbeitsbereich-Artefakt", "Produkt, Arbeitsbereich & Artefakt"),
     "konzepte/bausteine.md": ("Bausteine-und-Werkzeugkasten", "Bausteine & Werkzeugkasten"),
     "konzepte/werkbank-graph.md": ("Werkbank-und-Graph-Raum", "Werkbank & Graph-Raum"),
-    "konzepte/versionen.md": ("Versionen-und-Meilensteine", "Versionen & Meilensteine"),
+    "konzepte/versionen.md": ("Versionen-und-Revisionen", "Versionen & Revisionen"),
     "konzepte/aufgaben.md": ("Aufgaben-und-Hinweise", "Aufgaben & Hinweise"),
     "konzepte/mehrbenutzer.md": ("Mehrbenutzer-und-Sync", "Mehrbenutzer & Sync"),
     "konzepte/git-ehrlichkeit.md": ("Git-Ehrlichkeit", "Git-Ehrlichkeit"),

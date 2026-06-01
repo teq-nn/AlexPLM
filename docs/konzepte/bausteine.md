@@ -64,9 +64,6 @@ Etikett:
 - Seine Ignore-/LFS-Zeilen bleiben als inertes **Sediment** in den Konfig-Dateien liegen.
 - **Nichts** auf der Platte wird verschoben oder gelöscht.
 
-So ist ein Werkzeugwechsel beinahe vollständig umkehrbar.
-
-!!! info "In Arbeit"
-    Das geführte Anlegen aus der Bibliothek, das Erweitern und das Stilllegen werden gerade
-    ausgebaut und verfeinert. Die hier beschriebenen Prinzipien sind stabil; einzelne
-    Dialoge können sich noch ändern.
+So ist ein Werkzeugwechsel beinahe vollständig umkehrbar. In der Werkzeugkasten-Einrichtung
+zeigt ein stillgelegter Baustein dies ehrlich an („stillgelegt · Sediment bleibt, nichts
+verschoben") und lässt sich jederzeit **reaktivieren**.

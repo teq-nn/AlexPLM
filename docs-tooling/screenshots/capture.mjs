@@ -86,6 +86,7 @@ const MOCK = {
         ],
         primaer: "datei",
         ziel: `${PRODUCT_ROOT}/elektronik/ember.kicad_pro`,
+        projektion: { status: "geaendert", stale: false },
       },
       {
         artefakt_id: "fusion:mechanik",
@@ -99,6 +100,7 @@ const MOCK = {
         ],
         primaer: "datei",
         ziel: `${PRODUCT_ROOT}/mechanik/enclosure.f3d`,
+        projektion: { status: "vorhanden", stale: false },
       },
       {
         artefakt_id: "zephyr:firmware",
@@ -108,6 +110,7 @@ const MOCK = {
         dateien: ["firmware/src/main.c", "firmware/prj.conf", "firmware/CMakeLists.txt"],
         primaer: "ordner",
         ziel: `${PRODUCT_ROOT}/firmware`,
+        projektion: { status: "vorhanden", stale: false },
       },
     ],
     unzugeordnet: [
@@ -136,14 +139,14 @@ const MOCK = {
 
   graph: {
     nodes: [
-      { id: "a1", timestamp: "2026-05-12T09:12:03Z", path: ".", milestone: "v0.1", milestone_art: "freigabe", has_notes: true, offloaded: false, lane: 0, branch: "main", on_active: true, parents: [] },
-      { id: "a2", timestamp: "2026-05-15T11:40:55Z", path: "elektronik/ember.kicad_sch", milestone: null, milestone_art: null, has_notes: false, offloaded: false, lane: 0, branch: null, on_active: true, parents: ["a1"] },
-      { id: "a3", timestamp: "2026-05-18T16:02:11Z", path: ".", milestone: "v0.2", milestone_art: "freigabe", has_notes: true, offloaded: false, lane: 0, branch: null, on_active: true, parents: ["a2"] },
-      { id: "a4", timestamp: "2026-05-21T10:21:47Z", path: "mechanik/enclosure.f3d", milestone: null, milestone_art: null, has_notes: false, offloaded: false, lane: 0, branch: null, on_active: true, parents: ["a3"] },
-      { id: "a5", timestamp: "2026-05-24T13:55:09Z", path: ".", milestone: "v0.3", milestone_art: "freigabe", has_notes: true, offloaded: false, lane: 0, branch: null, on_active: true, parents: ["a4"] },
-      { id: "b1", timestamp: "2026-05-26T09:30:00Z", path: "mechanik/enclosure.f3d", milestone: null, milestone_art: null, has_notes: false, offloaded: false, lane: 1, branch: "alternate-enclosure", on_active: false, parents: ["a5"] },
-      { id: "a6", timestamp: "2026-05-28T15:08:32Z", path: "elektronik/ember.kicad_sch", milestone: null, milestone_art: null, has_notes: false, offloaded: false, lane: 0, branch: null, on_active: true, parents: ["a5"] },
-      { id: "a7", timestamp: "2026-05-30T14:20:00Z", path: ".", milestone: "v0.4", milestone_art: "prototyp", has_notes: false, offloaded: false, lane: 0, branch: null, on_active: true, parents: ["a6"] },
+      { id: "a1c0de1", timestamp: "2026-05-12T09:12:03Z", path: ".", milestone: "v0.1", milestone_art: "freigabe", has_notes: true, offloaded: false, veroeffentlicht: true, lane: 0, branch: "main", on_active: true, parents: [] },
+      { id: "a2c0de2", timestamp: "2026-05-15T11:40:55Z", path: "elektronik/ember.kicad_sch", milestone: null, milestone_art: null, has_notes: false, offloaded: false, veroeffentlicht: true, lane: 0, branch: null, on_active: true, parents: ["a1c0de1"] },
+      { id: "a3c0de3", timestamp: "2026-05-18T16:02:11Z", path: ".", milestone: "v0.2", milestone_art: "freigabe", has_notes: true, offloaded: false, veroeffentlicht: true, lane: 0, branch: null, on_active: true, parents: ["a2c0de2"] },
+      { id: "a4c0de4", timestamp: "2026-05-21T10:21:47Z", path: "mechanik/enclosure.f3d", milestone: null, milestone_art: null, has_notes: false, offloaded: false, veroeffentlicht: true, lane: 0, branch: null, on_active: true, parents: ["a3c0de3"] },
+      { id: "a5c0de5", timestamp: "2026-05-24T13:55:09Z", path: ".", milestone: "v0.3", milestone_art: "freigabe", has_notes: true, offloaded: false, veroeffentlicht: true, lane: 0, branch: null, on_active: true, parents: ["a4c0de4"] },
+      { id: "b1c0de6", timestamp: "2026-05-26T09:30:00Z", path: "mechanik/enclosure.f3d", milestone: null, milestone_art: null, has_notes: false, offloaded: false, veroeffentlicht: false, lane: 1, branch: "alternate-enclosure", on_active: false, parents: ["a5c0de5"] },
+      { id: "a6c0de7", timestamp: "2026-05-28T15:08:32Z", path: "elektronik/ember.kicad_sch", milestone: null, milestone_art: null, has_notes: false, offloaded: false, veroeffentlicht: true, lane: 0, branch: null, on_active: true, parents: ["a5c0de5"] },
+      { id: "a7c0de8", timestamp: "2026-05-30T14:20:00Z", path: ".", milestone: "v0.4", milestone_art: "prototyp", has_notes: false, offloaded: false, veroeffentlicht: false, lane: 0, branch: null, on_active: true, parents: ["a6c0de7"] },
     ],
     active_milestone: "v0.4",
     active_milestone_art: "prototyp",
@@ -152,7 +155,29 @@ const MOCK = {
     lane_count: 2,
   },
 
-  edges: { edges: [], warnings: [] },
+  edges: { edges: [], warnings: [], vorschlaege: [] },
+
+  // App-wide Konto (ADR 0004): one server identity, reused for all products.
+  konto: { base_url: "https://forgejo.nilius.online", account: "anna" },
+
+  // Produkt-Registry for the Produktliste switcher (Issue #73).
+  products: [
+    { path: PRODUCT_ROOT, name: "ember-reverb" },
+    { path: "/Engineering/Products/lumen-drive", name: "lumen-drive" },
+    { path: "/Engineering/Products/tidal-sensor", name: "tidal-sensor" },
+  ],
+
+  // Freigabe-Gate verdict (Issue #52): a weicher Block needing a logged reason.
+  gateVerdict: {
+    punkte: [
+      { haerte: "weich", art: "fehlende-pflicht", ref_id: "Testprotokoll", label: "Pflicht-Artefakt Testprotokoll fehlt" },
+      { haerte: "warnung", art: "aufgabe", ref_id: "t2", label: "BOM exportieren (JLCPCB)" },
+    ],
+    knopf: "trotzdem-freigeben",
+    harter_block: false,
+    begruendung_noetig: true,
+    fremd_warnung: null,
+  },
 
   tasks: [
     { id: "t1", title: "Schaltplan: Eingangsstufe entrauschen", kind: "aufgabe", status: "offen", link: { kind: "artefakt", ref: "elektronik" }, due: "2026-06-05", blocks_everywhere: false, created_at: "2026-05-28T08:00:00Z" },
@@ -203,10 +228,18 @@ function installTauriMock(M) {
       case "read_status": return M.signals;
       case "read_foreign_locks": return M.foreign;
       case "sync_product": return { status: "aktuell" };
+      case "sichern": return "sicherungs-push";
       case "run_checkpoint":
       case "freigeben": return "refuse";
       case "sweep_clean_locks": return [];
       case "lock_artifact": return true;
+      // App-wide Konto + product switcher + release gate (current build).
+      case "read_konto": return M.konto;
+      case "save_konto": return M.konto;
+      case "list_products": return M.products;
+      case "search_products":
+        return { hits: [], offline: [], searched: M.products.length, total: M.products.length };
+      case "evaluate_freigabe_gate": return M.gateVerdict;
       default: return null;
     }
   }
@@ -290,12 +323,10 @@ async function main() {
     await page.close();
   }
 
-  // Scene 2 — a populated product (open the example "Ember Reverb")
-  {
-    const page = await newPage();
+  // Helper: open the example product from the empty state, land in the Werkbank.
+  async function openExampleProduct(page) {
     await page.goto(base, { waitUntil: "networkidle0" });
     await page.waitForSelector(".empty-panel");
-    // Click the "Produkt öffnen" key — the mocked dialog returns the example product path.
     await page.evaluate(() => {
       const btn = [...document.querySelectorAll("button")].find((b) =>
         b.textContent.includes("Produkt öffnen"),
@@ -304,10 +335,28 @@ async function main() {
     });
     await page.waitForSelector(".grid");
     await page.waitForSelector("header.bar .version");
-    await sleep(700); // let fonts settle + LEDs/foreign locks read back
+    await sleep(700); // fonts settle + LEDs/foreign locks read back
+  }
+
+  // Helper: click a button whose visible text contains `text`.
+  async function clickByText(page, text) {
+    await page.evaluate((t) => {
+      const btn = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent.includes(t),
+      );
+      btn?.click();
+    }, text);
+  }
+
+  // Scene 2 — a populated product (open the example "Ember Reverb")
+  {
+    const page = await newPage();
+    await openExampleProduct(page);
 
     await shot("werkbank-uebersicht", page, { page }); // hero: whole window
     await shot("versionsleiste", "header.bar", { page });
+    await shot("entrybar", ".entrybar", { page });      // Raum-Schalter, Suche, Konto, Diagnose
+    await shot("sync-leiste", ".actions", { page });    // Sichern/Holen + sync status
     await shot("werkzeugkasten-leiste", ".stackbar", { page });
     await shot("artefakt-karten", ".grid", { page });
     await shot("artefakt-karte-einzeln", ".grid > *:first-child", { page });
@@ -315,6 +364,43 @@ async function main() {
     await shot("fremde-sperren", 'aside.panel[aria-label="Fremde Sperren"]', { page });
     await shot("versionsbaum", ".tree-col", { page });
     await shot("aufgaben", ".tasks-block", { page });
+    await page.close();
+  }
+
+  // Scene 3 — the Graph-Raum (Verlauf) with its node verbs + filters
+  {
+    const page = await newPage();
+    await openExampleProduct(page);
+    await clickByText(page, "Verlauf · Graph");
+    await sleep(500);
+    // The GraphRaum renders a full-width dark room.
+    const room = (await page.$(".raum")) || (await page.$(".stage"));
+    await shot("graph-raum", room, { page });
+    await page.close();
+  }
+
+  // Scene 4 — the Produktliste / Verlauf switcher popover
+  {
+    const page = await newPage();
+    await openExampleProduct(page);
+    await clickByText(page, "Produktliste");
+    await sleep(400);
+    const pop = await page.$(".produktliste .popover");
+    if (pop) await shot("produktliste", pop, { page });
+    else await shot("produktliste", ".entrybar", { page });
+    await page.close();
+  }
+
+  // Scene 5 — the global Konto panel (Einstellungen)
+  {
+    const page = await newPage();
+    await page.goto(base, { waitUntil: "networkidle0" });
+    await page.waitForSelector(".entrybar");
+    await clickByText(page, "Einstellungen");
+    await sleep(500);
+    const modal = await page.$(".scrim");
+    if (modal) await shot("konto-panel", modal, { page });
+    else await shot("konto-panel", page, { page });
     await page.close();
   }
 

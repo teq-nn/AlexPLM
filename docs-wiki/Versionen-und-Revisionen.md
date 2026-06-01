@@ -12,10 +12,11 @@ Das Entscheidende: Du tippst dafür **keine Commit-Nachricht**. Die Nachricht is
 und langweilig. Frisch entstandene Commits erscheinen rechts in der **Commits**-Schiene und
 als Knoten im Versionsbaum.
 
-!!! quote "Du benennst nicht jeden Tastendruck"
-    Der Auto-Commit bleibt automatisch — auch wenn er jetzt offen „Commit" heißt
-    (siehe [Git-Ehrlichkeit](git-ehrlichkeit.md)). Menschlicher Text entsteht nur an einer
-    Revision.
+> **Du benennst nicht jeden Tastendruck**
+>
+> Der Auto-Commit bleibt automatisch — auch wenn er jetzt offen „Commit" heißt
+> (siehe [Git-Ehrlichkeit](Git-Ehrlichkeit)). Menschlicher Text entsteht nur an einer
+> Revision.
 
 ## Revision: der bewusst benannte Stand
 
@@ -28,12 +29,13 @@ Beim Erheben schreibst du eine kurze Zusammenfassung in die `VERSION_NOTES.md` �
 *einzige* Ort für deinen Text. Im Versionsbaum sind Revisionen als helle Knoten mit ihrem
 Versionsetikett markiert:
 
-![Versionsbaum mit den Revisionen v0.1 bis v0.4](../img/versionsbaum.png)
+![Versionsbaum mit den Revisionen v0.1 bis v0.4](img/versionsbaum.png)
 
-!!! info "„Meilenstein" ist jetzt reserviert"
-    Was früher „Meilenstein" hieß, heißt jetzt **Revision**. Das Wort *Meilenstein* ist
-    bewusst freigeräumt und künftigen **Zukunftszielen** vorbehalten (geplante Ziele als in
-    der Zukunft liegende Baumknoten).
+> **ℹ️ „Meilenstein" ist jetzt reserviert**
+>
+> Was früher „Meilenstein" hieß, heißt jetzt **Revision**. Das Wort *Meilenstein* ist
+> bewusst freigeräumt und künftigen **Zukunftszielen** vorbehalten (geplante Ziele als in
+> der Zukunft liegende Baumknoten).
 
 ### Zwei Arten von Revision
 
@@ -65,7 +67,7 @@ Der wichtige Punkt: **veröffentlicht** und **freigegeben** sind unabhängig. Ei
 „freigegeben" zu sein. Im Versionsbaum trägt jeder Knoten daher ein eigenes Abzeichen
 **„veröffentlicht"** (ja/nein), getrennt von der Revisions-Art.
 
-Wie ein Stand veröffentlicht wird, steht unter [Mehrbenutzer & Sync](mehrbenutzer.md).
+Wie ein Stand veröffentlicht wird, steht unter [Mehrbenutzer & Sync](Mehrbenutzer-und-Sync).
 
 ## Das Freigabe-Gate
 
@@ -86,11 +88,12 @@ du den frischen Stand einer Kollegin mit-taggen würdest.
 Die `VERSION_NOTES.md` ist dabei **Ergebnis** der Freigabe, keine Vorbedingung: dein
 Zusammenfassungs-Text ist die Eingabe, das Taggen erzeugt die Datei.
 
-!!! note "Schreibschutz schützt vor Versehen"
-    Eine freigegebene Revision ist schreibgeschützt (technisch ein Tag auf einem
-    unveränderlichen Commit). Willst du daran weiterarbeiten, entsteht bewusst ein neuer Stand
-    oder eine Variante — abgeschlossene Stände bleiben so vor versehentlichen Änderungen
-    geschützt.
+> **ℹ️ Schreibschutz schützt vor Versehen**
+>
+> Eine freigegebene Revision ist schreibgeschützt (technisch ein Tag auf einem
+> unveränderlichen Commit). Willst du daran weiterarbeiten, entsteht bewusst ein neuer Stand
+> oder eine Variante — abgeschlossene Stände bleiben so vor versehentlichen Änderungen
+> geschützt.
 
 ## Varianten & Versionsnummern
 
@@ -102,4 +105,4 @@ zeigt die Versionsleiste beides zusammen.
 
 Versionsnamen schlägt das Werkzeug vor, erzwingt aber kein Schema: `v0.1`, `v1.0`, `Rev A`,
 `Prototype 1`, `Serie 2026-01` sind alle erlaubt. Wie du eine Variante anlegst, steht unter
-[Werkbank & Graph-Raum](werkbank-graph.md#der-graph-raum-verlauf).
+[Werkbank & Graph-Raum](Werkbank-und-Graph-Raum#der-graph-raum-verlauf).

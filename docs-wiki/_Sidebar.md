@@ -6,7 +6,7 @@
 - [Produkt, Arbeitsbereich & Artefakt](Produkt-Arbeitsbereich-Artefakt)
 - [Bausteine & Werkzeugkasten](Bausteine-und-Werkzeugkasten)
 - [Werkbank & Graph-Raum](Werkbank-und-Graph-Raum)
-- [Versionen & Meilensteine](Versionen-und-Meilensteine)
+- [Versionen & Revisionen](Versionen-und-Revisionen)
 - [Aufgaben & Hinweise](Aufgaben-und-Hinweise)
 - [Mehrbenutzer & Sync](Mehrbenutzer-und-Sync)
 - [Git-Ehrlichkeit](Git-Ehrlichkeit)

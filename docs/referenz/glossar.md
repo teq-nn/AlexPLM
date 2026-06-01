@@ -48,48 +48,65 @@ Die Vorderseite eines Produkts: der aktuelle Arbeitszustand als Artefakt-Karten 
 Arbeitsbereich. Hier verbringst du den Alltag.
 
 ### Graph-Raum / Versionsbaum
-Die Historie als eigener Raum, den du aufsuchst: Stände, Meilensteine, Zweige. Reine
+Die Historie als eigener Raum, den du aufsuchst: Commits, Revisionen, Varianten. Reine
 Orientierung — die beste Übersicht, nicht die beste Werkbank.
 
 ### Artefakt-Karte
 Die Darstellung eines Artefakts in der Werkbank: Status-LED, Bausteinname, Hauptdatei, echter
 Pfad und Ein-Klick-Aktion.
 
-### Stand
-Ein im Hintergrund **still** angelegter Sicherungspunkt deiner Arbeit. Du schreibst dafür
-keinen Text. Stände — nicht Commits — siehst du im Versionsbaum.
+### Stand / Commit
+Ein im Hintergrund **still** angelegter Sicherungspunkt deiner Arbeit (technisch ein Commit).
+Du schreibst dafür keine Commit-Nachricht. Erscheint in der **Commits**-Schiene und im
+Versionsbaum.
 
-### Meilenstein
-Ein bewusst zur benannten Version erhobener Stand (`v0.4`, `Rev B` …). Erzeugt eine lesbare
-`VERSION_NOTES.md`.
+### Revision
+Ein bewusst zur benannten Version erhobener Commit (`v0.4`, `Rev B` …), technisch ein **Tag** —
+ein benannter Punkt auf einer Linie, **kein** Zweig. Erzeugt eine lesbare `VERSION_NOTES.md`.
+Ersetzt den früheren Begriff „Meilenstein".
 
-### Meilenstein-Art (Prototyp / Freigabe)
+### Revisions-Art (Prototyp / Freigabe)
 **Prototyp** = laxer, bearbeitbarer Zwischenstand (Standard). **Freigabe** = abgeschlossener,
 **schreibgeschützter** Stand; bewusst und umkehrbar umschaltbar.
 
 ### Freigabe
-Der Abschluss einer Version. Erfolgt über einen Dialog mit einem kontextabhängigen Knopf, der
-offene Punkte nach Härte sortiert sammelt.
+Der Abschluss einer Version (Revisions-Art „Freigabe"). Bringt den Stand zugleich auf den
+geteilten Server (er gilt dann als **veröffentlicht**) und gibt die Sperre frei.
+
+### Freigabe-Gate
+Der Dialog beim Freigeben: ein **kontextabhängiger Knopf**, der offene Punkte nach Härte
+sortiert sammelt — **Taggen** (sauber), **Trotzdem freigeben** (weicher Block, mit
+Begründung) oder **gesperrt durch Aufgabe** (harter Block).
+
+### veröffentlicht
+Ein Stand liegt auf der **geteilten Linie**. Eine **Ort**-Eigenschaft, unabhängig von der
+Freigabe-Art. Pro Knoten im Versionsbaum als Abzeichen sichtbar.
 
 ### Aufgabe / Hinweis
 Arbeitspunkte eines Produkts. Sie unterscheiden sich **nur** durch ihre Blockier-Fähigkeit:
 eine **Aufgabe** kann eine Freigabe blockieren, ein **Hinweis** nie.
 
-### Zweig
-Ein bewusster Entwicklungszweig für Varianten oder Experimente. Eine Version wird eindeutig
-durch Produkt + Zweig + Versionsname identifiziert.
+### Variante / Zweig
+Eine echte zweite Linie (Branch) für Varianten oder Experimente. **Orthogonal** zur Revision.
+Eine Version wird eindeutig durch Produkt + Linie + Versionsname identifiziert.
 
-### Stiller Sync
-Der tägliche Abgleich im Hintergrund. Du siehst nur „aktuell / gesichert" — nie
-push/pull/merge.
+### Manueller Sync (Sichern / Holen)
+Der Netz-Abgleich ist Handarbeit: **Sichern** schiebt deine Arbeit ins private Backup,
+**Holen** bringt den geteilten Stand herein. Der lokale Auto-Commit bleibt still.
+
+### Knoten-Verben
+Die drei Aktionen an einem alten Graph-Knoten: **Als Ordner öffnen** (schreibgeschützte Kopie
+daneben), **Von hier abzweigen** (neue Variante), **Zurückwerfen** (destruktiv, hinter der
+Gate-Taste).
 
 ### Sperre
 Koordination für unmergebare Binärdateien: Bearbeiten holt die Sperre, andere sehen
 „gesperrt von X seit …". Eine Sperre ist **Koordination**, keine Autorisierung.
 
-### Sicherungs-Push / Freigabe-Push
-**Sicherungs-Push** (privat) = Backup deiner Zwischenstände. **Freigabe-Push** (öffentlich) =
-bringt die fertige Binärdatei auf den geteilten Stand **und** gibt die Sperre frei.
+### Sicherung / Freigabe (Push-Arten)
+**Sicherung** (privat) = Backup deiner Zwischenstände, der **Sichern**-Knopf. **Freigabe**
+(öffentlich) = bringt die fertige Binärdatei auf den geteilten Stand **und** gibt die Sperre
+frei; gebunden an den Freigabe-Toggle einer Revision.
 
 ### Binär-Invariante
 Die tragende Sicherheitsregel: *Eine gesperrte Binäränderung darf den geteilten Stand nicht
@@ -97,17 +114,21 @@ erreichen, solange die Sperre gehalten wird.* Macht gefährliche Merges struktur
 
 ### Laute Ausnahme
 Der einzige Moment, in dem das Werkzeug die Stimme hebt: ein echter, nicht auflösbarer
-Widerspruch beim Abgleich. Es fragt in eigener Sprache „welcher Stand gilt?", nie mit
-Git-Konfliktmarkern.
+Widerspruch beim Holen oder Veröffentlichen. Es fragt „welcher Stand gilt?".
+
+### Konto
+Die **eine** app-weite Server-Identität (Adresse + Zugangsdaten), gültig für alle Produkte.
+Über das Zahnrad erreichbar; nur zum Teilen nötig, nicht fürs lokale Arbeiten.
 
 ### Einrichtungs-Zeremonie
 Der einmalige Schritt, ein Produkt zu teilen (Server anbinden, veröffentlichen, einladen).
 Hier darf die Sprache git-näher sein.
 
-### Produkt-Registry
+### Produkt-Registry / Produktliste
 Schlanke Liste „welches Produkt liegt wo" — **nur Pfade, keine Inhalte**. Versorgt die
-Produktliste und die produktübergreifende Suche.
+**Produktliste** (Produktwechsel) und die produktübergreifende Suche.
 
 ### Git-ehrlich
-Die Haltung zum Motor unter der Haube: stiller Alltag ohne Git-Vokabular, seltene Zeremonie
-git-nah erlaubt, gefährliche Mechanik hinter einer abgesetzten, dunklen Gate-Taste.
+Die Haltung zum Motor unter der Haube: Basis-Git-Begriffe (Commit, Branch, Tag, Push, Pull,
+Merge) dürfen sichtbar sein; nur die **gefährliche Mechanik** bleibt versteckt/automatisiert,
+Destruktives hinter einer abgesetzten, dunklen Gate-Taste.
