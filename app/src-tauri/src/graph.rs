@@ -135,6 +135,11 @@ pub struct RepoSnapshot {
     pub offloaded: Vec<String>,
     /// Archive label shown on offloaded nodes, e.g. `2025-11`. `None` if unknown.
     pub offloaded_archive: Option<String>,
+    /// Commit ids on the **published** (shared) line — every Stand reachable from the
+    /// remote-tracking `origin/<shared>` ref (E47, #30). Collected by the glue exactly like
+    /// `offloaded`; the projection marks these nodes `veroeffentlicht`. Empty before the first
+    /// Freigabe (the ref does not exist yet), so nothing reads as veröffentlicht then.
+    pub published: Vec<String>,
     /// Every observed line (Zweig), including the active one. Empty/one entry => the tree is
     /// a single linear history and lays out as one lane. May be empty for back-compat.
     pub branches: Vec<BranchFact>,
@@ -164,6 +169,10 @@ pub struct StandNode {
     /// Whether this node's binary content has been offloaded (E36). The node stays in the
     /// tree, honestly marked "Inhalt ausgelagert".
     pub offloaded: bool,
+    /// Whether this Stand has reached the **shared** line — it is on `origin/<shared>` as far as
+    /// this machine knows (E47, #30). The Versionsbaum marks it „veröffentlicht". Distinct from a
+    /// Freigabe-Art: a Prototyp Stand riding on the published line is veröffentlicht, not freigegeben.
+    pub veroeffentlicht: bool,
     /// Which **Bahn** (lane) this Stand sits on: `0` is the trunk (the active line), each
     /// diverging Zweig gets its own positive index. A single linear history is all lane `0`.
     pub lane: usize,
@@ -232,6 +241,7 @@ pub fn path_from_message(message: &str) -> String {
 pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
     let milestone_of = |id: &str| snapshot.milestones.iter().find(|m| m.commit_id == id);
     let is_offloaded = |id: &str| snapshot.offloaded.iter().any(|o| o == id);
+    let is_published = |id: &str| snapshot.published.iter().any(|p| p == id);
 
     let layout = LaneLayout::compute(snapshot);
 
@@ -248,6 +258,7 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
                 milestone_art: ms.map(|m| m.art),
                 has_notes: ms.map(|m| m.has_notes).unwrap_or(false),
                 offloaded: is_offloaded(&c.id),
+                veroeffentlicht: is_published(&c.id),
                 lane: layout.lane_of(&c.id),
                 branch: layout.label_of(&c.id),
                 on_active: layout.lane_of(&c.id) == 0,
@@ -416,6 +427,7 @@ mod tests {
             milestones: vec![],
             offloaded: vec![],
             offloaded_archive: None,
+            published: vec![],
             branches: vec![],
             active_branch: None,
         };
@@ -453,6 +465,7 @@ mod tests {
             ],
             offloaded: vec![],
             offloaded_archive: None,
+            published: vec![],
             branches: vec![],
             active_branch: None,
         };
@@ -496,6 +509,7 @@ mod tests {
             }],
             offloaded: vec!["old".into()],
             offloaded_archive: Some("2025-11".into()),
+            published: vec![],
             branches: vec![],
             active_branch: None,
         };
@@ -512,12 +526,40 @@ mod tests {
     }
 
     #[test]
+    fn published_commits_are_marked_veroeffentlicht_others_not() {
+        // Two Stände on the shared line, one local-only Stand that never reached the server (E47).
+        let snap = RepoSnapshot {
+            commits: vec![
+                commit("a", "2026-05-30T09:00:00Z", "init"),
+                commit("b", "2026-05-30T10:00:00Z", "auto: x, 2026-05-30T10:00:00Z"),
+                commit("local", "2026-05-30T11:00:00Z", "auto: y, 2026-05-30T11:00:00Z"),
+            ],
+            milestones: vec![],
+            offloaded: vec![],
+            offloaded_archive: None,
+            // Only a and b are reachable from origin/<shared>; "local" is not yet published.
+            published: vec!["a".into(), "b".into()],
+            branches: vec![],
+            active_branch: None,
+        };
+        let g = project_graph(&snap);
+        let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+        assert!(node("a").veroeffentlicht, "a is on the shared line");
+        assert!(node("b").veroeffentlicht, "b is on the shared line");
+        assert!(
+            !node("local").veroeffentlicht,
+            "a local-only Stand is not veröffentlicht until it reaches the shared line"
+        );
+    }
+
+    #[test]
     fn empty_repo_projects_to_an_empty_tree() {
         let snap = RepoSnapshot {
             commits: vec![],
             milestones: vec![],
             offloaded: vec![],
             offloaded_archive: None,
+            published: vec![],
             branches: vec![],
             active_branch: None,
         };
@@ -543,6 +585,7 @@ mod tests {
             milestones: vec![],
             offloaded: vec![],
             offloaded_archive: None,
+            published: vec![],
             branches: vec![
                 BranchFact { name: "main".into(), tip: "c".into() },
                 BranchFact { name: "gehaeuse-v2".into(), tip: "e".into() },
@@ -590,6 +633,7 @@ mod tests {
             milestones: vec![],
             offloaded: vec![],
             offloaded_archive: None,
+            published: vec![],
             branches: vec![
                 BranchFact { name: "main".into(), tip: "c".into() },
                 BranchFact { name: "gehaeuse-v2".into(), tip: "e".into() },

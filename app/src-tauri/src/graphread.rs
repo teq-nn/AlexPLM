@@ -22,8 +22,9 @@ use std::time::SystemTime;
 pub const VERSION_NOTES: &str = "VERSION_NOTES.md";
 
 /// Prefix of the durable version tag we write when promoting a Stand. Internal — the user
-/// only ever sees the version label, never the tag mechanism.
-const TAG_PREFIX: &str = "version/";
+/// only ever sees the version label, never the tag mechanism. `pub(crate)` so the push glue can
+/// carry exactly these Revision labels to the server at Freigabe (E47, #30).
+pub(crate) const TAG_PREFIX: &str = "version/";
 
 /// Prefix of the durable **write-protect marker** tag set on a Freigabe Meilenstein (E8/E42).
 /// Its presence is the git-side signal that the version tag is schreibgeschützt; un-releasing
@@ -45,14 +46,38 @@ pub fn read_snapshot(root: &Path) -> std::io::Result<RepoSnapshot> {
     let milestones = read_milestones(root, &commits)?;
     let branches = read_branches(root)?;
     let active_branch = read_active_branch(root)?;
+    let published = read_published(root)?;
     Ok(RepoSnapshot {
         commits,
         milestones,
         offloaded: Vec::new(),
         offloaded_archive: None,
+        published,
         branches,
         active_branch,
     })
+}
+
+/// Commit ids on the **published** (shared) line: every Stand reachable from the remote-tracking
+/// `origin/<shared>` ref (E47, #30). A successful Freigabe-Push — or a fetch of a colleague's
+/// publish — advances that ref, so this is exactly what *this machine knows* has reached the shared
+/// stand. Empty before the first publish: the ref does not exist yet, so nothing reads as
+/// veröffentlicht. Best-effort — any git failure (no remote, detached HEAD, fresh repo) yields none
+/// rather than erroring, so the tree still renders for an unpublished product.
+fn read_published(root: &Path) -> std::io::Result<Vec<String>> {
+    let branch = crate::pushglue::current_branch(root)?;
+    let shared = crate::pushglue::shared_branch(root, &branch);
+    let tracking = format!("refs/remotes/{}/{}", crate::setup::REMOTE_NAME, shared);
+    let out = git(root, &["rev-list", &tracking])?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
 }
 
 /// Read every Stand **across all lines** (Zweige), not just the active one — so a Zweig
@@ -251,7 +276,7 @@ pub fn promote_to_milestone(
     }
     if notes.trim().is_empty() {
         // VERSION_NOTES.md is the only place human text lives; a Meilenstein must carry it.
-        return Err(std::io::Error::other("Meilenstein braucht einen Text"));
+        return Err(std::io::Error::other("Revision braucht einen Text"));
     }
 
     // Write-protect (E8): a Freigabe tag is schreibgeschützt — promoting must not silently
@@ -259,7 +284,7 @@ pub fn promote_to_milestone(
     // (toggle back to Prototyp), which is one handle away (E22).
     if read_art(root, version).is_write_protected() && tag_exists(root, version)? {
         return Err(std::io::Error::other(format!(
-            "Meilenstein {version} ist freigegeben und schreibgeschützt — erst zurückschalten"
+            "Revision {version} ist freigegeben und schreibgeschützt — erst zurückschalten"
         )));
     }
 
@@ -303,7 +328,7 @@ pub fn toggle_milestone_freigabe(root: &Path, version: &str) -> std::io::Result<
     }
     if !tag_exists(root, version)? {
         return Err(std::io::Error::other(format!(
-            "Kein Meilenstein {version}"
+            "Keine Revision {version}"
         )));
     }
 

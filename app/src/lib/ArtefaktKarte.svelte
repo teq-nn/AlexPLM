@@ -149,7 +149,7 @@
         {/if}
         {#if projektion.stale}
           <span class="dot" aria-hidden="true"></span>
-          <span class="word stale" title="Quelle neuer als die Ableitung — am Meilenstein prüfen">
+          <span class="word stale" title="Quelle neuer als die Ableitung — bei der Revision prüfen">
             veraltet?
           </span>
         {/if}

@@ -55,6 +55,10 @@ export interface StandNode {
   has_notes: boolean;
   /** Whether this node's binary content was offloaded to a cold archive (E36). */
   offloaded: boolean;
+  /** Whether this Stand reached the shared line — on `origin/<shared>` as far as this machine
+   *  knows (E47, #30). The Versionsbaum marks it „veröffentlicht". Distinct from the Freigabe-Art:
+   *  a Prototyp Stand on the published line is veröffentlicht, not freigegeben. */
+  veroeffentlicht: boolean;
   /** Bahn (lane) this Stand sits on: 0 is the active trunk, each diverging Zweig its own
    *  positive index. A single linear history is all lane 0. (Issue #28) */
   lane: number;

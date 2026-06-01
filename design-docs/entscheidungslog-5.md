@@ -94,6 +94,43 @@ live abgeleitet.
 
 ---
 
+## E47 — „Meilenstein" → „Revision"; Veröffentlichung als eigener, sichtbarer Zustand (#30)
+**Entscheidung:** Drei bisher unter „Meilenstein" verklumpte Dinge werden sprachlich getrennt:
+- **Stand** — stiller, namenloser Auto-Commit (unverändert, E39).
+- **Revision** — der bewusst benannte Punkt + Notiz auf einem Stand (`Rev A`, `v0.4`), technisch
+  ein **Tag**. Ersetzt das Wort **„Meilenstein"** für das *heutige* Konzept. Trägt weiterhin die
+  **Art** Prototyp/Freigabe (E42).
+- **Variante / abzweigen** — eine echte zweite Linie (Branch). Bleibt **orthogonal** zur Revision:
+  eine Revision ist ein *benannter Punkt auf einer Linie*, **kein** Zweig. Promoten verzweigt nicht.
+
+Der Begriff **„Meilenstein"** wird **freigeräumt** und für die *Zukunfts­ziele* reserviert (künftige
+Forgejo-Meilensteine als in der Zukunft liegende Baumknoten — eigenes Issue, hier nicht gebaut).
+
+**Veröffentlichung als eigener Zustand:** Der stille Rhythmus sichert nur ins **private** Backup
+(`refs/personal/...`, „gesichert"). Eine Revision erreicht die **geteilte** Linie **ausschließlich**
+über **`freigeben`** — und ab jetzt **wandert dabei das Label (Tag) mit** (vorher blieb der Tag rein
+lokal liegen; `publish_branch` schob nur die Branch-Ref). Der Server-Zustand pro Stand heißt
+**„veröffentlicht"** = der Stand ist Vorfahr von `origin/<shared>`. Bewusst **getrennt** vom Wort
+**„Freigabe/freigegeben"**, das allein die schreibgeschützte Revisions-**Art** (E42) bezeichnet —
+sonst kollidiert ein Prototyp-Stand, der auf der geteilten Linie mitfährt, begrifflich mit der Art.
+
+**Sichtbarkeit:** Pro Knoten im Versionsbaum ein binäres **„veröffentlicht"**-Abzeichen (ja/nein).
+„gesichert" bleibt der **flüchtige** Sicherungsstatus-Readout, **nicht** pro Knoten. „veröffentlicht"
+ist Eigenschaft des **Stands** (Ort auf der geteilten Linie), nicht der Revisions-Art — ein
+Prototyp-Stand auf `main` zeigt also auch „veröffentlicht".
+
+**Warum:** Das alte „Meilenstein" machte drei Jobs (Name, Zustand, Linie) und kollidierte mit der
+intuitiven Erwartung „Meilenstein = Branch" und mit der Wortbedeutung (Meilenstein = Zukunftsziel).
+#30 verlangte genau diese Klärung plus einen sichtbaren Beleg, *ob* etwas den Server erreicht hat —
+den es bisher nicht gab (Tag wurde nie gepusht).
+**Umfang jetzt:** User-sichtbare Strings + Glossar + dieser Eintrag; der Tag-mitschieben-Fix und das
+`veroeffentlicht`-Prädikat in der Graph-Projektion. **Rust-Identifier** (`promote_to_milestone`,
+`Checkpoint::Meilenstein`, `TAG_PREFIX`) und die Forgejo-Zukunftsmeilensteine bleiben **Folge-Issues**.
+**Verfeinert:** E42 (Art bleibt, nur Träger heißt jetzt Revision); ergänzt E35/E41 um den sichtbaren
+Veröffentlichungs-Zustand.
+
+---
+
 ## Offene / verschobene Punkte (Stand 6. Sitzung)
 - **Glossar/PRD-Kaskade aus E43:** Glossar-Einträge „Stand vs. Commit", „Wohin vs. Wie",
   „Git-Client-Grenze" und die git-Versteck-Klauseln der PRD/`ui-stilbeschreibung` müssen auf die neue

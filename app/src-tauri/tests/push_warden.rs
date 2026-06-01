@@ -9,7 +9,9 @@
 //! the shared `main`. `git lfs` is not assumed installed, so the lock-bearing carry-outs are
 //! verified at the snapshot/decision boundary rather than by driving a real LFS lock.
 
-use app_lib::pushglue::{personal_backup_ref, run_checkpoint, sicherungs_push, SHARED_BRANCH};
+use app_lib::pushglue::{
+    personal_backup_ref, publish_branch, run_checkpoint, sicherungs_push, SHARED_BRANCH,
+};
 use app_lib::setup::is_published;
 use app_lib::warden::{
     decide, Checkpoint, Cleanliness, LockState, PathKind, WardenAction, WardenSnapshot,
@@ -271,6 +273,69 @@ fn unpublished_product_refuses_checkpoint_and_pushes_nothing() {
     assert!(
         !git_ok(&bare, &["rev-parse", "--verify", &personal_backup_ref("anna", "main")]),
         "the gate must run no networked git on an unpublished product"
+    );
+}
+
+// --------------------------------------------------------------------------------------------
+// Issue #30 / E47 — a Freigabe carries the Revision label (the `version/*` tag) to the server, so
+// a published Revision is visible server-side. Before the fix only the branch ref travelled and the
+// tag stayed local. A label on an UNpublished Variante must not leak.
+// --------------------------------------------------------------------------------------------
+
+#[test]
+fn freigabe_carries_the_revision_label_and_leaves_unpublished_ones_behind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let product = tmp.path().join("product");
+    let bare = tmp.path().join("remote.git");
+    std::fs::create_dir_all(&product).unwrap();
+    seed_product_with_remote(&product, &bare);
+
+    // A finished Stand on the shared line, named as a Revision (a lightweight `version/*` tag —
+    // exactly what promote_to_milestone writes).
+    std::fs::write(product.join("docs.md"), b"# done").unwrap();
+    git(&product, &["add", "-A"]);
+    git(&product, &["commit", "-m", "auto: docs.md, t"]);
+    let published = git_out(&product, &["rev-parse", "main"]);
+    git(&product, &["tag", "version/v0.4"]);
+
+    // A Revision on a separate Variante that is NOT being published — its label must stay behind.
+    git(&product, &["checkout", "-b", "variante"]);
+    std::fs::write(product.join("exp.md"), b"# experiment").unwrap();
+    git(&product, &["add", "-A"]);
+    git(&product, &["commit", "-m", "auto: exp.md, t"]);
+    git(&product, &["tag", "version/exp"]);
+    git(&product, &["checkout", "main"]);
+
+    publish_branch(&product).unwrap();
+
+    // The published line's label reached the server and points at the published Stand.
+    assert!(
+        git_ok(&bare, &["rev-parse", "--verify", "refs/tags/version/v0.4"]),
+        "the published Revision's label must travel to the server"
+    );
+    assert_eq!(
+        git_out(&bare, &["rev-parse", "refs/tags/version/v0.4"]),
+        published,
+        "the label on the server points at the published Stand"
+    );
+
+    // The unpublished Variante's label did NOT leak (its Stand is not on the shared line).
+    assert!(
+        !git_ok(&bare, &["rev-parse", "--verify", "refs/tags/version/exp"]),
+        "a label on an unpublished Variante must not reach the server"
+    );
+
+    // And the Versionsbaum reads the published Stand as „veröffentlicht", the Variante's Stand not.
+    let graph = app_lib::graphread::read_graph(&product).unwrap();
+    let node = |id: &str| graph.nodes.iter().find(|n| n.id == id).expect("node in tree");
+    let variante_tip = git_out(&product, &["rev-parse", "variante"]);
+    assert!(
+        node(&published).veroeffentlicht,
+        "the published Stand reads as veröffentlicht"
+    );
+    assert!(
+        !node(&variante_tip).veroeffentlicht,
+        "an unpublished Variante's Stand is not veröffentlicht"
     );
 }
 

@@ -149,11 +149,11 @@
       class:on={filter.nur_meilensteine}
       role="switch"
       aria-checked={filter.nur_meilensteine}
-      title="Nur Meilensteine zeigen"
+      title="Nur Revisionen zeigen"
       onclick={() => (filter = { ...filter, nur_meilensteine: !filter.nur_meilensteine })}
     >
       <span class="t-led" aria-hidden="true"></span>
-      <span class="t-text label">nur Meilensteine</span>
+      <span class="t-text label">nur Revisionen</span>
     </button>
   </div>
 

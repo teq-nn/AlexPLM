@@ -47,7 +47,7 @@
             </span>
           {/if}
         {:else}
-          <span class="version none">— kein Meilenstein —</span>
+          <span class="version none">— keine Revision —</span>
         {/if}
       {:else}
         <span class="idle">kein Produkt geöffnet</span>

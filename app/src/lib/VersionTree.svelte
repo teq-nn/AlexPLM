@@ -56,7 +56,7 @@
       return;
     }
     if (!n) {
-      promoteError = "Meilenstein braucht einen Text";
+      promoteError = "Revision braucht einen Text";
       return;
     }
     busy = true;
@@ -282,10 +282,10 @@
                 class:offloaded={n.offloaded}
                 class:active={isActive}
                 style={foreign ? `--c: ${foreignTint(n.lane)};` : ""}
-                title={verbMode ? "Verben: öffnen · abzweigen · zurückwerfen" : "Zum Meilenstein machen"}
+                title={verbMode ? "Verben: öffnen · abzweigen · zurückwerfen" : "Zur Revision machen"}
                 aria-label={isMs
-                  ? `Meilenstein ${n.milestone}, ${day(n.timestamp)}${verbMode ? " — Verben öffnen" : ""}`
-                  : `Commit ${leaf(n.path)}, ${day(n.timestamp)} — ${verbMode ? "Verben öffnen" : "zum Meilenstein machen"}`}
+                  ? `Revision ${n.milestone}, ${day(n.timestamp)}${verbMode ? " — Verben öffnen" : ""}`
+                  : `Commit ${leaf(n.path)}, ${day(n.timestamp)} — ${verbMode ? "Verben öffnen" : "zur Revision machen"}`}
                 onclick={(e) => activateNode(n, e)}
                 onkeydown={(e) => onNodeKey(n, e)}
                 onmouseenter={(e) => showTip(n, e)}
@@ -313,7 +313,7 @@
                           <span class="lock" aria-hidden="true"></span>
                         </span>
                       {/if}
-                      <span class="version mono" title="Meilenstein {n.milestone}"
+                      <span class="version mono" title="Revision {n.milestone}"
                         >{n.milestone}</span
                       >
                     </span>
@@ -326,10 +326,19 @@
                     <span class="d">{day(n.timestamp)}</span>
                   </span>
 
-                  {#if n.offloaded}
-                    <span class="tag offloaded-tag label">
-                      Inhalt ausgelagert{#if graph.offloaded_archive}
-                        · {graph.offloaded_archive}{/if}
+                  {#if n.veroeffentlicht || n.offloaded}
+                    <span class="marks">
+                      {#if n.veroeffentlicht}
+                        <span class="tag veroeff-tag label" title="auf der geteilten Linie">
+                          <span class="uplink" aria-hidden="true"></span>veröffentlicht
+                        </span>
+                      {/if}
+                      {#if n.offloaded}
+                        <span class="tag offloaded-tag label">
+                          Inhalt ausgelagert{#if graph.offloaded_archive}
+                            · {graph.offloaded_archive}{/if}
+                        </span>
+                      {/if}
                     </span>
                   {/if}
                 </div>
@@ -374,7 +383,7 @@
         >
       </div>
       <div class="tip-row mono">
-        <span class="tip-key label">Meilenstein</span>
+        <span class="tip-key label">Revision</span>
         <span class="tip-val">{tip.node.has_notes ? "mit Notiz" : "ohne Notiz"}</span>
       </div>
     {/if}
@@ -382,6 +391,12 @@
       <div class="tip-row mono">
         <span class="tip-key label">Inhalt</span>
         <span class="tip-val">ausgelagert</span>
+      </div>
+    {/if}
+    {#if tip.node.veroeffentlicht}
+      <div class="tip-row mono">
+        <span class="tip-key label">Linie</span>
+        <span class="tip-val veroeff">veröffentlicht</span>
       </div>
     {/if}
   </div>
@@ -401,11 +416,11 @@
       class="dialog"
       role="dialog"
       aria-modal="true"
-      aria-label="Meilenstein anlegen"
+      aria-label="Revision anlegen"
       tabindex="-1"
     >
       <header class="dialog-head">
-        <span class="label">Meilenstein</span>
+        <span class="label">Revision</span>
         <span class="dialog-stand mono">{leaf(promoting.path)} · {clock(promoting.timestamp)}</span>
       </header>
 
@@ -431,7 +446,7 @@
             disabled={busy}
             title={freigabe
               ? "Freigabe zurücknehmen (Un-Release)"
-              : "Diesen Meilenstein freigeben"}
+              : "Diese Revision freigeben"}
           >
             {busy ? "…" : freigabe ? "Zurückschalten" : "Freigeben"}
           </button>
@@ -790,6 +805,46 @@
   }
   .offloaded-tag {
     color: #6b6864;
+  }
+
+  /* Trailing state markers on the sub-line, grouped right so the time stays left and the badges
+     sit together (instead of being spread by the row's space-between). */
+  .marks {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  /* „veröffentlicht" — this Stand reached the shared line (E47, #30). Tied to the existing
+     free/published green (--led-free), but desaturated toward warm grey so it stays a calm, settled
+     readout next to the timestamp — never the warm Revision chip, never the foreign blue, and never
+     orange (reserved for loud exceptions). Shown only when published; absence stays silent. */
+  .veroeff-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: color-mix(in srgb, var(--led-free) 55%, #8f8c85);
+  }
+  /* A tiny lit uplink dot — the instrument-panel cue that the Stand has left the machine. */
+  .veroeff-tag .uplink {
+    flex: none;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--led-free);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--led-free) 28%, transparent),
+      0 0 4px color-mix(in srgb, var(--led-free) 50%, transparent);
+  }
+  /* Even on a foreign (Variante) line the publication readout keeps its green — being on the shared
+     line is orthogonal to which line the Stand sits on, so the blue tint must not override it. */
+  .row:has(.led.foreign) .veroeff-tag {
+    color: color-mix(in srgb, var(--led-free) 55%, #8f8c85);
+  }
+  /* The detail-card echo: the value picks up the same calm green so the tip and the row agree. */
+  .tip-val.veroeff {
+    color: color-mix(in srgb, var(--led-free) 62%, #cfccc5);
   }
 
   /* A foreign Stand tints its path + version in the line's blue, so the body reads as part
