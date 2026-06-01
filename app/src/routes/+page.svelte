@@ -1194,6 +1194,21 @@
     >
       <span class="label">Suche über Produkte</span>
     </button>
+
+    <!-- Diagnose toggle (Issue #71, ex-#54-Folge): moved OUT of the productive work toolbar to
+         this unobtrusive corner of the app-level entry bar. A tiny recessed instrument lamp —
+         no text, just an LED — that opens the git/sync log so a silent push can be inspected.
+         Stays out of the daily rhythm; the work actions are reserved for real features. -->
+    <button
+      class="diagnose-lamp"
+      class:on={diagnoseOpen}
+      aria-pressed={diagnoseOpen}
+      title="Diagnose: Sync- & Sicherungs-Protokoll ein-/ausblenden"
+      onclick={() => (diagnoseOpen = !diagnoseOpen)}
+    >
+      <span class="dot" class:fresh={diagnoseOpen}></span>
+      <span class="label dl-text">Diagnose</span>
+    </button>
   </div>
 
   <div class="stage">
@@ -1227,18 +1242,6 @@
 
         <!-- The Lock Warden's two push types in the tool's own vocabulary (Issue #9). -->
         <Sicherungsstatus action={wardenAction} />
-
-        <!-- Diagnose toggle (Issue #54-Folge): a recessed key that opens the git/sync log so a
-             silent push can be inspected. Stays out of the rhythm — closed by default. -->
-        <button
-          class="readout mono diagnose"
-          class:on={diagnoseOpen}
-          title="Diagnose: Sync- & Sicherungs-Protokoll ein-/ausblenden"
-          onclick={() => (diagnoseOpen = !diagnoseOpen)}
-        >
-          <span class="dot" class:fresh={diagnoseOpen}></span>
-          <span class="readout-text">Diagnose</span>
-        </button>
 
         {#if setup}
           <!-- One-time ceremony trigger / settled readout. Git-near wording lives ONLY here. -->
@@ -1590,6 +1593,76 @@
     flex: none;
   }
 
+  /* Diagnose-Lämpchen (Issue #71): the diagnostic toggle, exiled from the productive work
+     toolbar to this quiet far-right corner. A tiny seated instrument lamp — a single recessed
+     LED in the chassis, with a faint mono caption that only surfaces on hover/open. Deliberately
+     the smallest, dimmest control in the bar so it never competes with real work actions. */
+  .diagnose-lamp {
+    appearance: none;
+    cursor: pointer;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    padding: 4px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-muted);
+    opacity: 0.55;
+    transition:
+      opacity var(--dur) var(--ease),
+      gap var(--dur) var(--ease),
+      background var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  /* The lamp itself: a small recessed LED, dark and unlit while diagnostics are closed. */
+  .diagnose-lamp .dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--led-off);
+    box-shadow: inset 0 0 0 1px rgba(28, 26, 25, 0.18);
+    transition:
+      background var(--dur) var(--ease),
+      box-shadow var(--dur) var(--ease);
+  }
+  /* The mono caption is collapsed by default; it reveals on hover/open so the lamp stays a lamp. */
+  .diagnose-lamp .dl-text {
+    max-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--ink-muted);
+    transition:
+      max-width var(--dur) var(--ease),
+      margin var(--dur) var(--ease);
+  }
+  .diagnose-lamp:hover,
+  .diagnose-lamp:focus-visible,
+  .diagnose-lamp.on {
+    opacity: 1;
+    gap: 6px;
+  }
+  .diagnose-lamp:hover .dl-text,
+  .diagnose-lamp:focus-visible .dl-text,
+  .diagnose-lamp.on .dl-text {
+    max-width: 68px;
+  }
+  .diagnose-lamp:focus-visible {
+    outline: none;
+    border-color: var(--ink-muted);
+  }
+  /* Open: the LED warms to the live "working" tone so the corner quietly shows the log is up. */
+  .diagnose-lamp.on .dot.fresh {
+    background: var(--led-working);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+      0 0 5px rgba(201, 198, 191, 0.4);
+  }
+
   /* Raum-Schalter (Issue #55): a seated two-position instrument switch. The two rooms are equal;
      the active one is pressed-in (sunken) and lit, the other a calm raised key. Strictly grey —
      routine navigation, never the orange exception. Centred between the entry keys and search. */
@@ -1788,12 +1861,6 @@
     box-shadow:
       inset 0 1px 2px rgba(0, 0, 0, 0.9),
       inset 0 0 0 1px rgba(255, 255, 255, 0.07);
-  }
-  /* Diagnose toggle in its open (pressed) state — a recessed, lit readout. */
-  button.readout.diagnose.on {
-    box-shadow:
-      inset 0 1px 3px rgba(0, 0, 0, 0.9),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   }
   /* The "Teilen einrichten" / "Veröffentlichen" key: dark, deliberate — a one-time act. */
   .key.share {
