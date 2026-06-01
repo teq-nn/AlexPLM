@@ -381,8 +381,10 @@ fn keystore_io_error(e: crate::credentials::CredentialError) -> Error {
     }
 }
 
-/// The URL configured for [`REMOTE_NAME`], or `None` if no such remote exists.
-fn remote_get_url(root: &Path) -> Option<String> {
+/// The URL configured for [`REMOTE_NAME`], or `None` if no such remote exists. Public so the lock
+/// glue can derive the Forgejo account name from it (Issue #72) instead of inventing its own remote
+/// read — there is one source of the remote URL.
+pub fn remote_get_url(root: &Path) -> Option<String> {
     let out = crate::gitrunner::command(root)
         .args(["remote", "get-url", REMOTE_NAME])
         .output()
