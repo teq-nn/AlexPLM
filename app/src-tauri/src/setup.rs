@@ -425,6 +425,21 @@ pub fn remote_get_url(root: &Path) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
+/// Whether the product is **published** — its current branch has an upstream tracking ref. This is
+/// our proxy for "a repository for this product exists on the server": the ceremony's first publish
+/// ([`publish_product`]) creates the server repo *and* sets this upstream, and a colleague's `git
+/// clone` sets it too. The networked daily rhythm — the silent sync's `fetch`, the Status-Reader's
+/// `git lfs locks`, the Lock Warden's Sicherungs-Push — is meaningless before this point: there is
+/// no server-side repo yet, so a `fetch` 404s, a push answers „Push to create is not enabled", and
+/// (worst) `git lfs locks` only loops on the **401** Forgejo's LFS endpoint returns for an absent
+/// repo (it authenticates before checking existence), wedging the bounded git call for its full
+/// timeout on every status tick. Gating the rhythm on this keeps an unpublished product silent
+/// (E41) until it has a server to talk to. Reuses the same upstream check [`read_setup`] reads for
+/// `has_published`, so "published" means one thing across the app.
+pub fn is_published(root: &Path) -> bool {
+    branch_has_upstream(root)
+}
+
 /// Whether the current branch has an upstream / remote-tracking ref — our proxy for "published".
 fn branch_has_upstream(root: &Path) -> bool {
     crate::gitrunner::command(root)

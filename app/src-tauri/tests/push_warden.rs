@@ -10,6 +10,7 @@
 //! verified at the snapshot/decision boundary rather than by driving a real LFS lock.
 
 use app_lib::pushglue::{personal_backup_ref, run_checkpoint, sicherungs_push, SHARED_BRANCH};
+use app_lib::setup::is_published;
 use app_lib::warden::{
     decide, Checkpoint, Cleanliness, LockState, PathKind, WardenAction, WardenSnapshot,
 };
@@ -192,6 +193,84 @@ fn clean_unlocked_path_refuses_and_touches_nothing() {
     assert!(
         !git_ok(&bare, &["rev-parse", "--verify", &personal_backup_ref("anna", "main")]),
         "Refuse creates no backup ref"
+    );
+}
+
+// --------------------------------------------------------------------------------------------
+// Issue #83 — the daily rhythm is gated on "published". A product whose server-repo does not yet
+// exist (remote configured, but the first publish never ran, so there is no upstream) must NOT run
+// any networked git: against an absent Forgejo repo a Sicherungs-Push answers „Push to create is
+// not enabled" and `git lfs locks` loops on the LFS endpoint's 401 until the bounded call times
+// out — on every status tick. The Warden refuses silently until published instead.
+// --------------------------------------------------------------------------------------------
+
+/// A product repo with one commit on `main` and a remote configured, but **never published** — no
+/// `push --set-upstream`, so the branch has no upstream and the bare "remote" stays empty (exactly
+/// the state after the connect step of the ceremony, before "Veröffentlichen"). Mirrors a real
+/// Forgejo repo that does not exist yet server-side.
+fn seed_product_remote_but_unpublished(product: &Path, bare: &Path) {
+    let out = Command::new("git").args(["init", "--bare", "-b", "main"]).arg(bare).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    git(product, &["init", "-b", "main"]);
+    git(product, &["config", "user.name", "anna"]);
+    git(product, &["config", "user.email", "anna@example.com"]);
+    std::fs::write(product.join("README.md"), b"produkt").unwrap();
+    git(product, &["add", "-A"]);
+    git(product, &["commit", "-m", "init"]);
+    let url = format!("file://{}", bare.display());
+    git(product, &["remote", "add", "origin", &url]);
+    // NOTE: deliberately NO `push --set-upstream` — this product is connected but not published.
+}
+
+/// `is_published` is false while the product is only connected (remote set, no upstream) and flips
+/// to true once the first publish sets the upstream — the predicate the rhythm gate keys on.
+#[test]
+fn is_published_is_false_until_the_first_publish_sets_an_upstream() {
+    let tmp = tempfile::tempdir().unwrap();
+    let product = tmp.path().join("product");
+    let bare = tmp.path().join("remote.git");
+    std::fs::create_dir_all(&product).unwrap();
+    seed_product_remote_but_unpublished(&product, &bare);
+
+    assert!(!is_published(&product), "connected-but-unpublished must read as not published");
+
+    // The first publish (the ceremony's push --set-upstream) seeds the remote and sets the upstream.
+    git(&product, &["push", "--set-upstream", "origin", "main"]);
+    assert!(is_published(&product), "after the first publish the product is published");
+}
+
+/// The gate's observable effect: on a connected-but-unpublished product, a checkpoint over a dirty
+/// path must `Refuse` WITHOUT running any networked git — no Sicherungs-Push reaches the (absent)
+/// server-repo, so no personal backup ref appears. Without the gate the Warden would decide a
+/// Sicherungs-Push here; the empty bare remote would even accept it. The gate keeps the rhythm quiet.
+#[test]
+fn unpublished_product_refuses_checkpoint_and_pushes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let product = tmp.path().join("product");
+    let bare = tmp.path().join("remote.git");
+    std::fs::create_dir_all(&product).unwrap();
+    seed_product_remote_but_unpublished(&product, &bare);
+
+    // A dirty, committed-then-edited text path — the very state that decides a Sicherungs-Push once
+    // published (see `sicherungs_push_lands_in_personal_namespace_not_shared_main`).
+    std::fs::write(product.join("firmware.c"), b"int main(){}").unwrap();
+    git(&product, &["add", "-A"]);
+    git(&product, &["commit", "-m", "auto: firmware.c, t"]);
+    std::fs::write(product.join("firmware.c"), b"int main(){return 1;}").unwrap();
+
+    let action = run_checkpoint(&product, "firmware.c", Checkpoint::Laufend).unwrap();
+    assert_eq!(
+        action,
+        WardenAction::Refuse,
+        "an unpublished product must Refuse the checkpoint, never attempt a push"
+    );
+
+    // CRUCIAL: nothing reached the remote — no personal backup ref was created, proving no
+    // networked git ran (the gate short-circuited before the snapshot's `git lfs locks` and push).
+    assert!(
+        !git_ok(&bare, &["rev-parse", "--verify", &personal_backup_ref("anna", "main")]),
+        "the gate must run no networked git on an unpublished product"
     );
 }
 

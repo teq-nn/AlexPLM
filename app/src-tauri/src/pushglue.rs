@@ -133,6 +133,17 @@ pub fn run_checkpoint(
     rel_path: &str,
     checkpoint: Checkpoint,
 ) -> std::io::Result<WardenAction> {
+    // Before the product is published there is no server-side repo: a Sicherungs/Freigabe-Push would
+    // answer „Push to create is not enabled", and the snapshot's `git lfs locks` only loops on the
+    // absent repo's 401 (wedging the bounded call for its full timeout). The Warden refuses silently
+    // until published — the daily rhythm stays quiet (E41), no networked git runs at all.
+    if !crate::setup::is_published(root) {
+        crate::gitlog::record(
+            "warden",
+            format!("Checkpoint {rel_path:?} [{checkpoint:?}] -> Refuse (nicht veröffentlicht: kein Server-Repo)"),
+        );
+        return Ok(WardenAction::Refuse);
+    }
     let snap = snapshot_for(root, rel_path, checkpoint)?;
     let action = decide(snap);
     // Diagnose (Issue #54-Folge): GENAU hier wird sichtbar, ob überhaupt gepusht werden soll. Ein
