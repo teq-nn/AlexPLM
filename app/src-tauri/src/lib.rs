@@ -64,7 +64,10 @@ use konto::{
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
-use registry::{add_registered, read_registry, registry_path, remove_registered, RegisteredProduct};
+use registry::{
+    add_registered, read_registry, registry_path, relink_registered, remove_registered,
+    RegisteredProduct,
+};
 use search::{fan_out, SearchResult};
 use setup::{configure_remote, publish_product, read_setup, PublishOutcome, SetupReport};
 use stackstore::{create_product_stack, extend_product_stack, read_stack, ProduktStack};
@@ -958,6 +961,43 @@ fn unregister_product(
     remove_registered(&file, &path).map_err(|e| e.to_string())
 }
 
+/// Validate that `path` is a **plausible product folder** before re-linking to it (Issue #89,
+/// PRD-US5). The check is deliberately gentle but real: the folder must exist and be reachable
+/// (we probe with `read_dir`, like the search fan-out's offline probe), and it should look like a
+/// product — a `_plm` metadata store or a `.git` repo present. A path that exists but carries
+/// neither marker is rejected so a re-link can never point at an arbitrary, non-product folder.
+/// Returns a German error string describing the first failed condition. Pure-ish (reads disk
+/// only); no mutation.
+fn check_plausible_product(path: &Path) -> Result<(), String> {
+    if std::fs::read_dir(path).is_err() {
+        return Err("Ordner nicht erreichbar".to_string());
+    }
+    let has_plm = path.join("_plm").is_dir();
+    let has_git = path.join(".git").exists();
+    if !has_plm && !has_git {
+        return Err("Kein Produkt erkennbar (weder _plm noch Git im Ordner)".to_string());
+    }
+    Ok(())
+}
+
+/// Re-link a moved product (Issue #89, PRD-US5): a product whose folder was moved/renamed outside
+/// the app points its registry entry at nothing and surfaces as offline. Rather than orphaning it,
+/// the user re-points the entry to the new folder. The new path is validated as a plausible
+/// product first ([`check_plausible_product`]) so there is no dead re-link; then the registry entry
+/// is **replaced** (not duplicated) via the pure [`relink_path`](registry::relink_path) core — same
+/// normalize/de-dup as registering, so re-linking onto an already-registered product merges instead
+/// of duplicating. The display name is re-derived from the new path. Returns the refreshed list.
+#[tauri::command]
+fn relink_product(
+    app: tauri::AppHandle,
+    old_path: String,
+    new_path: String,
+) -> Result<Vec<RegisteredProduct>, String> {
+    let file = resolve_registry_file(&app)?;
+    check_plausible_product(Path::new(new_path.trim()))?;
+    relink_registered(&file, &old_path, &new_path).map_err(|e| e.to_string())
+}
+
 /// Resolve the app-level Konto-Server-Adresse file under Tauri's app config dir (ADR 0004, Issue
 /// #90). Lives at app level — NOT inside any product — because the Konto is ONE app-wide server
 /// identity, reused for all products (next to the Produkt-Registry, #45). A failure to resolve the
@@ -1331,6 +1371,7 @@ pub fn run() {
             list_products,
             register_product,
             unregister_product,
+            relink_product,
             read_konto,
             save_konto,
             clear_konto,

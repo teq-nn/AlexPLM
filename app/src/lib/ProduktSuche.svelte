@@ -75,6 +75,32 @@
     }
   }
 
+  // Neu verknüpfen (Issue #89, PRD-US5): a moved product (folder renamed/moved outside the app)
+  // points its registry entry at nothing and shows up offline. Rather than orphaning it, re-point
+  // the entry to the chosen folder — the backend validates it is a plausible product and REPLACES
+  // the old entry (never a duplicate). The display name is re-derived from the new path.
+  async function relinkProduct(oldPath: string, productName: string) {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: `„${productName}" neu verknüpfen — neuen Ordner wählen`,
+    });
+    if (typeof selected !== "string") return;
+    try {
+      products = await invoke<RegisteredProduct[]>("relink_product", {
+        oldPath,
+        newPath: selected,
+      });
+      error = null;
+      // A re-pointed entry can change results — re-run any active query so the freshly
+      // reachable product drops out of the offline tally and into the hits.
+      if (query.trim()) void runSearch();
+    } catch (e) {
+      // A dead re-link (folder unreachable / not a plausible product) is reported, never silent.
+      error = String(e);
+    }
+  }
+
   async function removeProduct(path: string) {
     try {
       products = await invoke<RegisteredProduct[]>("unregister_product", {
@@ -177,8 +203,18 @@
                 </div>
                 <div class="offline-list mono">
                   {#each result.offline as off (off.product_path)}
-                    <div class="offline-item" title={off.product_path}>
-                      {off.product_name} — {off.reason}
+                    <div class="offline-item">
+                      <span class="offline-text" title={off.product_path}>
+                        {off.product_name} — {off.reason}
+                      </span>
+                      <button
+                        class="relink"
+                        onclick={() =>
+                          relinkProduct(off.product_path, off.product_name)}
+                        title={`Registry-Eintrag auf den verschobenen Ordner neu verknüpfen (${off.product_path})`}
+                        aria-label={`„${off.product_name}" neu verknüpfen`}
+                        >Neu verknüpfen…</button
+                      >
                     </div>
                   {/each}
                 </div>
@@ -406,11 +442,43 @@
     gap: 2px;
   }
   .offline-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .offline-text {
+    flex: 1;
+    min-width: 0;
     font-size: 10px;
     color: #8a857d;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Neu verknüpfen — the deliberate re-point key. It lives inside the rationed-orange offline
+     notice, so it wears a faint warm edge (attention context) rather than a second loud colour;
+     the hover warms it without ever shouting. */
+  .relink {
+    appearance: none;
+    cursor: pointer;
+    flex: none;
+    font-size: 10px;
+    line-height: 1;
+    padding: 5px 9px;
+    border-radius: var(--radius-sm);
+    color: #f0a48f;
+    background: rgba(240, 66, 28, 0.08);
+    border: 1px solid rgba(240, 66, 28, 0.28);
+    transition:
+      background var(--dur) var(--ease),
+      color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  .relink:hover {
+    color: var(--accent-ink);
+    background: rgba(240, 66, 28, 0.22);
+    border-color: rgba(240, 66, 28, 0.5);
   }
 
   /* A product group of hits. */

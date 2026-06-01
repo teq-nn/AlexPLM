@@ -33,7 +33,7 @@ pub struct RegisteredProduct {
 
 impl RegisteredProduct {
     /// Build an entry from a path, deriving the display name from the final path component.
-    fn from_path(path: String) -> Self {
+    pub fn from_path(path: String) -> Self {
         let name = Path::new(&path)
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -80,6 +80,31 @@ pub fn remove_path(set: Vec<RegisteredProduct>, path: &str) -> Vec<RegisteredPro
     set.into_iter().filter(|p| p.path != norm).collect()
 }
 
+/// Re-point a registry entry from `old_path` to `new_path` (Issue #89, PRD-US5): a moved product
+/// (folder renamed/moved outside the app) is **re-linked**, not orphaned. Pure: drops the old
+/// entry and adds the new path through the same [`normalize`]/de-dup path as [`add_path`], so the
+/// result can never grow a duplicate. The display name is re-derived from the new path
+/// ([`RegisteredProduct::from_path`]) — never carried over independently.
+///
+/// Modelled deliberately as remove-then-add so the invariants are exactly those of the existing
+/// pure core:
+/// - If `new_path` is empty (after normalize) it is not a product: the old entry is removed and
+///   nothing is re-added (the registry is left without that broken entry rather than re-pointed
+///   to nowhere — the command layer rejects an empty/implausible target before reaching here).
+/// - If `new_path` (normalized) is already a registered product, the merge is automatic: removing
+///   `old_path` and adding the already-present `new_path` is a no-op add, so one entry survives —
+///   no duplicate.
+/// - Re-linking a path to itself (old == new) is idempotent: the entry is removed and re-added
+///   unchanged.
+pub fn relink_path(
+    set: Vec<RegisteredProduct>,
+    old_path: &str,
+    new_path: &str,
+) -> Vec<RegisteredProduct> {
+    let without_old = remove_path(set, old_path);
+    add_path(without_old, new_path)
+}
+
 // ---- Thin file-I/O glue over the pure core --------------------------------------------------
 
 /// Read the registry from `file`. A missing/empty/corrupt file means an **empty registry** —
@@ -112,6 +137,19 @@ pub fn add_registered(file: &Path, path: &str) -> std::io::Result<Vec<Registered
 /// Unregister a product path and persist the result. No-op if absent. Returns the refreshed set.
 pub fn remove_registered(file: &Path, path: &str) -> std::io::Result<Vec<RegisteredProduct>> {
     let set = remove_path(read_registry(file), path);
+    write_registry(file, &set)?;
+    Ok(set)
+}
+
+/// Re-point a registry entry from `old_path` to `new_path` and persist (Issue #89). Replaces the
+/// old entry rather than orphaning it; never grows a duplicate (see [`relink_path`]). Returns the
+/// refreshed, sorted set.
+pub fn relink_registered(
+    file: &Path,
+    old_path: &str,
+    new_path: &str,
+) -> std::io::Result<Vec<RegisteredProduct>> {
+    let set = relink_path(read_registry(file), old_path, new_path);
     write_registry(file, &set)?;
     Ok(set)
 }
@@ -174,5 +212,76 @@ mod tests {
         // removing something absent is a no-op
         let set = remove_path(set, "/p/never");
         assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn relink_path_repoints_normalizes_dedups_and_derives_name() {
+        // A small fixture registry to relink within.
+        let base = || {
+            add_path(
+                add_path(add_path(Vec::new(), "/p/alpha"), "/p/bravo"),
+                "/p/charlie",
+            )
+        };
+
+        struct Case {
+            what: &'static str,
+            old: &'static str,
+            new: &'static str,
+            // expected paths after relink (sorted), and the expected name of the new entry (if any)
+            expect_paths: Vec<&'static str>,
+            expect_name_of: Option<(&'static str, &'static str)>, // (path, name)
+        }
+
+        let cases = vec![
+            Case {
+                what: "moved folder: old entry replaced by new path, no duplicate",
+                old: "/p/bravo",
+                new: "/home/me/Regler-V2",
+                expect_paths: vec!["/home/me/Regler-V2", "/p/alpha", "/p/charlie"],
+                expect_name_of: Some(("/home/me/Regler-V2", "Regler-V2")),
+            },
+            Case {
+                what: "new path with trailing slash normalizes (no /p/bravo/ ghost)",
+                old: "/p/bravo",
+                new: "/srv/data/Neu/",
+                expect_paths: vec!["/p/alpha", "/p/charlie", "/srv/data/Neu"],
+                expect_name_of: Some(("/srv/data/Neu", "Neu")),
+            },
+            Case {
+                what: "merge-if-duplicate: relink onto an already-registered path keeps ONE entry",
+                old: "/p/bravo",
+                new: "/p/charlie",
+                expect_paths: vec!["/p/alpha", "/p/charlie"],
+                expect_name_of: Some(("/p/charlie", "charlie")),
+            },
+            Case {
+                what: "idempotent self-relink leaves the set unchanged",
+                old: "/p/bravo",
+                new: "/p/bravo",
+                expect_paths: vec!["/p/alpha", "/p/bravo", "/p/charlie"],
+                expect_name_of: Some(("/p/bravo", "bravo")),
+            },
+            Case {
+                what: "relinking a path that is not present just adds the new one",
+                old: "/p/never",
+                new: "/p/delta",
+                expect_paths: vec!["/p/alpha", "/p/bravo", "/p/charlie", "/p/delta"],
+                expect_name_of: Some(("/p/delta", "delta")),
+            },
+        ];
+
+        for c in cases {
+            let set = relink_path(base(), c.old, c.new);
+            let paths: Vec<&str> = set.iter().map(|p| p.path.as_str()).collect();
+            assert_eq!(paths, c.expect_paths, "{}: paths", c.what);
+            // no duplicate of the relinked target ever survives
+            if let Some((path, name)) = c.expect_name_of {
+                let matches: Vec<&RegisteredProduct> =
+                    set.iter().filter(|p| p.path == path).collect();
+                assert_eq!(matches.len(), 1, "{}: exactly one entry for {path}", c.what);
+                assert_eq!(matches[0].name, name, "{}: name derived from new path", c.what);
+            }
+        }
     }
 }
