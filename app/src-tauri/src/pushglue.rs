@@ -257,6 +257,7 @@ pub fn current_branch(root: &Path) -> std::io::Result<String> {
 /// branch — which, for the normal one-branch product repo, *is* the shared branch — keeping source
 /// and target in agreement either way.
 pub fn shared_branch(root: &Path, current: &str) -> String {
+    // 1. Recorded remote HEAD (`origin/master`) — the authoritative shared branch.
     let head_ref = format!("refs/remotes/{REMOTE_NAME}/HEAD");
     let resolved = git_stdout(root, &["symbolic-ref", "--short", &head_ref])
         // `origin/master` -> `master`; tolerate the unprefixed form just in case.
@@ -265,13 +266,66 @@ pub fn shared_branch(root: &Path, current: &str) -> String {
             let name = s.strip_prefix(&prefix).unwrap_or(&s).trim().to_string();
             (!name.is_empty()).then_some(name)
         });
-    match resolved {
-        Some(name) => name,
-        // No recorded remote HEAD: publish onto the branch we are actually on, so the push lands
-        // where the user watches rather than forking a stray `main`.
-        None if !current.is_empty() && current != "HEAD" => current.to_string(),
-        None => SHARED_BRANCH.to_string(),
+    if let Some(name) = resolved {
+        return name;
     }
+    // 2. No recorded remote HEAD. The current branch is the shared branch ONLY if the remote
+    //    actually carries it (`origin/<current>` exists). A local-only Zweig the user created to
+    //    experiment (Issue #36, branch support is not built yet) has no remote counterpart —
+    //    tracking it would make every silent fetch fail with „couldn't find remote ref <branch>"
+    //    and never resolve. In that case fall through to the remote's real default.
+    if !current.is_empty() && current != "HEAD" && remote_has_branch(root, current) {
+        return current.to_string();
+    }
+    // 3. Pick the remote's default from the recorded remote-tracking refs (offline): the sole
+    //    branch of a normal one-branch product repo, else the conventional shared name. Keeps a
+    //    `master`-repo without a recorded HEAD working and never invents a stray branch.
+    if let Some(name) = remote_default_branch(root) {
+        return name;
+    }
+    // 4. Nothing recorded at all (never fetched / first run, offline): last-resort constant.
+    SHARED_BRANCH.to_string()
+}
+
+/// Whether the remote carries `branch` — a recorded remote-tracking ref `origin/<branch>` exists.
+fn remote_has_branch(root: &Path, branch: &str) -> bool {
+    let r = format!("refs/remotes/{REMOTE_NAME}/{branch}");
+    git_stdout(root, &["rev-parse", "--verify", "--quiet", &r]).is_some()
+}
+
+/// The remote's default branch derived from the locally recorded remote-tracking refs (no network).
+/// `None` when none are recorded yet (never fetched).
+fn remote_default_branch(root: &Path) -> Option<String> {
+    let out = git_stdout(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:strip=3)",
+            &format!("refs/remotes/{REMOTE_NAME}/"),
+        ],
+    )?;
+    let branches: Vec<String> = out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    pick_default(&branches)
+}
+
+/// Pure default-branch choice from the remote's branch list: the only branch of a one-branch repo,
+/// else the conventional shared name (`main`/`master`). `None` if the list is empty or ambiguous.
+/// `HEAD` (the symbolic alias) is ignored so it never masks the real branches.
+fn pick_default(branches: &[String]) -> Option<String> {
+    let real: Vec<&String> = branches.iter().filter(|b| b.as_str() != "HEAD").collect();
+    if real.len() == 1 {
+        return Some(real[0].clone());
+    }
+    for pref in ["main", "master"] {
+        if real.iter().any(|b| b.as_str() == pref) {
+            return Some(pref.to_string());
+        }
+    }
+    None
 }
 
 /// Run a git subcommand in `root`, mapping a non-zero exit to an `io::Error`.
@@ -302,6 +356,31 @@ fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_default_takes_the_only_branch_of_a_one_branch_repo() {
+        // The normal product repo: a single shared branch, whatever its name.
+        assert_eq!(pick_default(&["master".into()]), Some("master".into()));
+        assert_eq!(pick_default(&["main".into()]), Some("main".into()));
+        // The symbolic HEAD alias must not count as a second branch and mask the real one.
+        assert_eq!(
+            pick_default(&["master".into(), "HEAD".into()]),
+            Some("master".into())
+        );
+    }
+
+    #[test]
+    fn pick_default_prefers_the_conventional_name_when_many_and_is_none_when_ambiguous() {
+        assert_eq!(
+            pick_default(&["feature-x".into(), "main".into(), "master".into()]),
+            Some("main".into())
+        );
+        // Several branches, none conventional → ambiguous, no guess.
+        assert_eq!(pick_default(&["foo".into(), "bar".into()]), None);
+        // Nothing recorded at all.
+        assert_eq!(pick_default(&[]), None);
+        assert_eq!(pick_default(&["HEAD".into()]), None);
+    }
 
     #[test]
     fn personal_backup_ref_is_under_personal_namespace_not_heads() {
