@@ -225,6 +225,21 @@ export interface SetupReport {
   clone_url: string | null;
 }
 
+// The app-wide Konto (ADR 0004, Issue #90): exactly ONE server identity for the self-hosted
+// Forgejo/Gitea, set once and reused for all products. The Server-Adresse is persisted app-level
+// (JSON), the credentials only in the OS keystore. The token NEVER leaves the backend — neither
+// `read_konto` nor `save_konto` ever return it.
+
+/** The Konto view the backend hands the frontend: the normalized Base-URL + the angemeldete
+ *  account. NEVER carries the token. Mirrors `KontoView` in src-tauri/src/konto.rs. `read_konto`
+ *  returns `KontoView | null` (null = kein Konto eingerichtet); `save_konto` returns `KontoView`. */
+export interface KontoView {
+  /** The normalized server Base-URL `scheme://host[:port]`. */
+  base_url: string;
+  /** The angemeldete account name (confirmed via `GET /api/v1/user` on save). */
+  account: string;
+}
+
 // The Lock Warden's two push types (Issue #9, E35). The pure, safety-critical core returns
 // EXACTLY ONE of these per checkpoint. The UI never speaks raw git — only the tool's own
 // vocabulary (the daily sync stays silent; this is the calm "gesichert / freigegeben" readout).
