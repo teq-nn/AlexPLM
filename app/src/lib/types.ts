@@ -198,7 +198,7 @@ export interface ArtifactSignal {
   tooltip?: string;
 }
 
-/** A foreign lock for the live "fremde Sperren" panel. Mirrors `ForeignLock` in lib.rs. */
+/** A foreign lock for the live "Belegte Bausteine" panel. Mirrors `ForeignLock` in lib.rs. */
 export interface ForeignLock {
   path: string;
   owner: string;
