@@ -147,7 +147,7 @@ pub fn lock_tooltip(owner: &str, locked_at: &str) -> String {
     format!("gesperrt von {owner} seit {locked_at}")
 }
 
-/// The *foreign* locks (held by anyone but us) from a snapshot — the live "fremde Sperren"
+/// The *foreign* locks (held by anyone but us) from a snapshot — the live "Belegte Bausteine"
 /// panel. Pure projection of the same single source of truth (E37).
 pub fn foreign_locks(snap: &StatusSnapshot) -> Vec<LockInfo> {
     snap.locks

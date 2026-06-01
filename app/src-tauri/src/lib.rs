@@ -432,7 +432,7 @@ async fn read_status(product: String, paths: Vec<String>) -> Result<Vec<Artifact
     .await
 }
 
-/// The live "fremde Sperren" panel (Issue #6, E37): the locks held by anyone but us, read
+/// The live "Belegte Bausteine" panel (Issue #6, E37): the locks held by anyone but us, read
 /// purely from `git lfs locks`. No presence service.
 #[tauri::command]
 async fn read_foreign_locks(product: String) -> Result<Vec<ForeignLock>, String> {

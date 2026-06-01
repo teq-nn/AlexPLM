@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { ForeignLock } from "./types";
 
-  // The live "fremde Sperren" panel (E37): read purely from `git lfs locks`, never a presence
+  // The live "Belegte Bausteine" panel (E37): which Bausteine colleagues currently hold. Read purely
+  // from `git lfs locks`, never a presence
   // service. A dark instrument-display zone — the same LCD language as the VersionBar — because
   // foreign coordination state belongs to the "screen" world, not the warm chassis.
   let { locks = [] }: { locks?: ForeignLock[] } = $props();
@@ -11,15 +12,15 @@
   const fileName = (p: string) => p.split("/").pop() ?? p;
 </script>
 
-<aside class="panel" aria-label="Fremde Sperren">
+<aside class="panel" aria-label="Belegte Bausteine">
   <div class="head">
-    <span class="label title">Fremde Sperren</span>
+    <span class="label title">Belegte Bausteine</span>
     <span class="count mono">{locks.length.toString().padStart(2, "0")}</span>
   </div>
 
   <div class="list">
     {#if locks.length === 0}
-      <p class="idle mono">keine fremden Sperren</p>
+      <p class="idle mono">keine belegten Bausteine</p>
     {:else}
       {#each locks as lock (lock.path + lock.owner)}
         <div class="row" title={lock.tooltip}>
