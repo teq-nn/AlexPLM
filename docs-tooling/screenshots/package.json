@@ -2,7 +2,7 @@
   "name": "plm-docs-screenshots",
   "private": true,
   "type": "module",
-  "description": "Reproducible UI screenshots for the PLM-Werkzeug documentation (headless Chrome + mocked Tauri backend).",
+  "description": "Reproducible UI screenshots for the Werkbank documentation (headless Chrome + mocked Tauri backend).",
   "scripts": {
     "shoot": "node capture.mjs"
   },

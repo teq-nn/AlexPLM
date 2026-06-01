@@ -1,4 +1,4 @@
-# Entscheidungslog — PLM-Werkzeug
+# Entscheidungslog — Werkbank
 
 Stand: 29.05.2026 (5. Sitzung). Jede Entscheidung mit Begründung und — wo zutreffend — was sie im Originalkonzept (`plm_software_konzept.md`) oder in früheren Einträgen (E1–E33, `entscheidungslog-3.md` und früher) ersetzt oder überholt. Neu in Sitzung 5: E34–E41 — der Mehrbenutzer-Ast wird zuende gegrillt (Topologie, die tragende Binär-Invariante, Bloat-Deckelung samt Archiv-Auslagern, stiller Sync), dazu drei bislang ungegrillte Programmflächen (Import, Auto-Commit-Schleife, Kanten anlegen). Drei Realitätsprüfungen sind eingearbeitet (git-lfs-Lock-Semantik, Forgejo/Gitea-Tragfähigkeit, KiCad-Merge-Verhalten).
 

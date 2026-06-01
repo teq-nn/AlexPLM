@@ -2,14 +2,14 @@
 
 > **ℹ️ Installation**
 >
-> Dieses Handbuch nimmt an, dass das **PLM-Werkzeug bereits installiert** ist. Eine
+> Dieses Handbuch nimmt an, dass die **Werkbank bereits installiert** ist. Eine
 > ausführliche Installationsanleitung folgt separat.
 
 ## Was du brauchst
 
-- **Das PLM-Werkzeug** als Desktop-Programm (Windows, macOS oder Linux).
-- **Git** und **Git-LFS** auf dem System — das Werkzeug nutzt sie als Motor im Hintergrund.
-- Deine **Fachprogramme** (z. B. KiCad, Fusion 360, ein PDF-Betrachter). Das Werkzeug öffnet
+- **Die Werkbank** als Desktop-Programm (Windows, macOS oder Linux).
+- **Git** und **Git-LFS** auf dem System — die Werkbank nutzt sie als Motor im Hintergrund.
+- Deine **Fachprogramme** (z. B. KiCad, Fusion 360, ein PDF-Betrachter). Die Werkbank öffnet
   Dateien immer mit dem im Betriebssystem hinterlegten **Standardprogramm**.
 - Für die **Zusammenarbeit im Team** zusätzlich: Zugang zu einem **Git-Server** (Remote), der
   Git-LFS-Sperren unterstützt (z. B. Forgejo/Gitea). Solo und ungeteilt brauchst du keinen

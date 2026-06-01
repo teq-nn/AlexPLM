@@ -1,7 +1,7 @@
 # Gebündeltes git/git-lfs für den Windows-Build
 
-Dieses Verzeichnis nimmt das **portable Git-for-Windows (MinGit)** auf, das der Windows-Build des
-PLM-Werkzeugs mitliefert, damit git/git-lfs **keine** System-Voraussetzung mehr sind. Zur Laufzeit
+Dieses Verzeichnis nimmt das **portable Git-for-Windows (MinGit)** auf, das der Windows-Build der
+Werkbank mitliefert, damit git/git-lfs **keine** System-Voraussetzung mehr sind. Zur Laufzeit
 verdrahtet `lib.rs::wire_bundled_git` (nur `#[cfg(windows)]`) den Pfad `cmd/git.exe` in den
 `gitrunner` (`gitrunner::set_git_program`). Fehlt das Bundle, fällt der `gitrunner` still auf das
 System-`git` im PATH zurück — die App startet trotzdem.

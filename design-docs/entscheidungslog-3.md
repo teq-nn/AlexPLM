@@ -1,4 +1,4 @@
-# Entscheidungslog — PLM-Werkzeug
+# Entscheidungslog — Werkbank
 
 Stand: 29.05.2026 (4. Sitzung). Jede Entscheidung mit Begründung und — wo zutreffend — was sie im Originalkonzept (`plm_software_konzept.md`) oder in früheren Einträgen (E1–E22, `entscheidungslog-2.md`) ersetzt oder überholt. Neu in Sitzung 4: E23–E33 — die UI-Schichten (Wirbelsäule, Navigation, Artefakt-Karte, Graph-Klick, Meilenstein-Dialog, Suche), der Grundsatz „wo lebt die Software", und die entparkte Mehrbenutzer-Frage.
 

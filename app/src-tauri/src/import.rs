@@ -88,7 +88,7 @@ pub fn import_folder(root: &Path) -> std::io::Result<ImportResult> {
 
     // First commit so the imported product has history and renders with a branch/version.
     run_git(root, &["add", "-A"])?;
-    commit(root, "Import: Produkt angelegt (PLM-Werkzeug)")?;
+    commit(root, "Import: Produkt angelegt (Werkbank)")?;
 
     let product = project_product(root)?;
     Ok(ImportResult {
@@ -258,7 +258,7 @@ fn commit(root: &Path, message: &str) -> std::io::Result<()> {
     let out = crate::gitrunner::command(root)
         .args([
             "-c",
-            "user.name=PLM-Werkzeug",
+            "user.name=Werkbank",
             "-c",
             "user.email=plm@localhost",
             "commit",
@@ -373,7 +373,7 @@ pub fn migrate_history_behind_gate(root: &Path) -> std::io::Result<ImportResult>
     run_lfs_migrate(root, &patterns)?;
 
     run_git(root, &["add", "-A"])?;
-    commit(root, "Import: Historie auf LFS umgeschrieben (PLM-Werkzeug, E38)")?;
+    commit(root, "Import: Historie auf LFS umgeschrieben (Werkbank, E38)")?;
 
     let product = project_product(root)?;
     Ok(ImportResult {
