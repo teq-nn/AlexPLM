@@ -1,0 +1,102 @@
+name: Windows-Installer
+
+# Baut den vorbedingungsfreien Windows-Installer (NSIS) des PLM-Werkzeugs und legt ihn als
+# Artefakt zum Download ab. NUR manuell startbar (Actions-Tab → „Run workflow"). Bewusst
+# KEINE automatischen Trigger, KEINE Tests — die laufen separat auf eigenen Runnern.
+#
+# Der Installer bringt alle Laufzeit-Abhängigkeiten selbst mit, damit der Zielrechner nichts
+# vorinstalliert haben muss:
+#   1. WebView2  -> offline eingebettet (tauri.conf.json: webviewInstallMode = offlineInstaller)
+#   2. VC++ CRT  -> statisch gelinkt    (.cargo/config.toml: +crt-static)
+#   3. git/git-lfs -> hier vendored und in resources/git/ gebündelt (Schritt „Git vendoren")
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # Hebt das GitHub-API-Rate-Limit beim Holen der git/git-lfs-Release-Assets an.
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Rust-Toolchain (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust-Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Frontend-Abhängigkeiten installieren
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Git vendoren (MinGit + git-lfs in resources/git/)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = 'app/src-tauri/resources/git'
+          $hdr  = @{ 'User-Agent' = 'plm-werkzeug-ci'; Authorization = "Bearer $env:GH_TOKEN" }
+
+          # --- MinGit (portables Git for Windows, 64-bit, ohne busybox) ---
+          $rel = Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest' -Headers $hdr
+          $mingit = $rel.assets | Where-Object { $_.name -match '^MinGit-.*-64-bit\.zip$' -and $_.name -notmatch 'busybox' } | Select-Object -First 1
+          if (-not $mingit) { throw 'Kein MinGit-64-bit-Asset im letzten Git-for-Windows-Release gefunden.' }
+          Write-Host "MinGit: $($mingit.name)"
+          Invoke-WebRequest $mingit.browser_download_url -OutFile mingit.zip -Headers $hdr
+          Expand-Archive mingit.zip -DestinationPath $dest -Force
+
+          $gitExe = Join-Path $dest 'cmd/git.exe'
+          if (-not (Test-Path $gitExe)) { throw "Erwartetes Layout fehlt: $gitExe" }
+          Write-Host "Gebündeltes git: $(& $gitExe --version)"
+
+          # --- git-lfs: in modernen MinGit-Builds bereits enthalten; sonst nachlegen ---
+          $lfsExe = Join-Path $dest 'mingw64/bin/git-lfs.exe'
+          if (-not (Test-Path $lfsExe)) {
+            Write-Host 'git-lfs nicht im MinGit-Bundle -> separates Release holen.'
+            $lfsRel = Invoke-RestMethod 'https://api.github.com/repos/git-lfs/git-lfs/releases/latest' -Headers $hdr
+            $lfsAsset = $lfsRel.assets | Where-Object { $_.name -match 'windows-amd64.*\.zip$' } | Select-Object -First 1
+            if (-not $lfsAsset) { throw 'Kein git-lfs-windows-amd64-Asset gefunden.' }
+            Invoke-WebRequest $lfsAsset.browser_download_url -OutFile lfs.zip -Headers $hdr
+            Expand-Archive lfs.zip -DestinationPath lfs-tmp -Force
+            $found = Get-ChildItem lfs-tmp -Recurse -Filter git-lfs.exe | Select-Object -First 1
+            if (-not $found) { throw 'git-lfs.exe nicht im Release-Archiv gefunden.' }
+            Copy-Item $found.FullName $lfsExe -Force
+          }
+          Write-Host "Gebündeltes git-lfs: $(& $lfsExe --version)"
+
+          # --- System-gitconfig des Bundles setzen (modifiziert mingw64/etc/gitconfig in-place,
+          #     bewahrt MinGit-Defaults wie http.sslCAInfo). Gilt für jedes Repo, das dieses git anfasst. ---
+          & $gitExe config --system core.autocrlf false
+          & $gitExe config --system core.longpaths true
+          & $gitExe config --system filter.lfs.clean   'git-lfs clean -- %f'
+          & $gitExe config --system filter.lfs.smudge  'git-lfs smudge -- %f'
+          & $gitExe config --system filter.lfs.process 'git-lfs filter-process'
+          & $gitExe config --system filter.lfs.required true
+
+      - name: Installer bauen (NSIS)
+        working-directory: app
+        run: pnpm tauri build --bundles nsis
+
+      - name: Installer als Artefakt hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: plm-werkzeug-windows-installer
+          path: app/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

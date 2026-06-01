@@ -1,0 +1,8 @@
+# Windows-Zielrechner sollen KEINE Vorbedingungen brauchen. Per Default linkt der
+# MSVC-Build die C-Runtime dynamisch und verlangt damit das „Visual C++ Redistributable"
+# auf dem Zielrechner. `+crt-static` linkt die CRT statisch ins Binary — der Installer
+# braucht dann kein Redist mitzuliefern oder zu installieren.
+#
+# Gilt ausschließlich für das Windows-MSVC-Target; Linux/macOS-Builds bleiben unberührt.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
