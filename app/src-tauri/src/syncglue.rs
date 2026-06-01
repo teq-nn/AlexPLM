@@ -127,6 +127,13 @@ pub fn parse_diff_names(out: &str) -> Vec<String> {
 ///
 /// The decision is never made here — only obeyed. Returns the outcome in the tool's vocabulary.
 pub fn run_sync(root: &Path, other: Option<String>) -> std::io::Result<SyncOutcome> {
+    // Nothing to sync before the product is published: there is no server-side repo yet, so the
+    // fetch only 404s and the LFS endpoint would loop on a 401. Stay calm and quiet (E41) — the
+    // rhythm starts the moment the ceremony's first publish creates the repo and sets the upstream.
+    if !crate::setup::is_published(root) {
+        return Ok(SyncOutcome { status: SyncStatus::Aktuell });
+    }
+
     // Pull the remote stand into our knowledge WITHOUT merging yet (a fetch never touches the
     // worktree, so it can never corrupt a file). The merge decision comes from the pure core.
     let _ = fetch(root); // best-effort: offline / unpublished simply yields no divergence

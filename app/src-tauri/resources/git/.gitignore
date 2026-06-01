@@ -1,0 +1,7 @@
+# Das gebündelte MinGit/git-lfs wird NICHT ins Repo committet (siehe README.md,
+# Abschnitt „Vendoring-Politik"). Es wird lokal vor dem Windows-Build hierher
+# entpackt und von `pnpm tauri build` in den Installer gebündelt.
+# Getrackt sind nur diese .gitignore und die README.md.
+*
+!.gitignore
+!README.md

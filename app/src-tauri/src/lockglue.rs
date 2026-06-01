@@ -94,6 +94,13 @@ pub fn snapshot(root: &Path) -> std::io::Result<StatusSnapshot> {
 /// configured yet, or a 401) is treated as "no locks" rather than a hard failure, so the read-only
 /// shell still renders and the daily rhythm stays quiet.
 fn read_locks(root: &Path) -> std::io::Result<Vec<LockInfo>> {
+    // No server-side repo before publishing → no remote locks can exist, and `git lfs locks` would
+    // only loop on the absent repo's 401 (Forgejo's LFS endpoint authenticates before checking
+    // existence), wedging this bounded call for its full timeout on every 4-second status tick.
+    // Skip the networked read entirely and report no locks until the product is published.
+    if !crate::setup::is_published(root) {
+        return Ok(Vec::new());
+    }
     let mut cmd = crate::gitrunner::command(root);
     cmd.args(["lfs", "locks", "--json"]);
     match crate::gitrunner::output_bounded(&mut cmd) {
@@ -162,6 +169,13 @@ pub fn owner_is_me(owner: &str, me: &str) -> bool {
 pub fn acquire_lock(root: &Path, rel_path: &str) -> std::io::Result<bool> {
     if !is_lockable(rel_path) {
         return Ok(false);
+    }
+    // Pre-publish there is no server to register the lock with — `git lfs lock` would only loop on
+    // the absent repo's 401. Make the file writable locally (the on-disk side of „editing = mine",
+    // Issue #42) and report success; real lock coordination begins once the product is published.
+    if !crate::setup::is_published(root) {
+        let _ = set_writable(root, rel_path);
+        return Ok(true);
     }
     // Reaches the LFS endpoint — bound it so a rejected credential fails fast instead of hanging.
     let mut cmd = crate::gitrunner::command(root);

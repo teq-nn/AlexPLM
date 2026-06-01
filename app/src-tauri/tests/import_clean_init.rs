@@ -113,8 +113,16 @@ fn existing_gitattributes_marker_overrides_classification() {
     let result = import_folder(root).unwrap();
     let attrs = fs::read_to_string(root.join(".gitattributes")).unwrap();
 
-    // override: KiCad forced text -> NOT lockable despite being merge-hostile by default.
-    assert!(!attrs.contains("*.kicad_pcb"), "explicit text marker wins -> no lock");
+    // override: KiCad forced text -> import adds NO lockable rule for it, despite it being
+    // merge-hostile by default. The maintainer's own `*.kicad_pcb text` line is preserved
+    // verbatim (the idempotent `_import` block never clobbers hand-edits, #63) — so we assert
+    // on the *absence of a lockable rule*, not the absence of the pattern altogether.
+    assert!(
+        !attrs
+            .lines()
+            .any(|l| l.trim_start().starts_with("*.kicad_pcb") && l.contains("lockable")),
+        "explicit text marker wins -> no lockable rule for kicad_pcb; got:\n{attrs}"
+    );
     // override: plain .txt forced lockable -> locked despite being text by default.
     assert!(
         attrs.lines().any(|l| l.starts_with("*.txt") && l.contains("lockable")),

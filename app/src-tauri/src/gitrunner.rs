@@ -19,9 +19,11 @@
 //! behavior is unchanged except for the hardening. The failure classifier is pure and table-tested
 //! so the exact stderr markers are asserted here rather than discovered in production.
 
+use std::ffi::OsString;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Wall-clock bound for a single networked git invocation. A hung credential negotiation must
@@ -44,10 +46,34 @@ pub const ASKPASS_ENV: &str = "PLM_GIT_ASKPASS";
 /// instead of hanging or showing a raw git error.
 pub const KEYSTORE_UNAVAILABLE_MARKER: &str = "PLM-KEYSTORE-UNAVAILABLE";
 
+/// Pfad zum **gebündelten** git-Programm (Windows: das portable MinGit aus den Tauri-Ressourcen).
+/// Wird beim Start einmalig via [`set_git_program`] gesetzt; ist es nie gesetzt (Linux, CI, alle
+/// Tests), greift der Fallback auf das System-`git` über den PATH. Ein [`OnceLock`] statt eines
+/// `Mutex`, weil der Pfad nach dem App-Start unveränderlich ist — gesetzt wird er genau einmal im
+/// `setup()`-Hook, gelesen aus jedem git-Spawn.
+static GIT_PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+
+/// Hinterlege das gebündelte git-Programm für alle künftigen Spawns. **Idempotent**: nur der erste
+/// Aufruf zählt (weitere werden still verworfen), damit ein versehentlicher Doppelaufruf im Setup
+/// den Pfad nicht still umbiegt. Auf Linux/CI/Tests nie gerufen ⇒ [`git_program`] bleibt `"git"`.
+pub fn set_git_program(path: PathBuf) {
+    let _ = GIT_PROGRAM.set(path);
+}
+
+/// Das tatsächlich zu startende git-Programm: das gebündelte (falls via [`set_git_program`]
+/// hinterlegt), sonst der Fallback `"git"` über den PATH. Liefert ein [`OsString`], damit der
+/// Bundle-Pfad keine UTF-8-Annahme erzwingt.
+fn git_program() -> OsString {
+    GIT_PROGRAM
+        .get()
+        .map(|p| p.as_os_str().to_os_string())
+        .unwrap_or_else(|| OsString::from("git"))
+}
+
 /// A `git -C <root> …` command, hardened so it can never prompt the terminal and always resolves
 /// credentials through our askpass helper. Callers append their subcommand and args.
 pub fn command(root: &Path) -> Command {
-    let mut c = Command::new("git");
+    let mut c = Command::new(git_program());
     c.arg("-C").arg(root);
     harden(&mut c);
     c
@@ -56,7 +82,7 @@ pub fn command(root: &Path) -> Command {
 /// A hardened `git …` command with no `-C` prefix, for the few invocations that pass an explicit
 /// repo path another way (e.g. `git init --bare <dir>`). Same hardening as [`command`].
 pub fn command_bare() -> Command {
-    let mut c = Command::new("git");
+    let mut c = Command::new(git_program());
     harden(&mut c);
     c
 }
@@ -70,6 +96,50 @@ fn harden(c: &mut Command) {
     c.env("LC_ALL", "C");
     if let Ok(exe) = std::env::current_exe() {
         c.env("GIT_ASKPASS", exe);
+    }
+
+    // Windows: jeder git-Child startet sonst mit eigener Konsole — ein schwarzes Fenster blitzt
+    // auf. Beim 4s-Status-Loop + 3s-Autocommit-Watcher wird das zum Dauerflackern. `CREATE_NO_WINDOW`
+    // (0x0800_0000) unterdrückt die Konsole. Gehört in `harden()` (beide Konstruktoren), nicht in
+    // `output_bounded_for`, weil manche Caller (z. B. `setup.rs::remote_get_url`) `.output()` direkt
+    // rufen und denselben Schutz brauchen.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+
+        // Ist ein gebündeltes git gesetzt, muss der Child es auch seine *eigenen* Helfer finden
+        // lassen — nicht ein zufälliges System-git-lfs. Bundle-Root defensiv aus dem git-Pfad
+        // ableiten: das gesetzte Programm ist `<bundle>/cmd/git.exe`, also Parent(cmd) = Bundle-Root.
+        // Fehlt ein erwartetes Unterverzeichnis, den jeweiligen Env-Eintrag schlicht weglassen —
+        // nie panicken, im Zweifel verhält sich git wie ohne Bündelung.
+        if let Some(prog) = GIT_PROGRAM.get() {
+            // `…/cmd/git.exe` → parent = `…/cmd` → parent = `<bundle>`.
+            if let Some(bundle) = prog.parent().and_then(|cmd_dir| cmd_dir.parent()) {
+                // `mingw64/bin` dem Child-PATH voranstellen, damit git sein gebündeltes `git-lfs.exe`
+                // (und übrige bin-Helfer) vor allem System-Pfad findet.
+                let bin = bundle.join("mingw64").join("bin");
+                if bin.is_dir() {
+                    let existing = std::env::var_os("PATH").unwrap_or_default();
+                    let mut joined = OsString::from(bin.as_os_str());
+                    if !existing.is_empty() {
+                        joined.push(";");
+                        joined.push(&existing);
+                    }
+                    c.env("PATH", joined);
+                }
+                // `GIT_EXEC_PATH` auf das git-core des Bundles zeigen, damit git seine internen
+                // Subkommandos + den lfs-Helfer aus dem Bundle auflöst statt vom System.
+                let exec = bundle
+                    .join("mingw64")
+                    .join("libexec")
+                    .join("git-core");
+                if exec.is_dir() {
+                    c.env("GIT_EXEC_PATH", exec);
+                }
+            }
+        }
     }
 }
 
@@ -177,6 +247,26 @@ fn kill_tree(child: &mut std::process::Child) {
             libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
         }
     }
+    // Windows kennt keine Prozessgruppen wie Unix: ein `child.kill()` beendet nur den direkten
+    // git-Child, nicht das von ihm gestartete git-lfs — also genau den loopenden Prozess, den der
+    // Timeout abfangen soll. Sonst verwaist git-lfs, hält die stdout-Pipe offen (die Drain-Threads
+    // sähen nie EOF) und schleift weiter auf der abgelehnten Credential. `taskkill /T /F` killt den
+    // ganzen Baum am pid; ebenfalls mit `CREATE_NO_WINDOW`, sonst flackert taskkill seinerseits auf.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID"])
+            .arg(child.id().to_string())
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // Fallback (und auf Unix der reguläre Abschluss): direkten Child killen und ernten, damit kein
+    // Zombie zurückbleibt.
     let _ = child.kill();
     let _ = child.wait();
 }
