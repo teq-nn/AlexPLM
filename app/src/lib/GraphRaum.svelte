@@ -31,7 +31,7 @@
   } = $props();
 
   // The two pure display filters (E45). Default = everything visible; they only hide, never write.
-  let filter = $state<GraphFilter>({ varianten: true, nur_meilensteine: false });
+  let filter = $state<GraphFilter>({ varianten: true, nur_revisionen: false });
 
   // The open node-verb menu, anchored to the clicked LED's screen rect. Domain words only.
   let menu = $state<{ node: StandNode; x: number; y: number } | null>(null);
@@ -146,11 +146,11 @@
     <button
       type="button"
       class="toggle"
-      class:on={filter.nur_meilensteine}
+      class:on={filter.nur_revisionen}
       role="switch"
-      aria-checked={filter.nur_meilensteine}
+      aria-checked={filter.nur_revisionen}
       title="Nur Revisionen zeigen"
-      onclick={() => (filter = { ...filter, nur_meilensteine: !filter.nur_meilensteine })}
+      onclick={() => (filter = { ...filter, nur_revisionen: !filter.nur_revisionen })}
     >
       <span class="t-led" aria-hidden="true"></span>
       <span class="t-text label">nur Revisionen</span>
@@ -187,8 +187,8 @@
     >
       <header class="menu-head">
         <span class="mh-id mono">{menu.node.id.slice(0, 8)}</span>
-        {#if menu.node.milestone !== null}
-          <span class="mh-version mono">{menu.node.milestone}</span>
+        {#if menu.node.revision !== null}
+          <span class="mh-version mono">{menu.node.revision}</span>
         {/if}
         <span class="mh-meta mono">{leaf(menu.node.path)} · {day(menu.node.timestamp)} {clock(menu.node.timestamp)}</span>
       </header>

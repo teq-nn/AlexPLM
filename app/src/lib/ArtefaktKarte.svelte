@@ -76,7 +76,7 @@
   const extra = $derived(Math.max(0, karte.dateien.length - 1));
 
   // Derived Karten-Status + Stale (Issue #53, E26): live from Git + Kanten, never stored. The
-  // card is "im Alltag fast stumm, laut erst am Meilenstein-Check" — so routine stays grey and
+  // card is "im Alltag fast stumm, laut erst am Revision-Check" — so routine stays grey and
   // orange is NOT spent here. `vorhanden` is silent (no line). The louder "prüf-mich" cases
   // (geaendert/fehlt) earn a quiet status line; `uebernommen` is a faint hint, `ignoriert` dims.
   const projektion = $derived(karte.projektion);
@@ -141,7 +141,7 @@
 
     {#if showStatus || projektion.stale}
       <!-- The derived "prüf-mich" line (Issue #53, E26): grey in daily use — routine is grey,
-           orange stays rationed for the Meilenstein-check. A card can be vorhanden AND stale. -->
+           orange stays rationed for the Revision-check. A card can be vorhanden AND stale. -->
       <div class="statusline mono">
         {#if showStatus}
           <span class="dot" aria-hidden="true"></span>
@@ -311,7 +311,7 @@
   }
 
   /* Derived "prüf-mich" status line (Issue #53): a quiet grey readout under the body. Routine
-     is grey — orange is rationed for the Meilenstein-check, NOT spent on a card in daily use. */
+     is grey — orange is rationed for the Revision-check, NOT spent on a card in daily use. */
   .statusline {
     margin-top: 5px;
     display: flex;
@@ -332,7 +332,7 @@
     color: var(--ink-default);
   }
   /* "veraltet?" rides alongside the git status; same calm grey, a touch quieter (a question,
-     not an alarm — the loud moment is the Meilenstein-check, out of this slice's scope). */
+     not an alarm — the loud moment is the Revision-check, out of this slice's scope). */
   .statusline .word.stale {
     color: var(--ink-muted);
     font-style: italic;

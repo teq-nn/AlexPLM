@@ -10,9 +10,9 @@
     title = "Verlauf · Graph",
   }: {
     graph: VersionGraph | null;
-    /** Promote a Stand to a Meilenstein with human VERSION_NOTES text. */
+    /** Promote a Stand to a Revision with human VERSION_NOTES text. */
     onPromote: (node: StandNode, version: string, notes: string) => Promise<void>;
-    /** Toggle a Meilenstein's Art: Prototyp ↔ Freigabe ("Releasen" / "Un-Release"). E42. */
+    /** Toggle a Revision's Art: Prototyp ↔ Freigabe ("Releasen" / "Un-Release"). E42. */
     onToggleArt: (node: StandNode) => Promise<void>;
     /** Graph-Raum display filter (Issue #55, E45): hides nodes only, never rewrites. When null
      *  (the embedded column) everything shows. */
@@ -39,7 +39,7 @@
 
   function openPromote(node: StandNode) {
     promoting = node;
-    draftVersion = node.milestone ?? "";
+    draftVersion = node.revision ?? "";
     draftNotes = "";
     promoteError = null;
   }
@@ -71,11 +71,11 @@
     }
   }
 
-  // Toggle the Art of the Meilenstein being viewed in the dialog (E42): Prototyp → Freigabe
+  // Toggle the Art of the Revision being viewed in the dialog (E42): Prototyp → Freigabe
   // is "Releasen" (write-protects the tag), Freigabe → Prototyp the deliberate "Un-Release".
   // A considered act, so it shares the dialog's calm seated-key weight — never orange.
   async function toggleArt() {
-    if (!promoting || promoting.milestone === null) return;
+    if (!promoting || promoting.revision === null) return;
     busy = true;
     promoteError = null;
     try {
@@ -111,13 +111,13 @@
   const PAD_LEFT = 20; // x of the trunk (lane 0) centre
   const RIGHT_GUT = 18; // breathing room between the lanes and the text body
 
-  // Pure display filter (Issue #55, E45): hide variant lines and/or keep only Meilensteine.
+  // Pure display filter (Issue #55, E45): hide variant lines and/or keep only Revisionen.
   // The active line always survives the variant filter so "where I am" stays navigable; the
   // filter mirrors the Rust `passes_filter` core exactly. Null filter = show everything.
   function passesFilter(n: StandNode): boolean {
     if (!filter) return true;
     if (!filter.varianten && !n.on_active) return false;
-    if (filter.nur_meilensteine && n.milestone === null) return false;
+    if (filter.nur_revisionen && n.revision === null) return false;
     return true;
   }
   const nodes = $derived((graph?.nodes ?? []).filter(passesFilter));
@@ -267,7 +267,7 @@
 
         <ol class="tree">
           {#each nodes as n, i (n.id)}
-            {@const isMs = n.milestone !== null}
+            {@const isMs = n.revision !== null}
             {@const foreign = !n.on_active}
             {@const isTip = tipOfLane.has(n.id)}
             {@const isActive = n.id === activeId}
@@ -284,7 +284,7 @@
                 style={foreign ? `--c: ${foreignTint(n.lane)};` : ""}
                 title={verbMode ? "Verben: öffnen · abzweigen · zurückwerfen" : "Zur Revision machen"}
                 aria-label={isMs
-                  ? `Revision ${n.milestone}, ${day(n.timestamp)}${verbMode ? " — Verben öffnen" : ""}`
+                  ? `Revision ${n.revision}, ${day(n.timestamp)}${verbMode ? " — Verben öffnen" : ""}`
                   : `Commit ${leaf(n.path)}, ${day(n.timestamp)} — ${verbMode ? "Verben öffnen" : "zur Revision machen"}`}
                 onclick={(e) => activateNode(n, e)}
                 onkeydown={(e) => onNodeKey(n, e)}
@@ -305,7 +305,7 @@
                   <span class="path mono" title={n.path}>{leaf(n.path)}</span>
                   {#if isMs}
                     <span class="ms-tags">
-                      {#if n.milestone_art === "freigabe"}
+                      {#if n.revision_art === "freigabe"}
                         <span
                           class="art-chip label freigabe"
                           title="Freigabe — schreibgeschützt"
@@ -313,8 +313,8 @@
                           <span class="lock" aria-hidden="true"></span>
                         </span>
                       {/if}
-                      <span class="version mono" title="Revision {n.milestone}"
-                        >{n.milestone}</span
+                      <span class="version mono" title="Revision {n.revision}"
+                        >{n.revision}</span
                       >
                     </span>
                   {/if}
@@ -361,8 +361,8 @@
   >
     <div class="tip-head">
       <span class="tip-id mono">{tip.node.id.slice(0, 8)}</span>
-      {#if tip.node.milestone !== null}
-        <span class="tip-version mono">{tip.node.milestone}</span>
+      {#if tip.node.revision !== null}
+        <span class="tip-version mono">{tip.node.revision}</span>
       {/if}
     </div>
     <div class="tip-row mono">
@@ -373,11 +373,11 @@
       <span class="tip-key label">Commit</span>
       <span class="tip-val">{day(tip.node.timestamp)} · {clock(tip.node.timestamp)}</span>
     </div>
-    {#if tip.node.milestone !== null}
+    {#if tip.node.revision !== null}
       <div class="tip-row mono">
         <span class="tip-key label">Art</span>
         <span class="tip-val"
-          >{tip.node.milestone_art === "freigabe"
+          >{tip.node.revision_art === "freigabe"
             ? "Freigabe · schreibgeschützt"
             : "Prototyp"}</span
         >
@@ -424,10 +424,10 @@
         <span class="dialog-stand mono">{leaf(promoting.path)} · {clock(promoting.timestamp)}</span>
       </header>
 
-      {#if promoting.milestone !== null}
+      {#if promoting.revision !== null}
         <!-- Art-Toggle (E42): only for a Stand already promoted. Prototyp is the lax default;
              Freigabe write-protects the tag. Releasen / Un-Release is one deliberate handle. -->
-        {@const freigabe = promoting.milestone_art === "freigabe"}
+        {@const freigabe = promoting.revision_art === "freigabe"}
         <div class="art-row">
           <div class="art-state">
             <span class="art-state-dot" class:freigabe aria-hidden="true"></span>
@@ -591,7 +591,7 @@
   }
 
   /* Node = LED, sitting exactly on its Bahn centre so the connectors meet it cleanly. A
-     plain Stand is a small recessed grey LED; a Meilenstein is a brighter, larger filled
+     plain Stand is a small recessed grey LED; a Revision is a brighter, larger filled
      LED with a ring — the promoted node literally stands out on its line. */
   .led {
     position: absolute;
@@ -1155,7 +1155,7 @@
     background: var(--surface-sunken);
   }
   /* Confirm = the deliberate dark "history-touching" key (E27/E38 weight): committing a
-     Meilenstein is a considered act, so it reads as a seated dark key, not loud orange. */
+     Revision is a considered act, so it reads as a seated dark key, not loud orange. */
   .key.solid {
     background: var(--key-dark);
     color: var(--key-light);

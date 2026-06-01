@@ -55,8 +55,8 @@ use edgestore::{
 };
 use freigabegate::GateVerdict;
 use freigabegateglue::gate_for_art;
-use graph::{MilestoneArt, VersionGraph};
-use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
+use graph::{RevisionArt, VersionGraph};
+use graphread::{promote_to_revision, read_graph, toggle_revision_freigabe};
 use konto::{
     clear_konto as clear_konto_file, konto_path, read_konto as read_konto_file, write_konto,
     KontoConfig, KontoView,
@@ -214,7 +214,7 @@ fn stop_watching(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Read the product's version tree for the dark "display" zone (Issue #8): Stände as nodes,
-/// Meilensteine marked, offloaded markers reserved. Pure read — the git/LFS facts are
+/// Revisionen marked, offloaded markers reserved. Pure read — the git/LFS facts are
 /// collected then projected; no mutation.
 #[tauri::command]
 fn read_version_graph(path: String) -> Result<VersionGraph, String> {
@@ -225,11 +225,11 @@ fn read_version_graph(path: String) -> Result<VersionGraph, String> {
     read_graph(root).map_err(|e| e.to_string())
 }
 
-/// Promote a Stand to a **Meilenstein** (Issue #8): persist the human `notes` into
+/// Promote a Stand to a **Revision** (Issue #8): persist the human `notes` into
 /// `VERSION_NOTES.md` (the only place human text lives — E28) and durably label the version.
 /// Returns the refreshed version tree so the UI updates in one round-trip.
 #[tauri::command]
-fn promote_milestone(
+fn promote_revision(
     path: String,
     stand_id: String,
     version: String,
@@ -239,24 +239,24 @@ fn promote_milestone(
     if !root.is_dir() {
         return Err(format!("Kein Ordner: {path}"));
     }
-    promote_to_milestone(root, &stand_id, &version, &notes, SystemTime::now())
+    promote_to_revision(root, &stand_id, &version, &notes, SystemTime::now())
         .map_err(|e| e.to_string())
 }
 
-/// Toggle a Meilenstein's **Art** between Prototyp and Freigabe (Issue #41, E42). Raising to
+/// Toggle a Revision's **Art** between Prototyp and Freigabe (Issue #41, E42). Raising to
 /// Freigabe write-protects the tag (E8); toggling back is the deliberate reversible
-/// „Un-Release". A new Meilenstein is Prototyp by default; this is the one act that releases
+/// „Un-Release". A new Revision is Prototyp by default; this is the one act that releases
 /// it. Returns the refreshed version tree so the UI updates in one round-trip.
 ///
 /// The dreistufige Freigabe-Gate block-check that will run on raising to Freigabe is a
-/// separate slice (Issue #52); its seam lives in [`toggle_milestone_freigabe`].
+/// separate slice (Issue #52); its seam lives in [`toggle_revision_freigabe`].
 #[tauri::command]
-fn toggle_milestone_art(path: String, version: String) -> Result<VersionGraph, String> {
+fn toggle_revision_art(path: String, version: String) -> Result<VersionGraph, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
         return Err(format!("Kein Ordner: {path}"));
     }
-    toggle_milestone_freigabe(root, &version).map_err(|e| e.to_string())
+    toggle_revision_freigabe(root, &version).map_err(|e| e.to_string())
 }
 
 /// **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
@@ -538,25 +538,25 @@ async fn publish_to_server(path: String, other: Option<String>) -> Result<Publis
 /// The Lock Warden checkpoint (Issue #9, E35): at a checkpoint for one artifact, read the world
 /// (path kind, lock state, clean/dirty) purely once, let the safety-critical pure Warden decide
 /// the single action — `freigabe-push` | `sicherungs-push` | `auto-unlock` | `refuse` — and carry
-/// it out. `milestone = true` is a Meilenstein (Freigabe candidate); `false` is a laufender
+/// it out. `revision = true` is a Revision (Freigabe candidate); `false` is a laufender
 /// Checkpoint (Sicherungs at most). The action taken is returned in the tool's own vocabulary,
 /// never raw git. The Binär-Invariante lives in the pure core: a locked binary change is never
 /// published while the lock is held.
 #[tauri::command]
-async fn run_checkpoint(product: String, path: String, milestone: bool) -> Result<WardenAction, String> {
+async fn run_checkpoint(product: String, path: String, revision: bool) -> Result<WardenAction, String> {
     // The Warden carries out a push (networked, bounded); off the main thread.
     on_blocking(move || {
         let root = Path::new(&product);
-        let checkpoint = if milestone { Checkpoint::Meilenstein } else { Checkpoint::Laufend };
+        let checkpoint = if revision { Checkpoint::Revision } else { Checkpoint::Laufend };
         pushglue::run_checkpoint(root, &path, checkpoint).map_err(|e| e.to_string())
     })
     .await
 }
 
-/// **Freigeben** (Issue #54-Folge): the explicit „ich bin fertig"-act of a Meilenstein. Publishes
+/// **Freigeben** (Issue #54-Folge): the explicit „ich bin fertig"-act of a Revision. Publishes
 /// the whole current branch to the *actually shared* branch of the remote (Issue #64) and then
 /// self-heals — auto-unlocks every held-clean binary now published ("unlock at push", E35). This
-/// replaces the per-path Meilenstein checkpoint for the publish: at milestone time the work is
+/// replaces the per-path Revision checkpoint for the publish: at revision time the work is
 /// already committed, so the per-path Warden always saw a clean path and `Refuse`d, leaving the
 /// branch never pushed to the shared stand. Returns `freigabe-push` so the readout lights
 /// „freigegeben"; the per-path Warden stays unchanged for the silent laufend backup rhythm.
@@ -566,7 +566,7 @@ async fn freigeben(product: String) -> Result<WardenAction, String> {
     on_blocking(move || {
         let root = Path::new(&product);
         pushglue::publish_branch(root).map_err(|e| e.to_string())?;
-        // Unlock-at-push for the milestone: release every held-clean binary now on the shared stand.
+        // Unlock-at-push for the revision: release every held-clean binary now on the shared stand.
         let _ = lockglue::auto_unlock_clean_paths(root);
         Ok(WardenAction::FreigabePush)
     })
@@ -1192,14 +1192,14 @@ fn delete_task_cmd(path: String, id: String) -> Result<Vec<Task>, String> {
     delete_task(root, &id).map_err(|e| e.to_string())
 }
 
-/// Decide whether a checkpoint at the intended Meilenstein-Art is blocked by open Aufgaben
+/// Decide whether a checkpoint at the intended Revision-Art is blocked by open Aufgaben
 /// (Issue #49, E42). The Strenge lives on the Art: a Freigabe is blocked by any open Aufgabe, a
 /// Prototyp only by an open „blockiert überall" Aufgabe, and a Hinweis never blocks. Pure read of
 /// the product's task store; the judgement is the pure [`aufgabenblock::decide_block`] core.
 /// Returns whether it is blocked and the ids of the blocking tasks (so Issue #52's Freigabe-Gate
 /// can name them). A product with no task store is never blocked.
 #[tauri::command]
-fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision, String> {
+fn evaluate_task_block(path: String, art: RevisionArt) -> Result<BlockDecision, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
         return Err(format!("Kein Ordner: {path}"));
@@ -1207,7 +1207,7 @@ fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision,
     Ok(block_for_art(root, art))
 }
 
-/// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Meilenstein-Art
+/// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Revision-Art
 /// berechnen (Issue #52, E19/E19.3). Sammelt die offenen Punkte — offene Aufgaben (#49), Waisen
 /// (#47) und Stale-Kanten (#10) — und staffelt sie **nach Härte** hinter **einem** kontextabhängigen
 /// Knopf: alles sauber → „Taggen"; weicher Block (Waise/Pflicht) → „Trotzdem freigeben" + ein
@@ -1215,7 +1215,7 @@ fn evaluate_task_block(path: String, art: MilestoneArt) -> Result<BlockDecision,
 /// Aufgabe mit ihren Auswegen. Reine Lesepfade der `_plm`-Stores; das Urteil ist der reine
 /// [`freigabegate::decide_gate`]-Kern. Ein leeres Produkt ist sauber (sperrt nie aus — E22).
 #[tauri::command]
-fn evaluate_freigabe_gate(path: String, art: MilestoneArt) -> Result<GateVerdict, String> {
+fn evaluate_freigabe_gate(path: String, art: RevisionArt) -> Result<GateVerdict, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
         return Err(format!("Kein Ordner: {path}"));
@@ -1289,8 +1289,8 @@ pub fn run() {
             start_watching,
             stop_watching,
             read_version_graph,
-            promote_milestone,
-            toggle_milestone_art,
+            promote_revision,
+            toggle_revision_art,
             knoten_als_ordner,
             knoten_abzweigen,
             knoten_zurueckwerfen,

@@ -8,7 +8,7 @@
 //!
 //! Mirrors the house pattern (`pushglue.rs`, `lockglue.rs`, `setup.rs`): the decision never lives
 //! here — it lives in the testable core; this glue only reads git and obeys. The two push types
-//! of the daily rhythm (Sicherungs-Push laufend, Freigabe-Push at the Meilenstein) are the **#9
+//! of the daily rhythm (Sicherungs-Push laufend, Freigabe-Push at the Revision) are the **#9
 //! Warden's** job ([`crate::pushglue`]); this module owns only the **pull** side and the
 //! divergence judgement. The daily vocabulary is "aktuell / X arbeitet an Y / gesichert" — never
 //! push/pull/merge (E41).

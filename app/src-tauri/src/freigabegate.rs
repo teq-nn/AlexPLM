@@ -7,7 +7,7 @@
 //! [`crate::freigabegateglue`]; this module only **classifies and sorts**. Snapshot in, exactly
 //! one [`GateVerdict`] out.
 //!
-//! The load-bearing rule of E19 is that offene Punkte beim Meilenstein/Tag are **nicht** auf
+//! The load-bearing rule of E19 is that offene Punkte beim Revision/Tag are **nicht** auf
 //! einen Haufen geworfen, sondern **nach Härte gestaffelt** — härtestes zuerst — behind a single
 //! button whose Beschriftung *und* Schärfe wechselt (E19.3, „statt drei Knöpfen ein Knopf"):
 //!
@@ -32,7 +32,7 @@
 
 use crate::aufgabenblock::{decide_block, BlockDecision};
 use crate::edges::StaleWarning;
-use crate::graph::MilestoneArt;
+use crate::graph::RevisionArt;
 use crate::tasks::Task;
 use serde::Serialize;
 
@@ -168,7 +168,7 @@ pub struct GateInputs {
 }
 
 /// The **Freigabe-Gate decision**: given the collected open points and the intended
-/// Meilenstein-Art, produce the härte-sortierte Liste + Knopf-Zustand. **Pure, total,
+/// Revision-Art, produce the härte-sortierte Liste + Knopf-Zustand. **Pure, total,
 /// deterministic** — no I/O, no clock.
 ///
 /// The rule (E19/E19.3), in one breath: a Freigabe collects its open points from the
@@ -181,7 +181,7 @@ pub struct GateInputs {
 /// a Prototyp surfaces only its „blockiert überall" Aufgaben as hard, while a Freigabe surfaces
 /// every open Aufgabe. The Waisen/Pflicht weicher Block and the Stale Warnung do not depend on the
 /// Art (they are technical completeness, not Strenge).
-pub fn decide_gate(inputs: &GateInputs, art: MilestoneArt) -> GateVerdict {
+pub fn decide_gate(inputs: &GateInputs, art: RevisionArt) -> GateVerdict {
     let block: BlockDecision = decide_block(&inputs.tasks, art);
 
     let mut punkte: Vec<OffenerPunkt> = Vec::new();
@@ -340,7 +340,7 @@ mod tests {
                 fehlende_pflicht: vec![],
                 fremd_warnung: None,
             };
-            let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+            let v = decide_gate(&inputs, RevisionArt::Freigabe);
             assert_eq!(
                 v.knopf, *expect,
                 "hart={hart} weich={weich} warn={warn} → {expect:?}"
@@ -370,7 +370,7 @@ mod tests {
             stale: vec![stale("layout/board.kicad_pcb")],
             fremd_warnung: None,
         };
-        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe);
 
         let order: Vec<(Haerte, &str)> = v
             .punkte
@@ -404,7 +404,7 @@ mod tests {
             waisen: vec!["verirrt.csv".to_string()],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe);
         assert!(v.harter_block);
         assert!(
             !v.begruendung_noetig,
@@ -423,7 +423,7 @@ mod tests {
             waisen: vec!["fertigung/verirrt.csv".to_string()],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe);
         assert_eq!(v.knopf, KnopfZustand::TrotzdemFreigeben);
         assert!(v.begruendung_noetig);
         assert!(!v.harter_block);
@@ -440,7 +440,7 @@ mod tests {
             stale: vec![stale("layout/board.kicad_pcb")],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe);
         assert_eq!(v.knopf, KnopfZustand::Taggen);
         assert!(
             v.is_clean(),
@@ -455,7 +455,7 @@ mod tests {
     /// At a Prototyp an ordinary open Aufgabe does **not** hard-block (so it is absent from the
     /// list), while a „blockiert überall" Aufgabe hard-blocks even a Prototyp.
     #[test]
-    fn hard_block_follows_milestone_art_strictness() {
+    fn hard_block_follows_revision_art_strictness() {
         let ordinary = vec![open_aufgabe("a1", "Footprint prüfen")];
         // Prototyp + ordinary open Aufgabe → not a hard block (the #49 lax rule).
         let p = decide_gate(
@@ -463,7 +463,7 @@ mod tests {
                 tasks: ordinary.clone(),
                 ..Default::default()
             },
-            MilestoneArt::Prototyp,
+            RevisionArt::Prototyp,
         );
         assert_eq!(
             p.knopf,
@@ -477,7 +477,7 @@ mod tests {
                 tasks: ordinary,
                 ..Default::default()
             },
-            MilestoneArt::Freigabe,
+            RevisionArt::Freigabe,
         );
         assert_eq!(f.knopf, KnopfZustand::GesperrtDurchAufgabe);
 
@@ -494,7 +494,7 @@ mod tests {
                 tasks: ueberall,
                 ..Default::default()
             },
-            MilestoneArt::Prototyp,
+            RevisionArt::Prototyp,
         );
         assert_eq!(pu.knopf, KnopfZustand::GesperrtDurchAufgabe);
     }
@@ -512,7 +512,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, MilestoneArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe);
         assert_eq!(v.knopf, KnopfZustand::Taggen, "a Hinweis never blocks");
         assert!(v.punkte.is_empty());
     }
@@ -532,7 +532,7 @@ mod tests {
                 fremd_warnung: Some(warn.clone()),
                 ..Default::default()
             },
-            MilestoneArt::Freigabe,
+            RevisionArt::Freigabe,
         );
         assert_eq!(clean.knopf, KnopfZustand::Taggen);
         assert_eq!(clean.fremd_warnung, Some(warn.clone()));
@@ -545,7 +545,7 @@ mod tests {
                 fremd_warnung: Some(warn.clone()),
                 ..Default::default()
             },
-            MilestoneArt::Freigabe,
+            RevisionArt::Freigabe,
         );
         assert_eq!(held.knopf, KnopfZustand::GesperrtDurchAufgabe);
         assert_eq!(held.hard_blocking_task_ids(), vec!["alex-task"]);
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn empty_is_clean_and_decision_is_deterministic() {
         let empty = GateInputs::default();
-        let v = decide_gate(&empty, MilestoneArt::Freigabe);
+        let v = decide_gate(&empty, RevisionArt::Freigabe);
         assert!(v.is_clean());
         assert!(v.punkte.is_empty());
         assert!(v.fremd_warnung.is_none());
@@ -569,8 +569,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            decide_gate(&inputs, MilestoneArt::Freigabe),
-            decide_gate(&inputs, MilestoneArt::Freigabe)
+            decide_gate(&inputs, RevisionArt::Freigabe),
+            decide_gate(&inputs, RevisionArt::Freigabe)
         );
     }
 }

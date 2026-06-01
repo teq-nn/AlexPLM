@@ -78,7 +78,7 @@ impl GitFileState {
     /// Wie **laut** dieser Zustand auf der Karte ist (höher = lauter, gewinnt beim Falten).
     /// Geändert/Fehlt sind die lauten „prüf-mich"-Fälle, Übernommen ein leiser Hinweis,
     /// Vorhanden der ruhige Normalfall, Ignoriert der stumme Außenfall. So bleibt die Karte
-    /// „im Alltag fast stumm, laut erst am Meilenstein-Check" (E26/E22).
+    /// „im Alltag fast stumm, laut erst am Revision-Check" (E26/E22).
     fn lautstaerke(self) -> u8 {
         match self {
             GitFileState::Geaendert => 4,
@@ -137,7 +137,7 @@ pub struct KartenProjektion {
 
 /// **Der reine Kern**: falte die Git-Zustände der Karten-Dateien zu **einem** Karten-Status —
 /// total. Es gewinnt der **lauteste** Zustand (Geändert > Fehlt > Übernommen > Vorhanden),
-/// damit die Karte am Meilenstein-Check laut wird, sobald *eine* Datei Aufmerksamkeit braucht.
+/// damit die Karte am Revision-Check laut wird, sobald *eine* Datei Aufmerksamkeit braucht.
 ///
 /// Sonderfälle:
 /// - **Leere** Karte (keine Dateien) → ruhig `Vorhanden` (nie ein Fehler).

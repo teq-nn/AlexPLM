@@ -17,13 +17,13 @@
 //! - **lock state** — held by me, held by someone else, or unlocked;
 //! - **cleanliness** — is the path locally clean (committed, nothing open) or dirty;
 //! - **checkpoint kind** — *laufend* (an ongoing intermediate checkpoint → Sicherungs-Push) vs.
-//!   *Meilenstein* (the explicit "ich bin fertig damit" release → Freigabe-Push).
+//!   *Revision* (the explicit "ich bin fertig damit" release → Freigabe-Push).
 //!
 //! Two push types fall out of the invariant (E35 / glossary "Freigabe-Push vs. Sicherungs-Push"):
 //! - **Sicherungs-Push** (laufend) — a *private* act: mirror local intermediate commits (incl. a
 //!   half-finished binary under an active lock) to a **personal** backup ref/namespace. Backup
 //!   yes, release no — it does **not** publish to the shared `main`.
-//! - **Freigabe-Push** (Meilenstein) — a *public* act: bring the finished binary to the shared
+//! - **Freigabe-Push** (Revision) — a *public* act: bring the finished binary to the shared
 //!   `main` stand **and release the lock atomically** ("unlock at push", which the tool itself
 //!   implements because `git lfs unlock` is a separate explicit command). Binary content reaches
 //!   the LFS store **only** here (the bloat cap, E36).
@@ -75,9 +75,9 @@ pub enum Checkpoint {
     /// An ongoing, intermediate checkpoint — the silent everyday rhythm. The release-bearing
     /// push it can produce is at most a **Sicherungs-Push** (private backup), never a release.
     Laufend,
-    /// The explicit milestone act: „ich bin fertig damit". This is the only checkpoint that can
+    /// The explicit revision act: „ich bin fertig damit". This is the only checkpoint that can
     /// produce a **Freigabe-Push** (publish to shared `main` + atomic unlock).
-    Meilenstein,
+    Revision,
 }
 
 /// The full, plain input to the Lock Warden — the cross-product of the four axes. No hidden
@@ -98,7 +98,7 @@ pub struct WardenSnapshot {
 pub enum WardenAction {
     /// **Freigabe-Push** — publish the finished binary to the shared `main` stand AND release the
     /// lock atomically. The *only* action that publishes a binary to shared `main` / the LFS
-    /// store (E35/E36). Reachable only at a Meilenstein and only when the lock is being released.
+    /// store (E35/E36). Reachable only at a Revision and only when the lock is being released.
     FreigabePush,
     /// **Sicherungs-Push** — mirror local intermediate commits to the personal backup
     /// namespace. Private backup; does **not** publish to shared `main`, does **not** unlock.
@@ -126,7 +126,7 @@ impl WardenAction {
     }
 
     /// Whether this action lets binary **content** reach the LFS store. By E36 this is true for
-    /// exactly the Freigabe-Push — one full binary version per Meilenstein, never per save.
+    /// exactly the Freigabe-Push — one full binary version per Revision, never per save.
     pub fn binary_reaches_lfs_store(self) -> bool {
         matches!(self, WardenAction::FreigabePush)
     }
@@ -146,14 +146,14 @@ impl WardenAction {
 ///    a **dirty** path is never auto-unlocked.
 ///
 /// 3. **The two push types**, for a path with open local work (`Dirty`):
-///    - At a **Meilenstein**: a binary we **hold and have changed** is released — published to
+///    - At a **Revision**: a binary we **hold and have changed** is released — published to
 ///      shared `main` with the lock dropped atomically → [`WardenAction::FreigabePush`]. This is
 ///      the *only* way a locked binary's content ever reaches shared `main`, and it does so
 ///      precisely by ending the lock, so the invariant ("…while the lock is held") holds.
 ///    - On a **laufend** checkpoint, a binary under our active lock is **never** released; its
 ///      half-finished state goes only to the private backup → [`WardenAction::SicherungsPush`].
 ///    - Mergeable **text** is never locked; at any checkpoint with open work it is mirrored to
-///      backup on a laufend checkpoint and published on a Meilenstein.
+///      backup on a laufend checkpoint and published on a Revision.
 ///
 /// 4. Otherwise (no work to move, no lock to drop) → [`WardenAction::Refuse`] (nothing to do).
 pub fn decide(snap: WardenSnapshot) -> WardenAction {
@@ -171,10 +171,10 @@ pub fn decide(snap: WardenSnapshot) -> WardenAction {
     // From here the path is either unlocked, or held-by-me-and-dirty. Decide the push type.
     match (snap.kind, snap.lock, snap.clean, snap.checkpoint) {
         // --- Binary under our active lock, with open work ---
-        // Meilenstein: the explicit release. Publish to shared main AND drop the lock atomically.
+        // Revision: the explicit release. Publish to shared main AND drop the lock atomically.
         // This is the *only* place a held binary's content reaches shared main — and it reaches
         // it by *ending* the lock, so the invariant ("while the lock is held") is never violated.
-        (PathKind::Binary, LockState::HeldByMe, Cleanliness::Dirty, Checkpoint::Meilenstein) => {
+        (PathKind::Binary, LockState::HeldByMe, Cleanliness::Dirty, Checkpoint::Revision) => {
             WardenAction::FreigabePush
         }
         // Laufend: NEVER release a locked binary change. Back the half-finished binary up to the
@@ -184,8 +184,8 @@ pub fn decide(snap: WardenSnapshot) -> WardenAction {
         }
 
         // --- Mergeable text with open work (never locked) ---
-        // Meilenstein: publish to shared main; there is no lock to release.
-        (PathKind::Text, _, Cleanliness::Dirty, Checkpoint::Meilenstein) => {
+        // Revision: publish to shared main; there is no lock to release.
+        (PathKind::Text, _, Cleanliness::Dirty, Checkpoint::Revision) => {
             WardenAction::FreigabePush
         }
         // Laufend: back up the intermediate text commits privately.
@@ -194,10 +194,10 @@ pub fn decide(snap: WardenSnapshot) -> WardenAction {
         }
 
         // --- Unlocked binary with open work (edited but no lock yet held) ---
-        // Meilenstein: publish the finished binary to shared main (no lock to drop). It still
+        // Revision: publish the finished binary to shared main (no lock to drop). It still
         // reaches the LFS store only here (E36). This is not a "locked binary change", so the
         // invariant does not bite.
-        (PathKind::Binary, LockState::Unlocked, Cleanliness::Dirty, Checkpoint::Meilenstein) => {
+        (PathKind::Binary, LockState::Unlocked, Cleanliness::Dirty, Checkpoint::Revision) => {
             WardenAction::FreigabePush
         }
         // Laufend: private backup only.
@@ -220,7 +220,7 @@ mod tests {
         let kinds = [PathKind::Binary, PathKind::Text];
         let locks = [LockState::HeldByMe, LockState::HeldByOther, LockState::Unlocked];
         let cleans = [Cleanliness::Clean, Cleanliness::Dirty];
-        let checkpoints = [Checkpoint::Laufend, Checkpoint::Meilenstein];
+        let checkpoints = [Checkpoint::Laufend, Checkpoint::Revision];
         let mut out = Vec::new();
         for &kind in &kinds {
             for &lock in &locks {
@@ -268,36 +268,36 @@ mod tests {
         let cases: &[(PathKind, LockState, Cleanliness, Checkpoint, WardenAction)] = &[
             // --- foreign lock: always refuse (loud, not ours) ---
             (Binary, HeldByOther, Clean, Laufend, Refuse),
-            (Binary, HeldByOther, Clean, Meilenstein, Refuse),
+            (Binary, HeldByOther, Clean, Revision, Refuse),
             (Binary, HeldByOther, Dirty, Laufend, Refuse),
-            (Binary, HeldByOther, Dirty, Meilenstein, Refuse),
+            (Binary, HeldByOther, Dirty, Revision, Refuse),
             (Text, HeldByOther, Clean, Laufend, Refuse),
-            (Text, HeldByOther, Clean, Meilenstein, Refuse),
+            (Text, HeldByOther, Clean, Revision, Refuse),
             (Text, HeldByOther, Dirty, Laufend, Refuse),
-            (Text, HeldByOther, Dirty, Meilenstein, Refuse),
+            (Text, HeldByOther, Dirty, Revision, Refuse),
             // --- held by me + clean: auto-unlock at EVERY checkpoint ---
             (Binary, HeldByMe, Clean, Laufend, AutoUnlock),
-            (Binary, HeldByMe, Clean, Meilenstein, AutoUnlock),
+            (Binary, HeldByMe, Clean, Revision, AutoUnlock),
             (Text, HeldByMe, Clean, Laufend, AutoUnlock),
-            (Text, HeldByMe, Clean, Meilenstein, AutoUnlock),
+            (Text, HeldByMe, Clean, Revision, AutoUnlock),
             // --- held by me + dirty BINARY: the invariant in action ---
             // laufend -> private backup only (NEVER Freigabe)
             (Binary, HeldByMe, Dirty, Laufend, SicherungsPush),
-            // Meilenstein -> Freigabe = publish + atomic unlock (the release)
-            (Binary, HeldByMe, Dirty, Meilenstein, FreigabePush),
+            // Revision -> Freigabe = publish + atomic unlock (the release)
+            (Binary, HeldByMe, Dirty, Revision, FreigabePush),
             // --- held by me + dirty TEXT (text is never really locked, but cover it) ---
             (Text, HeldByMe, Dirty, Laufend, SicherungsPush),
-            (Text, HeldByMe, Dirty, Meilenstein, FreigabePush),
+            (Text, HeldByMe, Dirty, Revision, FreigabePush),
             // --- unlocked + dirty: open work, no lock held ---
             (Binary, Unlocked, Dirty, Laufend, SicherungsPush),
-            (Binary, Unlocked, Dirty, Meilenstein, FreigabePush),
+            (Binary, Unlocked, Dirty, Revision, FreigabePush),
             (Text, Unlocked, Dirty, Laufend, SicherungsPush),
-            (Text, Unlocked, Dirty, Meilenstein, FreigabePush),
+            (Text, Unlocked, Dirty, Revision, FreigabePush),
             // --- unlocked + clean: nothing to do at any checkpoint ---
             (Binary, Unlocked, Clean, Laufend, Refuse),
-            (Binary, Unlocked, Clean, Meilenstein, Refuse),
+            (Binary, Unlocked, Clean, Revision, Refuse),
             (Text, Unlocked, Clean, Laufend, Refuse),
-            (Text, Unlocked, Clean, Meilenstein, Refuse),
+            (Text, Unlocked, Clean, Revision, Refuse),
         ];
         // The table must cover every snapshot exactly once.
         assert_eq!(cases.len(), all_snapshots().len(), "table covers the whole cross-product");
@@ -316,7 +316,7 @@ mod tests {
     /// THE safety-critical invariant, as an **exhaustive property test** over the full cross-
     /// product: a *locked binary change* (binary, lock held by us, the change still open) must
     /// NEVER yield a Freigabe-Push *while the lock is held* — i.e. on any non-release (laufend)
-    /// checkpoint. The only Freigabe a held binary ever gets is the Meilenstein release, which
+    /// checkpoint. The only Freigabe a held binary ever gets is the Revision release, which
     /// drops the lock atomically (asserted separately below).
     #[test]
     fn binaer_invariante_locked_binary_change_never_freigabe_while_held() {

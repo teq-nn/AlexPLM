@@ -1,24 +1,24 @@
 <script lang="ts">
-  import type { MilestoneArt, ProductView } from "./types";
+  import type { RevisionArt, ProductView } from "./types";
 
   let {
     product,
-    activeMilestone = null,
-    activeMilestoneArt = null,
+    activeRevision = null,
+    activeRevisionArt = null,
   }: {
     product: ProductView | null;
-    activeMilestone?: string | null;
-    activeMilestoneArt?: MilestoneArt | null;
+    activeRevision?: string | null;
+    activeRevisionArt?: RevisionArt | null;
   } = $props();
 
-  // The version bar's largest, brightest element is the active Meilenstein (E28/§24):
+  // The version bar's largest, brightest element is the active Revision (E28/§24):
   // the durable human version. Until a Stand is promoted there is none — say so honestly
   // rather than invent a number.
-  let version = $derived(activeMilestone ?? null);
-  // The Art rides next to the version (E42): a released Meilenstein reads as a calm,
+  let version = $derived(activeRevision ?? null);
+  // The Art rides next to the version (E42): a released Revision reads as a calm,
   // muted "Freigabe · schreibgeschützt" — never orange (the toggle is a considered act,
   // not the laute Ausnahme). A Prototyp is the lax, quiet default.
-  let isFreigabe = $derived(activeMilestoneArt === "freigabe");
+  let isFreigabe = $derived(activeRevisionArt === "freigabe");
 </script>
 
 <header class="bar">
@@ -31,7 +31,7 @@
         <span class="sep">·</span>
         {#if version}
           <span class="version">{version}</span>
-          {#if activeMilestoneArt}
+          {#if activeRevisionArt}
             <span
               class="art label"
               class:freigabe={isFreigabe}
@@ -126,7 +126,7 @@
   .branch {
     color: #b8b4ad;
   }
-  /* The active Meilenstein: the largest, brightest element — a hint of 7-segment display. */
+  /* The active Revision: the largest, brightest element — a hint of 7-segment display. */
   .version {
     color: var(--screen-fg);
     font-weight: 700;
@@ -143,7 +143,7 @@
     text-shadow: none;
   }
 
-  /* Meilenstein-Art chip (E42): a small recessed caps tag next to the version. Prototyp is
+  /* Revision-Art chip (E42): a small recessed caps tag next to the version. Prototyp is
      the quiet, lax default (dim grey). Freigabe reads brighter + a tiny lock glyph — the
      calm "schreibgeschützt" signal, NOT orange (the toggle is a considered act, never the
      laute Ausnahme). */

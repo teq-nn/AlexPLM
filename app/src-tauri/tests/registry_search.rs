@@ -76,7 +76,7 @@ fn make_product(parent: &std::path::Path, name: &str, keyword: &str) -> PathBuf 
         format!("{{\n  \"hinweis\": \"{keyword} ist pflicht\"\n}}\n"),
     )
     .unwrap();
-    // VERSION_NOTES source: human milestone text carrying the keyword.
+    // VERSION_NOTES source: human revision text carrying the keyword.
     fs::write(
         root.join("VERSION_NOTES.md"),
         format!("# v1.0\n\n{keyword} ueberarbeitet und freigegeben\n"),

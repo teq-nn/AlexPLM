@@ -113,13 +113,13 @@
 
   /** Run a Lock Warden checkpoint for one artifact and reflect the action it decided.
    *  Best-effort: a push failure (e.g. no server yet) must never break the silent rhythm. */
-  async function runCheckpoint(path: string, milestone: boolean) {
+  async function runCheckpoint(path: string, revision: boolean) {
     if (!productPath) return;
     try {
       const action = await invoke<WardenAction>("run_checkpoint", {
         product: productPath,
         path,
-        milestone,
+        revision,
       });
       // Only a real action lights the readout; Refuse leaves the rhythm silent.
       if (action !== "refuse") wardenAction = action;
@@ -483,7 +483,7 @@
   let stands = $state<Stand[]>([]);
   let standSeq = 0;
 
-  // The version tree (Issue #8): Stände as nodes, Meilensteine marked, active version
+  // The version tree (Issue #8): Stände as nodes, Revisionen marked, active version
   // driving the bar. Read read-only and refreshed whenever a new Stand settles.
   let graph = $state<VersionGraph | null>(null);
 
@@ -661,7 +661,7 @@
    *  its path to the OS to open. The Werkbank is untouched (a worktree is a second checkout). */
   async function openAsFolder(node: StandNode) {
     if (!productPath) return;
-    const label = node.milestone ?? node.id.slice(0, 8);
+    const label = node.revision ?? node.id.slice(0, 8);
     const result = await invoke<GeoeffneterOrdner>("knoten_als_ordner", {
       path: productPath,
       standId: node.id,
@@ -1069,25 +1069,25 @@
     saveWidths();
   }
 
-  // Promote a Stand to a Meilenstein: the user writes the human VERSION_NOTES text (E28),
+  // Promote a Stand to a Revision: the user writes the human VERSION_NOTES text (E28),
   // Rust persists it and labels the version durably, then returns the refreshed tree.
   async function promote(node: StandNode, version: string, notes: string) {
     if (!productPath) return;
-    graph = await invoke<VersionGraph>("promote_milestone", {
+    graph = await invoke<VersionGraph>("promote_revision", {
       path: productPath,
       standId: node.id,
       version,
       notes,
     });
-    // A Meilenstein is the Freigabe ("ich bin fertig damit"): publish the whole branch to the
+    // A Revision is the Freigabe ("ich bin fertig damit"): publish the whole branch to the
     // shared stand and self-heal locks (Issue #54-Folge). The earlier per-path checkpoint always
-    // Refused here — at milestone time the work is already committed (clean), so the per-path
+    // Refused here — at revision time the work is already committed (clean), so the per-path
     // Warden never reached a Freigabe-Push and nothing was published. The branch publish is the
     // explicit public act; the per-path Warden still drives the silent laufend backup rhythm.
     void freigeben();
   }
 
-  /** Publish the current branch to the shared stand (the Meilenstein Freigabe). Best-effort: a
+  /** Publish the current branch to the shared stand (the Revision Freigabe). Best-effort: a
    *  push failure no longer hides silently — the Diagnose-Log captures the real git exit/stderr. */
   async function freigeben() {
     if (!productPath) return;
@@ -1106,7 +1106,7 @@
   // Push — a personal backup into the user's own ref/namespace, incl. half-finished binaries, that
   // can NEVER reach the shared `main`) and „Holen" (the pull — fetch the colleagues' shared stand).
   // The Freigabe-Push (publish to `main` + release the lock) is NOT here: it stays bound to the
-  // Meilenstein-Freigabe-Toggle (E42), reached through `freigeben()` above. Each button shows a
+  // Revision-Freigabe-Toggle (E42), reached through `freigeben()` above. Each button shows a
   // brief in-flight state, then settles back into the calm Sicherungsstatus / Sync readout.
   let securing = $state(false);
 
@@ -1136,16 +1136,16 @@
     await runSync();
   }
 
-  // Toggle a Meilenstein's Art (E42): Prototyp → Freigabe ("Releasen", write-protects the
+  // Toggle a Revision's Art (E42): Prototyp → Freigabe ("Releasen", write-protects the
   // tag) or back ("Un-Release"). Rust persists the Art per tag and flips the write-protect,
   // then returns the refreshed tree. The dreistufige Freigabe-Gate block-check is a separate
   // slice (Issue #52) and plugs into the Rust seam; nothing about it lives here.
   async function toggleArt(node: StandNode) {
-    if (!productPath || node.milestone === null) return;
+    if (!productPath || node.revision === null) return;
     // Toggling *down* (Freigabe → Prototyp) is the lax direction: never gated. Toggling *up*
     // (Prototyp → Freigabe) is the strenge Übergang — run the dreistufige Freigabe-Gate first
     // (E19.3/E42). A clean verdict raises the tag straight away; any open point opens the gate.
-    if (node.milestone_art === "freigabe") {
+    if (node.revision_art === "freigabe") {
       await applyToggleArt(node);
       return;
     }
@@ -1164,11 +1164,11 @@
   // The actual Art flip (Prototyp → Freigabe or back). Persists the Art + write-protect and
   // returns the refreshed tree; raising to Freigabe is the public act, so publish the branch.
   async function applyToggleArt(node: StandNode) {
-    if (!productPath || node.milestone === null) return;
-    const raising = node.milestone_art !== "freigabe";
-    graph = await invoke<VersionGraph>("toggle_milestone_art", {
+    if (!productPath || node.revision === null) return;
+    const raising = node.revision_art !== "freigabe";
+    graph = await invoke<VersionGraph>("toggle_revision_art", {
       path: productPath,
-      version: node.milestone,
+      version: node.revision,
     });
     if (raising) void freigeben();
   }
@@ -1191,9 +1191,9 @@
     const node = freigabeGate.node;
     freigabeBusy = true;
     try {
-      if (begruendung && node.milestone) {
+      if (begruendung && node.revision) {
         await invoke("log_freigabe_begruendung", {
-          version: node.milestone,
+          version: node.revision,
           begruendung,
         });
       }
@@ -1252,8 +1252,8 @@
 <div class="app">
   <VersionBar
     {product}
-    activeMilestone={graph?.active_milestone ?? null}
-    activeMilestoneArt={graph?.active_milestone_art ?? null}
+    activeRevision={graph?.active_revision ?? null}
+    activeRevisionArt={graph?.active_revision_art ?? null}
   />
 
   <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
@@ -1388,7 +1388,7 @@
         <!-- Manueller Sync (Issue #54): the net-sync is MADE manual + visible while Auto-Commit
              stays silent. A push/pull key pair the user presses deliberately. Git-honest words
              are allowed here (Sichern = backup push, Holen = pull); the dangerous mechanics stay
-             hidden behind the Lock Warden. The Freigabe-Push lives on the Meilenstein-Toggle. -->
+             hidden behind the Lock Warden. The Freigabe-Push lives on the Revision-Toggle. -->
         {#if product}
           <div class="syncpair" role="group" aria-label="Manueller Sync">
             <button

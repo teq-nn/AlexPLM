@@ -82,20 +82,20 @@ pub fn verb_allowed(f: KnotenFakten, verb: KnotenVerb) -> bool {
 ///
 /// - `varianten`: Varianten (Zweige neben der aktiven Linie) ein-/ausblenden. `false` = nur die
 ///   aktive Linie (der Stamm) bleibt sichtbar.
-/// - `nur_meilensteine`: nur Meilensteine zeigen (E9) — die promovierten Stände, der Rest ruht.
+/// - `nur_revisionen`: nur Revisionen zeigen (E9) — die promovierten Stände, der Rest ruht.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GraphFilter {
     /// Varianten (nicht-aktive Zweige) sichtbar? Default `true`.
     pub varianten: bool,
-    /// Nur Meilensteine zeigen? Default `false` (alle Stände).
-    pub nur_meilensteine: bool,
+    /// Nur Revisionen zeigen? Default `false` (alle Stände).
+    pub nur_revisionen: bool,
 }
 
 impl Default for GraphFilter {
     fn default() -> Self {
         GraphFilter {
             varianten: true,
-            nur_meilensteine: false,
+            nur_revisionen: false,
         }
     }
 }
@@ -105,24 +105,24 @@ impl Default for GraphFilter {
 pub struct FilterFakten {
     /// Der Knoten liegt auf der aktiven Linie (dem Stamm) — `false` = eine Variante (Zweig).
     pub on_active: bool,
-    /// Der Knoten ist ein Meilenstein (promovierter Stand).
-    pub is_milestone: bool,
+    /// Der Knoten ist ein Revision (promovierter Stand).
+    pub is_revision: bool,
 }
 
 /// **Der reine Kern**: lässt dieser Filter diesen Knoten durch? Total. Ein Knoten überlebt nur,
 /// wenn er *alle* aktiven Filterbedingungen erfüllt:
 /// - Sind Varianten ausgeblendet, überleben nur Knoten der aktiven Linie.
-/// - Ist „nur Meilensteine" an, überleben nur Meilensteine.
+/// - Ist „nur Revisionen" an, überleben nur Revisionen.
 ///
 /// Wichtig (E45): der Filter blendet nur aus — er schreibt nichts um, speichert nichts. Die
 /// aktive Spitze („wo ich stehe") liegt per Definition auf der aktiven Linie und übersteht den
-/// Varianten-Filter immer; ist sie kein Meilenstein, kann der Meilenstein-Filter sie ausblenden
+/// Varianten-Filter immer; ist sie kein Revision, kann der Revision-Filter sie ausblenden
 /// (rein optisch, der Jetzt-Zustand der Werkbank bleibt davon unberührt — eigener Raum, E45).
 pub fn passes_filter(node: FilterFakten, filter: GraphFilter) -> bool {
     if !filter.varianten && !node.on_active {
         return false;
     }
-    if filter.nur_meilensteine && !node.is_milestone {
+    if filter.nur_revisionen && !node.is_revision {
         return false;
     }
     true
@@ -191,14 +191,14 @@ mod tests {
         }
     }
 
-    fn ff(on_active: bool, is_milestone: bool) -> FilterFakten {
-        FilterFakten { on_active, is_milestone }
+    fn ff(on_active: bool, is_revision: bool) -> FilterFakten {
+        FilterFakten { on_active, is_revision }
     }
 
     #[test]
     fn default_filter_shows_everything() {
         let f = GraphFilter::default();
-        assert!(f.varianten && !f.nur_meilensteine);
+        assert!(f.varianten && !f.nur_revisionen);
         for on_active in [false, true] {
             for ms in [false, true] {
                 assert!(passes_filter(ff(on_active, ms), f), "default passes all");
@@ -208,23 +208,23 @@ mod tests {
 
     #[test]
     fn filters_only_hide_over_the_cross_product() {
-        // table: (varianten, nur_meilensteine) x (on_active, is_milestone) -> sichtbar?
+        // table: (varianten, nur_revisionen) x (on_active, is_revision) -> sichtbar?
         let cases: &[((bool, bool), (bool, bool), bool)] = &[
             // Varianten AUS: nur die aktive Linie überlebt
             ((false, false), (true, false), true),   // aktive Linie bleibt
             ((false, false), (false, false), false), // Variante fällt weg
-            ((false, false), (false, true), false),  // auch ein Varianten-Meilenstein fällt weg
-            // nur Meilensteine: nur promovierte Stände
-            ((true, true), (true, true), true),       // aktiver Meilenstein bleibt
+            ((false, false), (false, true), false),  // auch ein Varianten-Revision fällt weg
+            // nur Revisionen: nur promovierte Stände
+            ((true, true), (true, true), true),       // aktiver Revision bleibt
             ((true, true), (true, false), false),     // gewöhnlicher Stand fällt weg
-            ((true, true), (false, true), true),      // auch ein Varianten-Meilenstein bleibt
-            // beide Filter zusammen: aktive Linie UND Meilenstein
+            ((true, true), (false, true), true),      // auch ein Varianten-Revision bleibt
+            // beide Filter zusammen: aktive Linie UND Revision
             ((false, true), (true, true), true),
-            ((false, true), (false, true), false),   // Varianten-Meilenstein: Varianten-Filter wirft ihn raus
-            ((false, true), (true, false), false),   // aktiver Nicht-Meilenstein: Meilenstein-Filter wirft ihn raus
+            ((false, true), (false, true), false),   // Varianten-Revision: Varianten-Filter wirft ihn raus
+            ((false, true), (true, false), false),   // aktiver Nicht-Revision: Revision-Filter wirft ihn raus
         ];
         for ((var, nur_ms), (on_active, ms), expected) in cases {
-            let filter = GraphFilter { varianten: *var, nur_meilensteine: *nur_ms };
+            let filter = GraphFilter { varianten: *var, nur_revisionen: *nur_ms };
             assert_eq!(
                 passes_filter(ff(*on_active, *ms), filter),
                 *expected,
@@ -237,7 +237,7 @@ mod tests {
     fn active_line_always_survives_the_varianten_filter() {
         // „Wo ich stehe" liegt auf der aktiven Linie und überlebt das Ausblenden der Varianten
         // immer — der eigene Raum bleibt navigierbar, egal wie scharf gefiltert wird (E45).
-        let only_trunk = GraphFilter { varianten: false, nur_meilensteine: false };
+        let only_trunk = GraphFilter { varianten: false, nur_revisionen: false };
         assert!(passes_filter(ff(true, false), only_trunk));
         assert!(passes_filter(ff(true, true), only_trunk));
     }

@@ -32,11 +32,11 @@ export interface Stand extends StandEvent {
   id: number;
 }
 
-/** The Art (kind) of a Meilenstein (Issue #41, E42). A new Meilenstein is "prototyp" (lax)
+/** The Art (kind) of a Revision (Issue #41, E42). A new Revision is "prototyp" (lax)
  *  by default; the toggle raises it to "freigabe" (streng + write-protected / schreibgeschützt),
- *  and toggling back is a deliberate reversible "Un-Release". Mirrors `MilestoneArt` in
+ *  and toggling back is a deliberate reversible "Un-Release". Mirrors `RevisionArt` in
  *  src-tauri/src/graph.rs (serde kebab-case). */
-export type MilestoneArt = "prototyp" | "freigabe";
+export type RevisionArt = "prototyp" | "freigabe";
 
 /** A node in the dark "display" version tree (Issue #8).
  *  Mirrors `StandNode` in src-tauri/src/graph.rs. */
@@ -47,11 +47,11 @@ export interface StandNode {
   timestamp: string;
   /** Product-relative path recovered from the boring auto message; "." otherwise. */
   path: string;
-  /** Human version label if this Stand was promoted to a Meilenstein, else null. */
-  milestone: string | null;
-  /** The Meilenstein-Art (Prototyp/Freigabe — E42); null for a plain Stand. (Issue #41) */
-  milestone_art: MilestoneArt | null;
-  /** Whether VERSION_NOTES.md text exists for this Meilenstein. */
+  /** Human version label if this Stand was promoted to a Revision, else null. */
+  revision: string | null;
+  /** The Revision-Art (Prototyp/Freigabe — E42); null for a plain Stand. (Issue #41) */
+  revision_art: RevisionArt | null;
+  /** Whether VERSION_NOTES.md text exists for this Revision. */
   has_notes: boolean;
   /** Whether this node's binary content was offloaded to a cold archive (E36). */
   offloaded: boolean;
@@ -73,13 +73,13 @@ export interface StandNode {
   parents: string[];
 }
 
-/** The version tree + active milestone the version bar shows in Mono (Issue #8 / #28).
+/** The version tree + active revision the version bar shows in Mono (Issue #8 / #28).
  *  Mirrors `VersionGraph` in src-tauri/src/graph.rs. */
 export interface VersionGraph {
   nodes: StandNode[];
-  active_milestone: string | null;
-  /** Art of the active Meilenstein (Prototyp/Freigabe — E42); null if none. (Issue #41) */
-  active_milestone_art: MilestoneArt | null;
+  active_revision: string | null;
+  /** Art of the active Revision (Prototyp/Freigabe — E42); null if none. (Issue #41) */
+  active_revision_art: RevisionArt | null;
   offloaded_archive: string | null;
   /** Name of the active line (Zweig), echoed for the UI marker; null if unknown. */
   active_branch: string | null;
@@ -99,8 +99,8 @@ export type KnotenVerb =
 export interface GraphFilter {
   /** Show variant lines (non-active Zweige)? Default true. */
   varianten: boolean;
-  /** Show only Meilensteine (promoted Stände)? Default false. */
-  nur_meilensteine: boolean;
+  /** Show only Revisionen (promoted Stände)? Default false. */
+  nur_revisionen: boolean;
 }
 
 /** Result of „Als Ordner öffnen" (Issue #55): the materialised read-only worktree path.
@@ -590,13 +590,13 @@ export interface Task {
 
 // -------------------------------------------------------------------------------------------------
 // Aufgaben-Block decision (Issue #49, E42). The pure core decides whether open Aufgaben block a
-// checkpoint, carrying the Strenge on the Meilenstein-Art (NOT a Branch-Typ): a "freigabe" is
+// checkpoint, carrying the Strenge on the Revision-Art (NOT a Branch-Typ): a "freigabe" is
 // blocked by any open Aufgabe, a "prototyp" only by an open „blockiert überall" Aufgabe, and a
 // Hinweis never blocks. Surfaced by the `evaluate_task_block` command; Issue #52's Freigabe-Gate
 // consumes it. Mirrors `BlockDecision` in src-tauri/src/aufgabenblock.rs.
 // -------------------------------------------------------------------------------------------------
 
-/** Whether a checkpoint at the intended Meilenstein-Art is blocked by open Aufgaben, and by which.
+/** Whether a checkpoint at the intended Revision-Art is blocked by open Aufgaben, and by which.
  *  Mirrors `BlockDecision` in src-tauri/src/aufgabenblock.rs. */
 export interface BlockDecision {
   /** Whether the checkpoint is blocked at all. `true` iff `blocking_task_ids` is non-empty. */

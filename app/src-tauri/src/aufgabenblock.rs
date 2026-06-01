@@ -3,47 +3,47 @@
 //!
 //! Following the house pattern (`syncdecider.rs`, `warden.rs`, `classifier.rs`): one **pure,
 //! total, deterministic** function over a plain snapshot. It knows **no** git internals, no
-//! clock, no I/O — the loading glue (read the product's tasks + the Meilenstein-Art) lives in
+//! clock, no I/O — the loading glue (read the product's tasks + the Revision-Art) lives in
 //! [`crate::aufgabenblockglue`]; this module only decides. Snapshot in, exactly one
 //! [`BlockDecision`] out.
 //!
-//! The load-bearing rule of E42 is that the **Strenge lives on the Meilenstein-Art**
-//! ([`MilestoneArt`], from Issue #41), **not** on a Branch-Typ:
+//! The load-bearing rule of E42 is that the **Strenge lives on the Revision-Art**
+//! ([`RevisionArt`], from Issue #41), **not** on a Branch-Typ:
 //!
 //! - **Prototyp** (lax) → an open Aufgabe **never** blocks. Tagging a Prototyp stays frictionless.
 //! - **Freigabe** (streng) → an open, block-capable Aufgabe is a **harter Block**: a Freigabe may
 //!   not be reached while it is open.
 //! - A task's **„blockiert überall"** opt-out ([`Task::blocks_everywhere`], US 30) makes it block
-//!   **kontextunabhängig** — it blocks even for a Prototyp, regardless of the Meilenstein-Art.
+//!   **kontextunabhängig** — it blocks even for a Prototyp, regardless of the Revision-Art.
 //! - A **Hinweis** never blocks, in any context (it is not block-capable; US 27).
 //!
-//! The signature shape is `(Aufgaben-Menge × Meilenstein-Art {Prototyp|Freigabe} × Checkpoint)
+//! The signature shape is `(Aufgaben-Menge × Revision-Art {Prototyp|Freigabe} × Checkpoint)
 //! → blockiert / nicht blockiert`. The pure core takes the task snapshot and the intended Art
 //! and returns whether the checkpoint is blocked and **by which tasks** — so Issue #52's
 //! Freigabe-Gate UI can name the offenders without re-deciding anything.
 
-use crate::graph::MilestoneArt;
+use crate::graph::RevisionArt;
 use crate::tasks::Task;
 use serde::Serialize;
 
-/// Whether a **single** open, block-capable Aufgabe blocks at the given Meilenstein-Art. Pure.
+/// Whether a **single** open, block-capable Aufgabe blocks at the given Revision-Art. Pure.
 ///
 /// The two axes that make an Aufgabe block (E42):
-/// - the **context**: a [`MilestoneArt::Freigabe`] is streng (every open Aufgabe blocks it); a
-///   [`MilestoneArt::Prototyp`] is lax (open Aufgaben do not block it);
+/// - the **context**: a [`RevisionArt::Freigabe`] is streng (every open Aufgabe blocks it); a
+///   [`RevisionArt::Prototyp`] is lax (open Aufgaben do not block it);
 /// - the task's own **„blockiert überall"** opt-out: when set, it blocks **kontextunabhängig** —
 ///   even at a Prototyp.
 ///
 /// A task that is not block-capable (a Hinweis, or a done/dropped Aufgabe) never blocks; the
 /// caller filters those out before reaching here, but the rule holds for any input.
-fn task_blocks_at(task: &Task, art: MilestoneArt) -> bool {
+fn task_blocks_at(task: &Task, art: RevisionArt) -> bool {
     if !task.is_block_capable() {
         // A Hinweis — or a done/dropped Aufgabe — never blocks, in any context (US 27).
         return false;
     }
     // An open Aufgabe blocks if EITHER the context is streng (Freigabe) OR it opted to block
-    // everywhere (US 30) — the latter ignores the Meilenstein-Art entirely.
-    task.blocks_everywhere || matches!(art, MilestoneArt::Freigabe)
+    // everywhere (US 30) — the latter ignores the Revision-Art entirely.
+    task.blocks_everywhere || matches!(art, RevisionArt::Freigabe)
 }
 
 /// The single decision the Aufgaben-Block core returns for a checkpoint. Exactly one; total. It
@@ -73,7 +73,7 @@ impl BlockDecision {
 }
 
 /// The **Aufgaben-Block decision**: given the product's task snapshot and the intended
-/// Meilenstein-Art for a checkpoint, decide whether the checkpoint is blocked and by which
+/// Revision-Art for a checkpoint, decide whether the checkpoint is blocked and by which
 /// open Aufgaben. **Pure, total, deterministic** — no I/O, no clock.
 ///
 /// The rule (E42), in one line: **a Freigabe is blocked by any open Aufgabe; a Prototyp only by
@@ -86,7 +86,7 @@ impl BlockDecision {
 ///
 /// Returns a [`BlockDecision`] naming the blocking task ids in input order (so the UI can list
 /// them); `blocked` is `true` iff that list is non-empty.
-pub fn decide_block(tasks: &[Task], art: MilestoneArt) -> BlockDecision {
+pub fn decide_block(tasks: &[Task], art: RevisionArt) -> BlockDecision {
     let blocking_task_ids: Vec<String> = tasks
         .iter()
         .filter(|t| task_blocks_at(t, art))
@@ -120,7 +120,7 @@ mod tests {
 
     /// The four task shapes that drive the cross-product matrix, with a stable id each:
     /// an open blocking Aufgabe, a none (done Aufgabe), a Hinweis, and a „blockiert überall"
-    /// Aufgabe. Each is exercised against BOTH Meilenstein-Arten below.
+    /// Aufgabe. Each is exercised against BOTH Revision-Arten below.
     fn open_blocking() -> Task {
         task("open-aufgabe", TaskKind::Aufgabe, TaskStatus::Offen, false)
     }
@@ -140,17 +140,17 @@ mod tests {
     #[test]
     fn cross_product_of_art_and_task_shape() {
         // (art, task, expect_blocked)
-        let cases: &[(MilestoneArt, Task, bool)] = &[
+        let cases: &[(RevisionArt, Task, bool)] = &[
             // --- Prototyp (lax): never blocks, EXCEPT a „blockiert überall" Aufgabe. -----------
-            (MilestoneArt::Prototyp, open_blocking(), false),
-            (MilestoneArt::Prototyp, done_aufgabe(), false),
-            (MilestoneArt::Prototyp, open_hinweis(), false),
-            (MilestoneArt::Prototyp, blocks_everywhere_aufgabe(), true), // kontextunabhängig
+            (RevisionArt::Prototyp, open_blocking(), false),
+            (RevisionArt::Prototyp, done_aufgabe(), false),
+            (RevisionArt::Prototyp, open_hinweis(), false),
+            (RevisionArt::Prototyp, blocks_everywhere_aufgabe(), true), // kontextunabhängig
             // --- Freigabe (streng): an open blocking Aufgabe is a harter Block. ----------------
-            (MilestoneArt::Freigabe, open_blocking(), true),
-            (MilestoneArt::Freigabe, done_aufgabe(), false), // not open ⇒ not block-capable
-            (MilestoneArt::Freigabe, open_hinweis(), false), // a Hinweis never blocks
-            (MilestoneArt::Freigabe, blocks_everywhere_aufgabe(), true),
+            (RevisionArt::Freigabe, open_blocking(), true),
+            (RevisionArt::Freigabe, done_aufgabe(), false), // not open ⇒ not block-capable
+            (RevisionArt::Freigabe, open_hinweis(), false), // a Hinweis never blocks
+            (RevisionArt::Freigabe, blocks_everywhere_aufgabe(), true),
         ];
         for (art, t, expect) in cases {
             let d = decide_block(std::slice::from_ref(t), *art);
@@ -179,7 +179,7 @@ mod tests {
             open_hinweis(),
             done_aufgabe(),
         ];
-        let d = decide_block(&tasks, MilestoneArt::Prototyp);
+        let d = decide_block(&tasks, RevisionArt::Prototyp);
         assert!(!d.is_blocked(), "a Prototyp is lax: open Aufgaben do not block it");
         assert_eq!(d.blocking_count(), 0);
     }
@@ -195,7 +195,7 @@ mod tests {
             task("a2", TaskKind::Aufgabe, TaskStatus::Offen, false),     // blocks
             task("verworfen", TaskKind::Aufgabe, TaskStatus::Verworfen, false), // not open
         ];
-        let d = decide_block(&tasks, MilestoneArt::Freigabe);
+        let d = decide_block(&tasks, RevisionArt::Freigabe);
         assert!(d.is_blocked(), "Freigabe + open Aufgabe is a harter Block");
         assert_eq!(
             d.blocking_task_ids,
@@ -204,11 +204,11 @@ mod tests {
         );
     }
 
-    /// AC: **„blockiert überall" blocks regardless of Meilenstein-Art** — it is the
+    /// AC: **„blockiert überall" blocks regardless of Revision-Art** — it is the
     /// context-independent opt-out (US 30). It blocks a Prototyp just as it blocks a Freigabe.
     #[test]
     fn blocks_everywhere_blocks_in_every_context() {
-        for art in [MilestoneArt::Prototyp, MilestoneArt::Freigabe] {
+        for art in [RevisionArt::Prototyp, RevisionArt::Freigabe] {
             let d = decide_block(&[blocks_everywhere_aufgabe()], art);
             assert!(d.is_blocked(), "blockiert-ueberall blocks even at {art:?}");
             assert_eq!(d.blocking_task_ids, vec!["ueberall".to_string()]);
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn hinweis_never_blocks_even_with_blocks_everywhere() {
         let hinweis_ueberall = task("h", TaskKind::Hinweis, TaskStatus::Offen, true);
-        for art in [MilestoneArt::Prototyp, MilestoneArt::Freigabe] {
+        for art in [RevisionArt::Prototyp, RevisionArt::Freigabe] {
             let d = decide_block(std::slice::from_ref(&hinweis_ueberall), art);
             assert!(!d.is_blocked(), "a Hinweis never blocks at {art:?}, flag or not");
             assert_eq!(d.blocking_count(), 0);
@@ -232,7 +232,7 @@ mod tests {
     /// the decision is internally consistent (flag ⇔ non-empty id list).
     #[test]
     fn empty_snapshot_never_blocks_and_decision_is_total() {
-        for art in [MilestoneArt::Prototyp, MilestoneArt::Freigabe] {
+        for art in [RevisionArt::Prototyp, RevisionArt::Freigabe] {
             let d = decide_block(&[], art);
             assert!(!d.is_blocked());
             assert_eq!(d.blocked, !d.blocking_task_ids.is_empty());
@@ -244,8 +244,8 @@ mod tests {
     #[test]
     fn decision_is_deterministic() {
         let tasks = vec![open_blocking(), blocks_everywhere_aufgabe(), open_hinweis()];
-        let a = decide_block(&tasks, MilestoneArt::Freigabe);
-        let b = decide_block(&tasks, MilestoneArt::Freigabe);
+        let a = decide_block(&tasks, RevisionArt::Freigabe);
+        let b = decide_block(&tasks, RevisionArt::Freigabe);
         assert_eq!(a, b);
     }
 }
