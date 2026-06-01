@@ -41,6 +41,7 @@
   import HistorieGate from "$lib/HistorieGate.svelte";
   import FreigabeGate from "$lib/FreigabeGate.svelte";
   import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
+  import KontoPanel from "$lib/KontoPanel.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
@@ -281,6 +282,11 @@
   // lives in its own instrument screen reachable from the entry bar — not tied to the open
   // product. The registry it searches stores only paths (never content).
   let sucheOpen = $state(false);
+
+  // Das globale Konto-Panel (ADR 0004, Issue #90). App-level: genau EINE app-weite Server-Identität,
+  // erreichbar über das Zahnrad im Header — auch ohne offenes Produkt. Lokales Arbeiten braucht kein
+  // Konto; es wird erst im Teilen-Moment nötig, daher kein Login-Wall beim Start.
+  let kontoOpen = $state(false);
 
   // The Produktliste / Verlauf switcher (Issue #73). The Produkt-Registry is app-level, so the
   // switcher lives in the app-level entry bar next to the Suche. A ref so opening/importing/
@@ -1323,6 +1329,28 @@
       <span class="label">Suche über Produkte</span>
     </button>
 
+    <!-- Einstellungen · Konto (ADR 0004, Issue #90): a gear in the app-level entry bar, always
+         reachable — even with no product open. Opens the global Konto panel (one app-wide server
+         identity). It does not gate daily work; the Konto is only needed in the Teilen-Moment. -->
+    <button
+      class="gear"
+      class:on={kontoOpen}
+      aria-pressed={kontoOpen}
+      title="Einstellungen · Konto: Server-Identität einrichten & prüfen"
+      onclick={() => (kontoOpen = true)}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+        <path
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
+          d="M12 8.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2Zm8.2 3.6a8 8 0 0 0-.07-1.05l1.86-1.45-1.8-3.12-2.2.88a8 8 0 0 0-1.82-1.05l-.33-2.34h-3.6l-.33 2.34a8 8 0 0 0-1.82 1.05l-2.2-.88-1.8 3.12 1.86 1.45A8 8 0 0 0 3.8 12c0 .35.03.7.07 1.05L2 14.5l1.8 3.12 2.2-.88a8 8 0 0 0 1.82 1.05l.33 2.34h3.6l.33-2.34a8 8 0 0 0 1.82-1.05l2.2.88 1.8-3.12-1.86-1.45c.04-.35.07-.7.07-1.05Z"
+        />
+      </svg>
+      <span class="label gr-text">Einstellungen</span>
+    </button>
+
     <!-- Diagnose toggle (Issue #71, ex-#54-Folge): moved OUT of the productive work toolbar to
          this unobtrusive corner of the app-level entry bar. A tiny recessed instrument lamp —
          no text, just an LED — that opens the git/sync log so a silent push can be inspected.
@@ -1713,6 +1741,10 @@
       loud = q;
       loudFromPublish = true;
     }}
+    onOpenKonto={() => {
+      ceremonyOpen = false;
+      kontoOpen = true;
+    }}
     onClose={() => (ceremonyOpen = false)}
   />
 {/if}
@@ -1726,6 +1758,12 @@
 <!-- Produktübergreifende Live-Suche (Issue #45, E45): an app-level instrument screen. -->
 {#if sucheOpen}
   <ProduktSuche onClose={() => (sucheOpen = false)} />
+{/if}
+
+<!-- Globales Konto-Panel (ADR 0004, Issue #90): one app-wide server identity, reachable via the
+     gear in the header — even with no product open. -->
+{#if kontoOpen}
+  <KontoPanel onClose={() => (kontoOpen = false)} />
 {/if}
 
 <!-- Werkzeugkasten einrichten/erweitern (Issue #50): pick a Standard-Werkzeugkasten + tune it,
@@ -1836,6 +1874,61 @@
     box-shadow:
       inset 0 0 0 1px rgba(255, 255, 255, 0.08),
       0 0 5px rgba(201, 198, 191, 0.4);
+  }
+
+  /* Einstellungen-Zahnrad (ADR 0004, Issue #90): a quiet app-level gear, same recessed instrument
+     treatment as the Diagnose lamp — a small icon whose mono caption reveals on hover/open. */
+  .gear {
+    appearance: none;
+    cursor: pointer;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    padding: 4px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-muted);
+    opacity: 0.55;
+    transition:
+      opacity var(--dur) var(--ease),
+      gap var(--dur) var(--ease),
+      background var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  .gear svg {
+    flex: none;
+    display: block;
+  }
+  .gear .gr-text {
+    max-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--ink-muted);
+    transition:
+      max-width var(--dur) var(--ease),
+      margin var(--dur) var(--ease);
+  }
+  .gear:hover,
+  .gear:focus-visible,
+  .gear.on {
+    opacity: 1;
+    gap: 6px;
+  }
+  .gear:hover .gr-text,
+  .gear:focus-visible .gr-text,
+  .gear.on .gr-text {
+    max-width: 90px;
+  }
+  .gear:focus-visible {
+    outline: none;
+    border-color: var(--ink-muted);
+  }
+  .gear.on {
+    color: var(--ink-strong);
   }
 
   /* Raum-Schalter (Issue #55): a seated two-position instrument switch. The two rooms are equal;

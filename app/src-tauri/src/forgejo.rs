@@ -164,6 +164,37 @@ pub fn ensure_repo(
     interpret_status(code, &body).map_err(|m| Error::new(ErrorKind::Other, m))
 }
 
+/// Verify the Konto credentials against the Forgejo/Gitea server (ADR 0004, Issue #90): call
+/// `GET /api/v1/user` with Basic auth and return the **account name** on success. This deliberately
+/// covers ONLY connection + token validity — the repo-create permission is NOT pre-checked (it
+/// surfaces honestly on first publish via [`ensure_repo`]'s 403).
+///
+/// The thin, isolated side-effect layer: the only part that touches the network. The status/body
+/// interpretation is the pure, table-tested [`crate::konto::interpret_user_status`]. Errors ride up
+/// as `io::Error` so the command layer can classify them through the existing typed `AppError` path
+/// (a 401 yields an auth-classified message that reopens the token field; a network error points at
+/// the server address). The token is never logged.
+pub fn verify_account(host_url: &str, user: &str, token: &str) -> std::io::Result<String> {
+    let endpoint = format!("{}/api/v1/user", host_url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder()
+        .timeout(API_TIMEOUT)
+        .build()
+        .map_err(|e| Error::new(ErrorKind::Other, format!("HTTP-Client-Fehler: {e}")))?;
+    let resp = client
+        .get(&endpoint)
+        .basic_auth(user, Some(token))
+        .send()
+        .map_err(|e| {
+            Error::new(
+                ErrorKind::Other,
+                format!("Server nicht erreichbar — bitte Server-Adresse prüfen: {e}"),
+            )
+        })?;
+    let code = resp.status().as_u16();
+    let body = resp.text().unwrap_or_default();
+    crate::konto::interpret_user_status(code, &body).map_err(|m| Error::new(ErrorKind::Other, m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

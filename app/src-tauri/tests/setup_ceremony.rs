@@ -70,7 +70,7 @@ fn ceremony_connects_remote_then_first_push_publishes_and_settles() {
     // Connect the "server": host = file://<tmp>, owner = team, repo = remote -> file URL
     // file://<tmp>/team/remote.git, which is the bare repo above (NOT a real Forgejo server).
     let host2 = format!("file://{}", tmp.path().display());
-    let connected = configure_remote(&product2, &host2, "team", "remote", "", "").unwrap();
+    let connected = configure_remote(&product2, &host2, "team", "remote", "anna").unwrap();
 
     // A server is now connected, but nothing published yet -> the publish step is offered.
     assert_eq!(connected.stage, SetupStage::RemoteSetNotPublished);
@@ -137,8 +137,8 @@ fn connecting_is_idempotent_updates_url_on_re_run() {
     seed_product(&product);
 
     let host = format!("file://{}", tmp.path().display());
-    configure_remote(&product, &host, "team", "first", "", "").unwrap();
-    let second = configure_remote(&product, &host, "team", "second", "", "").unwrap();
+    configure_remote(&product, &host, "team", "first", "anna").unwrap();
+    let second = configure_remote(&product, &host, "team", "second", "anna").unwrap();
 
     // The remote URL is updated in place, not duplicated.
     let url = git_out(&product, &["remote", "get-url", REMOTE_NAME]);
@@ -172,7 +172,7 @@ fn republish_to_diverged_remote_integrates_text_silently() {
     seed_bare_remote(&bare);
 
     let host = format!("file://{}", tmp.path().display());
-    configure_remote(&product, &host, "team", "remote", "", "").unwrap();
+    configure_remote(&product, &host, "team", "remote", "anna").unwrap();
     // First publish seeds the remote (now non-empty, upstream set).
     assert!(matches!(
         publish_product(&product, None).unwrap(),
@@ -231,7 +231,7 @@ fn republish_to_diverged_remote_on_binary_raises_loud_without_pushing() {
     seed_bare_remote(&bare);
 
     let host = format!("file://{}", tmp.path().display());
-    configure_remote(&product, &host, "team", "remote", "", "").unwrap();
+    configure_remote(&product, &host, "team", "remote", "anna").unwrap();
     assert!(matches!(
         publish_product(&product, None).unwrap(),
         PublishOutcome::Published(_)

@@ -25,3 +25,6 @@ When a Baustein is stillgelegt (label-only), its Ignore/LFS lines stay behind in
 
 ## Waise
 A tracked file that matches no Artefakt-Glob: it lies in the Unzugeordnet-Fach of its Arbeitsbereich (only the label is missing), so nothing is lost by omission and the folder context survives as an assignment hint.
+
+## Konto
+The single, app-wide identity used for every action against the self-hosted Forgejo/Gitea server: one Server-Adresse and one set of Zugangsdaten, set once and reused for all Produkte. There is exactly one Konto — the tool talks to one server. Owning a Konto is what lets a Produkt be veröffentlicht and a colleague invited; a Produkt names only its own owner/repo, never its own credentials.

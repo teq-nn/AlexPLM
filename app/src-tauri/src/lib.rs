@@ -22,6 +22,7 @@ pub mod import;
 pub mod import_gate;
 pub mod kartenstatus;
 pub mod knotenverben;
+pub mod konto;
 pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
@@ -56,6 +57,10 @@ use freigabegate::GateVerdict;
 use freigabegateglue::gate_for_art;
 use graph::{MilestoneArt, VersionGraph};
 use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
+use konto::{
+    clear_konto as clear_konto_file, konto_path, read_konto as read_konto_file, write_konto,
+    KontoConfig, KontoView,
+};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
@@ -472,26 +477,42 @@ fn read_setup_state(path: String) -> Result<SetupReport, String> {
     read_setup(root).map_err(|e| e.to_string())
 }
 
-/// Connect the self-hosted Forgejo/Gitea server (Issue #5, E41): validate + normalize the typed
-/// host/owner/repo/credentials (pure core), store the credentials in the **OS keystore** (Issue
-/// #22, never in `.git/config`), configure the git remote with the credential-free URL, and enable
-/// `locksverify` for the host. The returned report carries only the credential-free clone URL. A
-/// keystore/auth failure surfaces as a typed [`AppError`] so the frontend can reopen the
-/// credential field instead of hanging.
+/// Connect the self-hosted Forgejo/Gitea server (Issue #5, E41; credential-free since ADR 0004 /
+/// Issue #92). Draws everything server-related from the app-wide **Konto**: the Base-URL and the
+/// owner-default (the Konto username) come from `konto::read_konto`, and the frontend supplies only
+/// the optional `owner` (Besitzer/Team) + `repo` (Produkt-Name). Configures the git remote with the
+/// credential-free clone URL and enables `locksverify`; writes **no** credentials (the Konto is the
+/// sole writer of those, host-keyed in the OS keystore at Konto-save time). With **no Konto set** it
+/// refuses with a clear typed `error` so the frontend points the user at the Konto panel instead of
+/// asking for credentials. The returned report carries only the credential-free clone URL.
 #[tauri::command]
 async fn connect_server(
+    app: tauri::AppHandle,
     path: String,
-    host: String,
     owner: String,
     repo: String,
-    user: String,
-    token: String,
 ) -> Result<SetupReport, AppError> {
-    // Touches the OS keystore and git config; off the main thread so the ceremony step never freezes
-    // the WebView. (Inline `spawn_blocking` rather than `on_blocking` because the error is `AppError`.)
+    // Resolve the app-wide Konto file before going off-thread; a missing config dir is a plain error.
+    let konto_file = resolve_konto_file(&app).map_err(|message| AppError {
+        code: "error".to_string(),
+        message,
+    })?;
+    // Configures git config; off the main thread so the ceremony step never freezes the WebView.
+    // (Inline `spawn_blocking` rather than `on_blocking` because the error is `AppError`.)
     tauri::async_runtime::spawn_blocking(move || {
+        // The Konto is the single source for the server address + owner-default. No Konto → refuse
+        // with a clear domain message; the frontend opens the Konto panel instead of a credential
+        // field (ADR 0004: "global login, not per repo").
+        let Some(konto) = read_konto_file(&konto_file) else {
+            return Err(AppError {
+                code: "error".to_string(),
+                message: "Kein Konto eingerichtet — bitte zuerst im Konto den Server anmelden."
+                    .to_string(),
+            });
+        };
         let root = Path::new(&path);
-        configure_remote(root, &host, &owner, &repo, &user, &token).map_err(AppError::from_io)
+        configure_remote(root, &konto.base_url, &owner, &repo, &konto.account)
+            .map_err(AppError::from_io)
     })
     .await
     .map_err(|e| AppError { code: "error".to_string(), message: format!("Hintergrund-Task abgebrochen: {e}") })?
@@ -937,6 +958,128 @@ fn unregister_product(
     remove_registered(&file, &path).map_err(|e| e.to_string())
 }
 
+/// Resolve the app-level Konto-Server-Adresse file under Tauri's app config dir (ADR 0004, Issue
+/// #90). Lives at app level — NOT inside any product — because the Konto is ONE app-wide server
+/// identity, reused for all products (next to the Produkt-Registry, #45). A failure to resolve the
+/// config dir surfaces as a German error string.
+fn resolve_konto_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("App-Konfigurationsordner nicht ermittelbar: {e}"))?;
+    Ok(konto_path(&dir))
+}
+
+/// Read the app-wide Konto (ADR 0004, Issue #90): returns the normalized Base-URL + the angemeldete
+/// account, or `None` when no Konto is set yet. **Never** returns the token — it stays in the OS
+/// keystore and never leaves the backend. A missing/corrupt config reads as "kein Konto" (`None`),
+/// never an error.
+#[tauri::command]
+fn read_konto(app: tauri::AppHandle) -> Result<Option<KontoView>, String> {
+    let file = resolve_konto_file(&app)?;
+    Ok(read_konto_file(&file).map(|c| KontoView {
+        base_url: c.base_url,
+        account: c.account,
+    }))
+}
+
+/// Set up + verify the app-wide Konto (ADR 0004, Issue #90): normalize the typed Server-Adresse,
+/// verify the credentials against `GET /api/v1/user` (200 = connection ok + token valid + returns
+/// the account name; 401 = token wrong; network error = check server address), then persist the
+/// Base-URL app-level and write the credentials to the OS keystore (host-keyed, like the existing
+/// ceremony). Returns the Konto view (Base-URL + account) — **never** the token, which is never
+/// echoed back or logged. Errors are typed like the existing ceremony commands: `auth` reopens the
+/// token field, `keystore` reports the OS keystore is unreachable, `error` is everything else.
+///
+/// The check deliberately covers ONLY connection + token validity — the repo-create permission is
+/// NOT pre-checked (it surfaces honestly on first publish via `forgejo::ensure_repo`'s 403).
+#[tauri::command]
+async fn save_konto(
+    app: tauri::AppHandle,
+    server: String,
+    username: String,
+    token: String,
+) -> Result<KontoView, AppError> {
+    let file = resolve_konto_file(&app).map_err(|message| AppError {
+        code: "error".to_string(),
+        message,
+    })?;
+    // Touches the network (verify) and the OS keystore; off the WebView main thread so the panel
+    // never freezes. (Inline `spawn_blocking` rather than `on_blocking` because the error is typed.)
+    tauri::async_runtime::spawn_blocking(move || {
+        // 1) Normalize the Server-Adresse — a typo fails here, before any network call.
+        let base_url = konto::normalize_base_url(&server).map_err(|message| AppError {
+            code: "error".to_string(),
+            message,
+        })?;
+        let user = username.trim().to_string();
+        if user.is_empty() {
+            return Err(AppError {
+                code: "auth".to_string(),
+                message: "Benutzername fehlt.".to_string(),
+            });
+        }
+        // 2) Verify connection + token validity; on 200 the account name comes back.
+        let account =
+            forgejo::verify_account(&base_url, &user, &token).map_err(AppError::from_io)?;
+        // 3) Write the credentials to the OS keystore, host-keyed under the Konto host origin (the
+        //    same place askpass and `forgejo::ensure_repo` look). The Konto is the single writer of
+        //    credentials (ADR 0004).
+        credentials::store(&base_url, &user, &token).map_err(|e| match e {
+            credentials::CredentialError::Unavailable(d) => AppError {
+                code: "keystore".to_string(),
+                message: format!("OS-Schlüsselbund nicht erreichbar: {d}"),
+            },
+            other => AppError {
+                code: "keystore".to_string(),
+                message: other.to_string(),
+            },
+        })?;
+        // 4) Persist the Base-URL + confirmed account app-level as JSON (never the token).
+        write_konto(
+            &file,
+            &KontoConfig {
+                base_url: base_url.clone(),
+                account: account.clone(),
+            },
+        )
+        .map_err(|e| AppError {
+            code: "error".to_string(),
+            message: format!("Konto-Konfiguration konnte nicht gespeichert werden: {e}"),
+        })?;
+        Ok(KontoView { base_url, account })
+    })
+    .await
+    .map_err(|e| AppError {
+        code: "error".to_string(),
+        message: format!("Hintergrund-Task abgebrochen: {e}"),
+    })?
+}
+
+/// **Konto entfernen** (ADR 0004, Issue #91): read the persisted Base-URL, delete the host-keyed
+/// keystore entries for that Konto host, and remove the persisted Base-URL JSON. **Idempotent**: a
+/// missing keystore entry and a missing JSON file are both success, so „entfernen" without a Konto
+/// is a no-op, never an error (Kriterium 1 + 5).
+///
+/// CRITICAL INVARIANT (ADR 0004): this NEVER touches existing product remotes — no `.git/config`
+/// rewriting, no mass-repoint. Removing the Konto only pauses *sharing*; local work on products
+/// continues unchanged, and a product re-shares once a Konto is set again.
+#[tauri::command]
+fn clear_konto(app: tauri::AppHandle) -> Result<(), String> {
+    let file = resolve_konto_file(&app)?;
+    // Read the Base-URL first so we know which host's keystore entries to forget. A missing/corrupt
+    // config means there is nothing keyed to delete — still a clean no-op.
+    if let Some(config) = read_konto_file(&file) {
+        // `credentials::delete` is idempotent — a missing entry is treated as already-removed; only
+        // a genuinely unreachable keystore surfaces as an error.
+        credentials::delete(&config.base_url).map_err(|e| e.to_string())?;
+    }
+    // Remove the persisted Base-URL JSON (idempotent: a missing file is success).
+    clear_konto_file(&file).map_err(|e| {
+        format!("Konto-Konfiguration konnte nicht entfernt werden: {e}")
+    })
+}
+
 /// The produktübergreifende Live-Suche (Issue #45, E45): a live Fan-out over the registry —
 /// opens each reachable product and greps live over Dateinamen, `_plm` and `VERSION_NOTES.md`.
 /// No central index, no mirror. Unreachable products are reported honestly in the result's
@@ -1188,6 +1331,9 @@ pub fn run() {
             list_products,
             register_product,
             unregister_product,
+            read_konto,
+            save_konto,
+            clear_konto,
             search_products,
             list_tasks,
             create_task_cmd,
