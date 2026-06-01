@@ -53,6 +53,7 @@ fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
         }],
         offloaded: vec!["c1".into()],
         offloaded_archive: Some("2025-11".into()),
+        published: vec![],
         branches: vec![],
         active_branch: None,
     };
@@ -103,6 +104,7 @@ fn an_externally_created_zweig_surfaces_as_a_distinct_line() {
         milestones: vec![],
         offloaded: vec![],
         offloaded_archive: None,
+        published: vec![],
         branches: vec![
             BranchFact { name: "main".into(), tip: "c3".into() },
             BranchFact { name: "gehaeuse-v2".into(), tip: "f2".into() },
@@ -278,8 +280,8 @@ fn toggling_an_unknown_meilenstein_is_refused() {
 
     let err = toggle_milestone_freigabe(root, "v9.9").unwrap_err();
     assert!(
-        err.to_string().contains("Kein Meilenstein"),
-        "must refuse a non-existent Meilenstein, got {err}"
+        err.to_string().contains("Keine Revision"),
+        "must refuse a non-existent Revision, got {err}"
     );
 }
 

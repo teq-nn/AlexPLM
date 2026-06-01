@@ -21,6 +21,7 @@
 //!   once the publish has succeeded — a binary's content reaches the shared stand / LFS store
 //!   exactly here, at the moment the lock ends (E36).
 
+use crate::graphread::TAG_PREFIX;
 use crate::locks::is_lockable;
 use crate::setup::REMOTE_NAME;
 use crate::warden::{
@@ -224,7 +225,37 @@ pub fn auto_unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
 pub fn publish_branch(root: &Path) -> std::io::Result<()> {
     let branch = current_branch(root)?;
     let shared = shared_branch(root, &branch);
-    run_git(root, &["push", REMOTE_NAME, &format!("{branch}:{shared}")])
+    run_git(root, &["push", REMOTE_NAME, &format!("{branch}:{shared}")])?;
+    // Carry the Revision labels of the now-published line to the server (E47, #30). Before this the
+    // branch ref travelled but the tag stayed purely local, so a named Revision was invisible
+    // server-side — the user could not tell whether it had reached the shared stand.
+    publish_revision_tags(root, &branch)
+}
+
+/// Push the **Revision labels** — the `version/*` tags (E47) reachable from the published branch
+/// tip — to the server. Done explicitly because these are *lightweight* tags, which `--follow-tags`
+/// does not carry. Only tags reachable from the published line travel (`--merged`): a label sitting
+/// on an unpublished Variante is left behind, so publishing never leaks an unshared Stand to the
+/// server via a tag ref. Forced so a re-labeled Prototyp Revision updates the shared label — a
+/// write-protected Freigabe tag cannot move locally (graphread refuses), so it is never overwritten.
+fn publish_revision_tags(root: &Path, branch: &str) -> std::io::Result<()> {
+    let listed = git_stdout(
+        root,
+        &["tag", "--list", &format!("{TAG_PREFIX}*"), "--merged", branch],
+    )
+    .unwrap_or_default();
+    let refs: Vec<String> = listed
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|t| format!("refs/tags/{t}"))
+        .collect();
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let mut args: Vec<&str> = vec!["push", "--force", REMOTE_NAME];
+    args.extend(refs.iter().map(String::as_str));
+    run_git(root, &args)
 }
 
 /// Release one `git lfs lock`. Treats an already-unlocked path as success (idempotent), so a

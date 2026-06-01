@@ -15,10 +15,17 @@ Stand: 29.05.2026. Entstanden beim Grillen des PLM-Konzepts. Diese Begriffe habe
 ## Version vs. Commit (zentrale Trennung)
 Das Originaldokument ließ „Version" zwei Jobs gleichzeitig machen. Ab jetzt getrennt:
 
-- **Commit (Zwischenstand / Auto-Speicherung)** — jeder gespeicherte Zwischenstand. Billig, automatisch, im Hintergrund. Das unsichtbare Sicherheitsnetz / der Rückgängig-Verlauf. Existierte im Originalkonzept gar nicht.
-- **Version / Meilenstein** — ein bewusst benannter Stand (`Rev A`, `v0.4`, `Serie 2026-01`), den du fertigst oder freigibst. Technisch ein **Tag** auf einem bestimmten Commit. Trägt die ganze Zeremonie: Notizen, Status, Freigabe.
+- **Stand (Zwischenstand / Auto-Speicherung)** — jeder gespeicherte Zwischenstand. Billig, automatisch, im Hintergrund. Das unsichtbare Sicherheitsnetz / der Rückgängig-Verlauf. Technisch ein Commit; existierte im Originalkonzept gar nicht.
+- **Revision** — ein bewusst benannter Stand (`Rev A`, `v0.4`, `Serie 2026-01`), den du fertigst oder freigibst. Technisch ein **Tag** auf einem bestimmten Stand. Trägt die ganze Zeremonie: Notizen, Art (Prototyp/Freigabe). Ein benannter **Punkt auf einer Linie**, **kein** Zweig (→ Variante).
 
-Merksatz: *Du fabst nicht jeden Tastendruck.* Ein Meilenstein ist, was du herstellen oder ausliefern könntest.
+Merksatz: *Du benennst nicht jeden Tastendruck.* Eine Revision ist, was du herstellen oder ausliefern könntest.
+
+**Begriffswechsel (E47, #30):** Was früher „Meilenstein" hieß, heißt jetzt **Revision**. Das Wort **„Meilenstein"** ist freigeräumt und künftig den **Zukunftszielen** vorbehalten (geplante Forgejo-Meilensteine als in der Zukunft liegende Baumknoten).
+
+**veröffentlicht vs. gesichert vs. freigegeben (drei verschiedene Dinge, E47):**
+- **gesichert** — im **privaten** Backup (`refs/personal/...`). Der stille Rhythmus. Erreicht die geteilte Linie nie.
+- **veröffentlicht** — der Stand liegt auf der **geteilten** Linie (`origin/<shared>`). Erreicht **nur** über `freigeben`; dabei wandert das Revisions-Label mit. *Ort*-Eigenschaft des Stands.
+- **freigegeben / Freigabe** — die schreibgeschützte **Art** einer Revision (E42). *Reife*-Eigenschaft, orthogonal zum Ort: ein Prototyp-Stand kann veröffentlicht sein, ohne „freigegeben" zu sein.
 
 ---
 
