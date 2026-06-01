@@ -526,6 +526,27 @@ async fn freigeben(product: String) -> Result<WardenAction, String> {
     .await
 }
 
+/// **Sichern** (Issue #54): the visible, manual **Sicherungs-Push** — a personal backup of the
+/// current branch into the personal namespace `refs/personal/<user>/<branch>` on the remote. This
+/// is the explicit press of the toolbar's „Sichern"-Knopf: a private backup (incl. half-finished
+/// binaries under an active lock) that, by construction of the ref, can **NEVER** reach the shared
+/// `main`. It does not release any lock — backup yes, Freigabe no (E35). Returns `sicherungs-push`
+/// so the Sicherungsstatus readout lights „gesichert". Distinct from the silent laufend rhythm: the
+/// daily Auto-Commit stays quiet; this is the user's deliberate, visible backup gesture.
+#[tauri::command]
+async fn sichern(product: String) -> Result<WardenAction, String> {
+    // The Sicherungs-Push reaches the network (bounded); off the main thread.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {product}"));
+        }
+        pushglue::sicherungs_push(root).map_err(|e| e.to_string())?;
+        Ok(WardenAction::SicherungsPush)
+    })
+    .await
+}
+
 /// At a checkpoint, **auto-unlock every held lock whose path is locally clean** (Issue #42,
 /// E31/E35 self-healing). Reuses the pure Lock Warden decision per held lock — the lock policy is
 /// decided in one place, never duplicated. Returns the product-relative paths that were freed so
@@ -1082,6 +1103,7 @@ pub fn run() {
             publish_to_server,
             run_checkpoint,
             freigeben,
+            sichern,
             evaluate_freigabe_gate,
             log_freigabe_begruendung,
             read_git_log,
