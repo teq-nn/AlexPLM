@@ -56,20 +56,39 @@ Diese **Waisen** sind nur unetikettiert — der Ordner-Kontext bleibt als Zuordn
 erhalten. Du kannst eine Waise direkt in der App einem Baustein zuordnen; sie erhält dann
 ihre Karte. Es geht nichts dadurch verloren, dass etwas (noch) kein Etikett hat.
 
-## Der Graph-Raum (Versionsbaum)
+## Der Graph-Raum (Verlauf)
 
-Der Versionsbaum ist die dunkle „Display"-Zone rechts neben der Werkbank. Er zeigt die
-Historie als Stände und Meilensteine:
+Den Versionsbaum gibt es an zwei Orten:
 
-![Der Versionsbaum mit Meilensteinen v0.1–v0.4 und einem abzweigenden Variantenzweig](img/versionsbaum.png)
+- als **kompakte „Display"-Zone** rechts neben der Werkbank (für die schnelle Orientierung
+  im Alltag),
+- als **eigenen, vollflächigen Raum** — du wechselst über den Schalter **„Verlauf · Graph"**
+  oben in der Leiste dorthin und mit **„Werkbank"** zurück.
 
-Hier liest du Abstammung und Orientierung ab: welche Meilensteine es gab, wo ein
-Varianten-Zweig (im Bild blau, `alternate-enclosure`) abgezweigt ist, und welche Linie die
-aktive ist. Was die Knoten bedeuten und wie du einen Stand zu einem Meilenstein machst,
-steht unter [Versionen & Meilensteine](Versionen-und-Meilensteine).
+![Der Graph-Raum mit Filtern, Revisionen v0.1–v0.4 und einer abzweigenden Variante](img/graph-raum.png)
 
-> **ℹ️ In Arbeit**
->
-> Aktionen direkt am Graphen (einen alten Stand *als Ordner öffnen*, *von hier abzweigen*,
-> *zurückwerfen*) sowie Anzeige-Filter werden gerade gebaut. Das Grundprinzip steht: Ein
-> Klick auf einen alten Knoten verschiebt **nie still** deine Werkbank.
+Hier liest du Abstammung und Orientierung ab: welche Revisionen es gab, wo eine **Variante**
+(im Bild blau, `alternate-enclosure`) abgezweigt ist, welche Linie aktiv ist und welche Stände
+bereits **veröffentlicht** sind. Was die Knoten bedeuten, steht unter
+[Versionen & Revisionen](Versionen-und-Revisionen).
+
+### Filter
+
+Oben im Graph-Raum sitzen zwei Filter, die **nur ausblenden** (nie etwas verändern):
+
+- **Varianten** — Zweige neben der aktiven Linie ein-/ausblenden,
+- **nur Revisionen** — nur die benannten Stände zeigen.
+
+### Die drei Knoten-Verben
+
+Ein Klick auf einen alten Knoten verschiebt **nie still** deine Werkbank. Stattdessen bietet
+der Knoten drei Verben:
+
+| Verb | Wirkung |
+|---|---|
+| **Als Ordner öffnen** (Standard) | legt eine **schreibgeschützte Kopie daneben** an (ein Worktree) — deine Werkbank ruht |
+| **Von hier abzweigen** | legt eine neue **Variante** (Branch) an; laufende Arbeit wird vorher gesichert |
+| **Zurückwerfen** | springt auf diesen Stand — als neuer Stand obendrauf, reversibel. Hinter der **schwarzen Gate-Taste** mit ausdrücklicher Zustimmung |
+
+So bekommst du das „vollständiger Versionsordner"-Gefühl on demand, ohne deinen aktuellen
+Arbeitsstand zu gefährden.

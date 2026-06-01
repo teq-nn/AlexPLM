@@ -15,7 +15,7 @@ ihrer **Blockier-Fähigkeit**, nicht in ihrer Wichtigkeit:
 | **Aufgabe** | ja — eine offene Aufgabe *kann* eine Freigabe blockieren |
 | **Hinweis** | nein — ein Hinweis blockiert nie, er erinnert nur |
 
-So bleibt die Liste im Alltag ruhig und grau: Erst am Meilenstein-Check kann eine Aufgabe
+So bleibt die Liste im Alltag ruhig und grau: Erst am Freigabe-Gate kann eine Aufgabe
 „laut" werden.
 
 ## Felder einer Aufgabe
@@ -37,14 +37,16 @@ Aufgaben kannst du jederzeit von Hand anlegen. Zusätzlich können sie als **Sta
 entstehen, wenn ein [Baustein](Bausteine-und-Werkzeugkasten) in ein Produkt aufgenommen wird (z. B.
 „Schaltplan erstellen", „Testprotokoll ablegen").
 
-## Blockier-Logik (am Meilenstein)
+## Blockier-Logik (an der Revision)
 
-Ob offene Aufgaben eine Freigabe blockieren, hängt von der **Meilenstein-Art** ab
-(siehe [Versionen & Meilensteine](Versionen-und-Meilensteine)):
+Ob offene Aufgaben eine Freigabe blockieren, hängt von der **Revisions-Art** ab
+(siehe [Versionen & Revisionen](Versionen-und-Revisionen)):
 
 - eine **Freigabe** wird von **jeder** offenen Aufgabe blockiert,
 - ein **Prototyp** nur von einer offenen Aufgabe mit dem Schalter **„blockiert überall"**,
 - ein **Hinweis** blockiert **nie**.
 
-Diese Entscheidung fließt in den Freigabe-Dialog ein — sie ist nicht an einen Zweig-Typ
-gebunden, sondern an die Art des Meilensteins, den du gerade setzen willst.
+Diese Entscheidung fließt in das **Freigabe-Gate** ein — sie ist nicht an einen Linien-Typ
+gebunden, sondern an die Art der Revision, die du gerade setzen willst. Eine blockierende
+Aufgabe erscheint dort als **harter Block** mit den Auswegen **erledigen**, **verwerfen** und
+**zum Hinweis** direkt an der Aufgabe.

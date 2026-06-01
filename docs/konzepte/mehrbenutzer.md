@@ -1,8 +1,8 @@
 # Mehrbenutzer & Sync
 
 Sobald mehr als eine Person an einem Produkt arbeitet, kommt ein **Server (Git-Remote)** ins
-Spiel. Dieses Kapitel erklärt, wie das Werkzeug Zusammenarbeit *ohne* Datenverlust und *ohne*
-Git-Vokabular ermöglicht.
+Spiel. Dieses Kapitel erklärt, wie das Werkzeug Zusammenarbeit *ohne* Datenverlust
+ermöglicht.
 
 ## Wo die Daten liegen
 
@@ -14,16 +14,30 @@ Git-Vokabular ermöglicht.
 
 !!! warning "Server wird Pflicht, sobald geteilt wird"
     Das Sperren von Binärdateien wird serverseitig koordiniert. Darum braucht ein **geteiltes**
-    Produkt zwingend einen Remote. Solo und ungeteilt funktioniert alles auch offline.
+    Produkt zwingend einen Remote. Solo und ungeteilt funktioniert alles auch offline — sogar
+    ganz ohne [Konto](../erste-schritte/teilen.md#das-konto-app-weite-server-identitat).
 
-## Stiller Sync
+## Manueller Sync: Sichern & Holen
 
-Der tägliche Abgleich läuft — wie das Speichern — **still im Hintergrund**: das Werkzeug
-holt beim Öffnen und in Ruhephasen den neuesten Stand und sichert deinen. Du siehst dafür nie
-„push/pull/merge", sondern nur einen ruhigen Status:
+Der Abgleich mit dem Server ist **bewusst und sichtbar** — zwei Tasten in der Werkbank-Leiste,
+die du selbst drückst:
+
+![Die Sync-Leiste: Sichern, Holen und der Alltags-Status](../img/sync-leiste.png)
+
+- **Sichern** (↑) — schiebt deine Arbeit (auch halbfertig) in dein **persönliches Backup** auf
+  dem Server. Erreicht **nie** den geteilten Stand der anderen.
+- **Holen** (↓) — holt den **geteilten Stand** der Kolleg:innen herein.
+
+Daneben steht eine ruhige Statuszeile. Sie zeigt entweder, woran gerade jemand arbeitet
+(**„{Name} arbeitet an {Datei}"**, hat Vorrang), oder den Abgleich-Status:
 
 - **aktuell** — dein Stand entspricht dem geteilten Stand,
-- **gesichert** — dein Stand wurde gesichert.
+- **gesichert** — deine Arbeit wurde (privat) gesichert.
+
+!!! note "Der Auto-Commit bleibt still — der Sync ist manuell"
+    Das *lokale* Speichern erzeugt weiterhin im Hintergrund automatisch Commits. Nur der
+    *Netz-Abgleich* (Sichern/Holen) ist Handarbeit. So bestimmst du selbst, wann deine Arbeit
+    das Backup bzw. den geteilten Stand erreicht.
 
 ## Sperren: Koordination für Binärdateien
 
@@ -53,19 +67,17 @@ Akzent. Eine Sperre ist reine **Koordination** („nicht gleichzeitig, sonst geh
 verloren"), **keine** Autorisierung („wer darf was"). Rollen und Rechte gibt es bewusst
 nicht.
 
-!!! info "In Arbeit"
-    Das „Fremde Sperren"-Panel bekommt einen selbsterklärenderen Namen. Sichtbare manuelle
-    Sync-Knöpfe (Sicherung / Freigabe) werden gerade ergänzt.
-
 ## Die zwei Push-Arten
 
-Hinter dem stillen Sync stehen zwei scharf getrennte Arten, Arbeit auf den Server zu bringen:
+Es gibt zwei scharf getrennte Arten, Arbeit auf den Server zu bringen:
 
-- **Sicherungs-Push** *(privat)* — spiegelt deine Zwischenstände (inkl. halbfertiger
-  Binärdatei) in einen **persönlichen** Backup-Bereich. Backup ja, Freigabe nein. Das
-  Werkzeug meldet dies ruhig als **„gesichert"**.
-- **Freigabe-Push** *(öffentlich)* — bringt die *fertige* Binärdatei auf den geteilten Stand
-  **und** gibt die Sperre frei („ich bin fertig damit"). Gemeldet als **„freigegeben"**.
+- **Sicherung** *(privat)* — der **Sichern**-Knopf im Alltag. Spiegelt deine Zwischenstände
+  (inkl. halbfertiger Binärdatei) in einen **persönlichen** Backup-Bereich. Backup ja,
+  Freigabe nein. Gemeldet als **„gesichert"**.
+- **Freigabe** *(öffentlich)* — gebunden an den **Freigabe-Toggle** einer Revision (siehe
+  [Versionen & Revisionen](versionen.md)). Bringt die *fertige* Binärdatei auf den geteilten
+  Stand **und** gibt die Sperre frei („ich bin fertig damit"). Der Stand ist danach
+  **veröffentlicht**.
 
 Daraus folgt die tragende Sicherheitsregel:
 
@@ -73,26 +85,40 @@ Daraus folgt die tragende Sicherheitsregel:
     Eine gesperrte Binäränderung darf den geteilten Stand nicht erreichen, solange die Sperre
     gehalten wird.
 
-Das macht gefährliche Merge-Situationen strukturell unmöglich: Was beim Abgleich je sichtbar
-wird, ist bereits freigegeben — also bereits entsperrt — und der Abgleich berührt nur freie
+Das macht gefährliche Merge-Situationen strukturell unmöglich: Was beim Holen je sichtbar
+wird, ist bereits veröffentlicht — also bereits entsperrt — und der Abgleich berührt nur freie
 Dateien. Eine vergessene Sperre heilt sich am nächsten Checkpoint selbst.
+
+## „veröffentlicht": ein eigener, sichtbarer Zustand
+
+Die **Sicherung** erreicht nur dein privates Backup. Ein Stand erreicht die **geteilte Linie**
+ausschließlich über die **Freigabe** — und dabei wandert das Revisions-Etikett mit. Im
+Versionsbaum trägt jeder Knoten daher ein binäres Abzeichen **„veröffentlicht"**: Es zeigt
+ehrlich an, *ob* dieser Stand den Server erreicht hat.
+
+Wichtig (und in der [Versionen-Seite](versionen.md#drei-zustande-die-man-nicht-verwechseln-darf)
+ausgeführt): „veröffentlicht" ist der **Ort** des Stands und unabhängig von der **Freigabe**
+(der schreibgeschützten Revisions-Art). Ein Prototyp-Stand auf der geteilten Linie zeigt also
+ebenfalls „veröffentlicht".
 
 ## Die laute Ausnahme
 
-Es gibt **einen** Moment, in dem das Werkzeug die Stimme hebt: Wenn der stille Sync auf einen
-echten, nicht auflösbaren Widerspruch trifft, hält er an und fragt in **eigener** Sprache —
-nie mit Git-Konfliktmarkern:
+Es gibt **einen** Moment, in dem das Werkzeug die Stimme hebt: Wenn beim Holen (oder beim
+Veröffentlichen) ein echter, nicht auflösbarer Widerspruch auftritt, hält das Werkzeug an und
+fragt in **eigener** Sprache:
 
 > „Dein und Bens Gehäuse-Stand widersprechen sich — welcher gilt?"
 >
 > [ mein Stand ] · [ Bens Stand ]
 
 Du wählst, welcher Stand gilt; das Werkzeug schließt den Abgleich sauber ab. Das ist der
-einzige orange umrahmte Augenblick der ganzen Oberfläche.
+einzige orange umrahmte Augenblick der ganzen Oberfläche — er darf einen Merge-Konflikt jetzt
+auch beim Namen nennen.
 
-## Einrichtungs-Zeremonie
+## Konto & Einrichtungs-Zeremonie
 
-Ein Produkt zu teilen ist ein **einmaliger** Schritt pro Produkt (Server anbinden, erstmals
-veröffentlichen, Kolleg:innen einladen). Dieser seltene, risikoarme Moment **darf**
-git-näher formuliert sein — im Gegensatz zum täglichen Sync, der still bleibt. Den Ablauf
-beschreibt [Produkt teilen](../erste-schritte/teilen.md).
+Zum Teilen brauchst du **einmalig** ein [Konto](../erste-schritte/teilen.md#das-konto-app-weite-server-identitat)
+— eine app-weite Server-Identität (Adresse + Zugangsdaten), die für alle Produkte gilt. Ein
+Produkt zu teilen ist dann ein **einmaliger** Schritt pro Produkt (Server anbinden, erstmals
+veröffentlichen, Kolleg:innen einladen). Den vollständigen Ablauf beschreibt
+[Produkt teilen](../erste-schritte/teilen.md).
