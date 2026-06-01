@@ -57,7 +57,10 @@ use freigabegate::GateVerdict;
 use freigabegateglue::gate_for_art;
 use graph::{MilestoneArt, VersionGraph};
 use graphread::{promote_to_milestone, read_graph, toggle_milestone_freigabe};
-use konto::{konto_path, read_konto as read_konto_file, write_konto, KontoConfig, KontoView};
+use konto::{
+    clear_konto as clear_konto_file, konto_path, read_konto as read_konto_file, write_konto,
+    KontoConfig, KontoView,
+};
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
@@ -1037,6 +1040,30 @@ async fn save_konto(
     })?
 }
 
+/// **Konto entfernen** (ADR 0004, Issue #91): read the persisted Base-URL, delete the host-keyed
+/// keystore entries for that Konto host, and remove the persisted Base-URL JSON. **Idempotent**: a
+/// missing keystore entry and a missing JSON file are both success, so „entfernen" without a Konto
+/// is a no-op, never an error (Kriterium 1 + 5).
+///
+/// CRITICAL INVARIANT (ADR 0004): this NEVER touches existing product remotes — no `.git/config`
+/// rewriting, no mass-repoint. Removing the Konto only pauses *sharing*; local work on products
+/// continues unchanged, and a product re-shares once a Konto is set again.
+#[tauri::command]
+fn clear_konto(app: tauri::AppHandle) -> Result<(), String> {
+    let file = resolve_konto_file(&app)?;
+    // Read the Base-URL first so we know which host's keystore entries to forget. A missing/corrupt
+    // config means there is nothing keyed to delete — still a clean no-op.
+    if let Some(config) = read_konto_file(&file) {
+        // `credentials::delete` is idempotent — a missing entry is treated as already-removed; only
+        // a genuinely unreachable keystore surfaces as an error.
+        credentials::delete(&config.base_url).map_err(|e| e.to_string())?;
+    }
+    // Remove the persisted Base-URL JSON (idempotent: a missing file is success).
+    clear_konto_file(&file).map_err(|e| {
+        format!("Konto-Konfiguration konnte nicht entfernt werden: {e}")
+    })
+}
+
 /// The produktübergreifende Live-Suche (Issue #45, E45): a live Fan-out over the registry —
 /// opens each reachable product and greps live over Dateinamen, `_plm` and `VERSION_NOTES.md`.
 /// No central index, no mirror. Unreachable products are reported honestly in the result's
@@ -1290,6 +1317,7 @@ pub fn run() {
             unregister_product,
             read_konto,
             save_konto,
+            clear_konto,
             search_products,
             list_tasks,
             create_task_cmd,

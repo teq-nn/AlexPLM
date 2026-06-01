@@ -74,9 +74,30 @@
     }
   }
 
+  // „Konto entfernen" (ADR 0004, Issue #91): löscht den Keystore-Eintrag des Konto-Hosts UND die
+  // persistierte Base-URL. Rührt die `.git/config`-Remotes vorhandener Produkte NIE an — lokales
+  // Arbeiten läuft weiter, nur das Teilen pausiert, bis wieder ein Konto gesetzt ist. Danach kehrt
+  // das Panel in den Einrichtungs-Zustand zurück (kein Konto, leere Felder). Idempotent.
+  async function clear() {
+    error = null;
+    busy = true;
+    try {
+      await invoke("clear_konto");
+      konto = null;
+      server = "";
+      username = "";
+      token = "";
+    } catch (e) {
+      error = asAppError(e).message;
+    } finally {
+      busy = false;
+    }
+  }
+
   // „Prüfen & Speichern" ist inaktiv, solange Server, Username und Passwort/Token nicht alle drei
   // gesetzt sind. Der Token wird auch beim Re-Speichern eines bestehenden Kontos neu verlangt
-  // (write-only: nie zurückgezeigt, also auch nie vorbefüllt).
+  // (write-only: nie zurückgezeigt, also auch nie vorbefüllt). Beim erneuten Speichern eines
+  // bestehenden Kontos („ändern") überschreibt derselbe Prüf-Pfad das Konto.
   let canSave = $derived(
     server.trim() !== "" && username.trim() !== "" && token.trim() !== "",
   );
@@ -164,11 +185,22 @@
     </div>
 
     <footer class="foot">
-      <button class="key ghost" onclick={onClose} disabled={busy}>
-        <span class="label">Schließen</span>
-      </button>
+      <div class="foot-left">
+        <button class="key ghost" onclick={onClose} disabled={busy}>
+          <span class="label">Schließen</span>
+        </button>
+        {#if konto}
+          <!-- Nur sichtbar, wenn ein Konto existiert: löscht Keystore-Eintrag + Base-URL, lässt
+               Produkt-Remotes unangetastet (ADR 0004). Danach kehrt das Panel in die Einrichtung. -->
+          <button class="key danger" onclick={clear} disabled={busy || !loaded}>
+            <span class="label">Konto entfernen</span>
+          </button>
+        {/if}
+      </div>
       <button class="key go" onclick={save} disabled={!canSave || busy || !loaded}>
-        <span class="label">{busy ? "prüfe …" : "Prüfen & Speichern"}</span>
+        <span class="label"
+          >{busy ? "prüfe …" : konto ? "Prüfen & Ändern" : "Prüfen & Speichern"}</span
+        >
       </button>
     </footer>
   </section>
@@ -406,5 +438,24 @@
   }
   .key.go:hover:not(:disabled) {
     background: #2a2724;
+  }
+
+  /* The footer's left cluster: Schließen + the (conditional) destructive „Konto entfernen". */
+  .foot-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  /* „Konto entfernen" is destructive but reversible (set a Konto again) — a quiet ghost with the
+     attention hue, never the loud weighted forward cap. */
+  .key.danger {
+    background: transparent;
+    box-shadow: none;
+    color: var(--led-attention);
+    border-color: var(--hairline);
+  }
+  .key.danger:hover:not(:disabled) {
+    background: var(--surface-sunken);
+    border-color: var(--led-attention);
   }
 </style>

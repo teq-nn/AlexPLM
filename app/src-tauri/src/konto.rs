@@ -162,6 +162,19 @@ pub fn write_konto(file: &Path, config: &KontoConfig) -> std::io::Result<()> {
     std::fs::write(file, json)
 }
 
+/// Die persistierte Konto-Server-Adresse entfernen (ADR 0004, Issue #91, „Konto entfernen"). **Nur**
+/// die app-level JSON-Datei — die Zugangsdaten im OS-Keystore und (kritisch) die `.git/config`-Remotes
+/// vorhandener Produkte bleiben unangetastet (die Keystore-Löschung erledigt die Command-Schicht über
+/// `credentials::delete`). **Idempotent**: eine bereits fehlende Datei ist Erfolg, kein Fehler — so
+/// ist „Konto entfernen" ohne eingerichtetes Konto eine no-op.
+pub fn clear_konto(file: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(file) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +321,37 @@ mod tests {
         assert!(raw.contains("base_url"));
         assert!(raw.contains("account"));
         assert!(!raw.to_lowercase().contains("token"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_konto_removes_the_file_and_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("konto-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = konto_path(&dir);
+
+        // „entfernen" ohne eingerichtetes Konto ist eine no-op, kein Fehler (Kriterium 5).
+        assert_eq!(read_konto(&file), None);
+        clear_konto(&file).expect("clear on a missing file is success");
+        assert_eq!(read_konto(&file), None);
+
+        // Mit eingerichtetem Konto: clear entfernt die JSON-Datei → wieder „kein Konto".
+        write_konto(
+            &file,
+            &KontoConfig {
+                base_url: "https://forge.example.de".to_string(),
+                account: "anna".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(read_konto(&file).is_some());
+        clear_konto(&file).expect("clear on an existing file succeeds");
+        assert!(!file.exists(), "the konto JSON file must be gone after clear");
+        assert_eq!(read_konto(&file), None);
+
+        // Ein zweites „entfernen" ist erneut eine no-op (Idempotenz).
+        clear_konto(&file).expect("repeated clear stays a no-op");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
