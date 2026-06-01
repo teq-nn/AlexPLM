@@ -29,7 +29,8 @@
     "targets": "all",
     "resources": [
       "resources/bibliothek/bausteine/*.json",
-      "resources/bibliothek/toolstacks/*.json"
+      "resources/bibliothek/toolstacks/*.json",
+      "resources/git/**/*"
     ],
     "icon": [
       "icons/32x32.png",

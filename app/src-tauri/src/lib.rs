@@ -628,6 +628,38 @@ fn bundled_bibliothek_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, 
     Ok(res.join("resources").join("bibliothek"))
 }
 
+/// Das gebündelte portable git (MinGit) als Tauri-Resource: `resources/git/cmd/git.exe`. Nur unter
+/// Windows relevant — dort wird git/git-lfs mitgeliefert, statt es als System-Voraussetzung zu
+/// fordern. Auflösung analog [`bundled_bibliothek_dir`] über das Ressourcen-Verzeichnis.
+#[cfg(windows)]
+fn bundled_git_exe(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let res = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Ressourcen-Verzeichnis nicht auffindbar: {e}"))?;
+    Ok(res
+        .join("resources")
+        .join("git")
+        .join("cmd")
+        .join("git.exe"))
+}
+
+/// Verdrahte unter Windows das gebündelte git in den [`gitrunner`], damit alle Produktions-Spawns
+/// das mitgelieferte git/git-lfs nutzen statt einer System-Installation. Best-effort wie das
+/// Bibliothek-Seeding: existiert die `git.exe` nicht (z. B. unvollständiges Bundle), bleibt der
+/// PATH-Fallback `"git"` aktiv und die App startet trotzdem — die Bedingung nur auf stderr melden.
+#[cfg(windows)]
+fn wire_bundled_git(app: &tauri::AppHandle) {
+    match bundled_git_exe(app) {
+        Ok(exe) if exe.is_file() => gitrunner::set_git_program(exe),
+        Ok(exe) => eprintln!(
+            "Gebündeltes git nicht gefunden ({}); Fallback auf System-git im PATH.",
+            exe.display()
+        ),
+        Err(e) => eprintln!("Gebündeltes git nicht auflösbar: {e}; Fallback auf System-git im PATH."),
+    }
+}
+
 /// Run the idempotent, version-gated seeding of the bundled default Bausteine/Toolstacks into the
 /// local Bibliothek (ADR 0003). Runs on first start and after every app update; never touches
 /// user-edited or user-added Bausteine, and never touches product copies (anti-drift).
@@ -1096,6 +1128,11 @@ pub fn run() {
                 eprintln!("Git-Diagnose-Log: {}", file.display());
                 gitlog::set_file(file);
             }
+            // Windows: das gebündelte portable git in den gitrunner verdrahten, damit alle
+            // git-Spawns das mitgelieferte git/git-lfs nutzen statt einer System-Installation.
+            // Best-effort — fehlt das Bundle, greift der PATH-Fallback und die App startet trotzdem.
+            #[cfg(windows)]
+            wire_bundled_git(&app.handle().clone());
             // Idempotent, version-gated seeding of the bundled default Bausteine on startup
             // (ADR 0003). A seeding failure must not stop the app from launching — it only means
             // the Bibliothek starts empty/stale; surface it on stderr and carry on.
