@@ -1,9 +1,9 @@
 //! Graph Projection (Issue #8).
 //!
 //! Pure, read-only projection from a **snapshot** of git/LFS facts into the dark
-//! "display" version tree the UI renders: Stände as nodes, Meilensteine marked, and
+//! "display" version tree the UI renders: Stände as nodes, Revisionen marked, and
 //! nodes whose binary content has been **offloaded** (E36) marked as such. The version
-//! bar reads the **active Meilenstein** version from this same projection.
+//! bar reads the **active Revision** version from this same projection.
 //!
 //! Like `projection.rs` and `autocommit.rs`, the decision logic is a pure function:
 //! **snapshot in, projection out, no I/O**. The git/LFS reading glue lives in
@@ -11,7 +11,7 @@
 //! is exercised by `#[cfg(test)]` table tests plus an end-to-end snapshot test.
 //!
 //! Vocabulary stays in the domain (E33/E39): nodes are **Stände**, a promoted Stand is a
-//! **Meilenstein**; the words "commit"/"tag" never surface to the user.
+//! **Revision**; the words "commit"/"tag" never surface to the user.
 //!
 //! ## Zweige (Issue #28)
 //!
@@ -40,48 +40,48 @@ pub struct CommitFact {
     pub timestamp: String,
 }
 
-/// The **Art** (kind) of a Meilenstein (E42). The block-strictness is a property of the
-/// milestone act, not of the branch. A freshly promoted Meilenstein is a **Prototyp**
+/// The **Art** (kind) of a Revision (E42). The block-strictness is a property of the
+/// revision act, not of the branch. A freshly promoted Revision is a **Prototyp**
 /// (lax: warnings only, frictionless tagging); a deliberate **Toggle** raises it to a
 /// **Freigabe** (streng), which write-protects the tag (E8). Toggling back is a deliberate
 /// reversible „Un-Release" (E22). Serialized to the UI in kebab-case (`"prototyp"` /
 /// `"freigabe"`).
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum MilestoneArt {
-    /// Lax: the default for a new Meilenstein. No write-protect, warnings only.
+pub enum RevisionArt {
+    /// Lax: the default for a new Revision. No write-protect, warnings only.
     #[default]
     Prototyp,
-    /// Streng: a released Meilenstein. Its tag is write-protected; reaching it is the
+    /// Streng: a released Revision. Its tag is write-protected; reaching it is the
     /// deliberate Freigabe toggle.
     Freigabe,
 }
 
-impl MilestoneArt {
+impl RevisionArt {
     /// The on-disk token for the per-tag store. Stable, lowercase, never localized.
     pub fn as_token(self) -> &'static str {
         match self {
-            MilestoneArt::Prototyp => "prototyp",
-            MilestoneArt::Freigabe => "freigabe",
+            RevisionArt::Prototyp => "prototyp",
+            RevisionArt::Freigabe => "freigabe",
         }
     }
 
     /// Parse a stored token back into an Art. Anything unrecognized (or missing) falls back
     /// to the default `Prototyp` — a tag with no recorded Art is lax (E42), never an error.
-    pub fn from_token(token: &str) -> MilestoneArt {
+    pub fn from_token(token: &str) -> RevisionArt {
         match token.trim() {
-            "freigabe" => MilestoneArt::Freigabe,
-            _ => MilestoneArt::Prototyp,
+            "freigabe" => RevisionArt::Freigabe,
+            _ => RevisionArt::Prototyp,
         }
     }
 
     /// Whether this Art write-protects its tag (E8). Only a Freigabe is schreibgeschützt.
     pub fn is_write_protected(self) -> bool {
-        matches!(self, MilestoneArt::Freigabe)
+        matches!(self, RevisionArt::Freigabe)
     }
 }
 
-/// The pure toggle state machine for the Meilenstein-Art (E42). Returns the Art a milestone
+/// The pure toggle state machine for the Revision-Art (E42). Returns the Art a revision
 /// reaches when the user flips its toggle: Prototyp → Freigabe („Releasen") and
 /// Freigabe → Prototyp (the deliberate reversible „Un-Release"). No I/O — the git/file glue
 /// (write-protect on, write-protect off) lives in [`crate::graphread`].
@@ -89,26 +89,26 @@ impl MilestoneArt {
 /// NOTE (seam for Issue #52): raising to Freigabe is where the dreistufige Freigabe-Gate
 /// block-check (E19.3) will plug in *before* this transition is allowed. This slice performs
 /// the toggle + write-protect only; the gate check is deliberately left out (issue #52).
-pub fn toggle_milestone_art(current: MilestoneArt) -> MilestoneArt {
+pub fn toggle_revision_art(current: RevisionArt) -> RevisionArt {
     match current {
-        MilestoneArt::Prototyp => MilestoneArt::Freigabe,
-        MilestoneArt::Freigabe => MilestoneArt::Prototyp,
+        RevisionArt::Prototyp => RevisionArt::Freigabe,
+        RevisionArt::Freigabe => RevisionArt::Prototyp,
     }
 }
 
-/// A Meilenstein fact: a commit the user promoted, carrying its human version label, its
+/// A Revision fact: a commit the user promoted, carrying its human version label, its
 /// **Art** (Prototyp/Freigabe — E42), and whether `VERSION_NOTES.md` text exists for it (the
 /// only place human text lives — E28).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MilestoneFact {
-    /// Commit id this Meilenstein points at.
+pub struct RevisionFact {
+    /// Commit id this Revision points at.
     pub commit_id: String,
     /// Human version label, e.g. `v0.4`. Mono in the version bar.
     pub version: String,
-    /// Whether a non-empty `VERSION_NOTES.md` text was persisted for this Meilenstein.
+    /// Whether a non-empty `VERSION_NOTES.md` text was persisted for this Revision.
     pub has_notes: bool,
-    /// The Meilenstein-Art (Prototyp/Freigabe). A new Meilenstein defaults to Prototyp.
-    pub art: MilestoneArt,
+    /// The Revision-Art (Prototyp/Freigabe). A new Revision defaults to Prototyp.
+    pub art: RevisionArt,
 }
 
 /// One **Zweig** (branch line) as observed in the repository: its domain name and the id of
@@ -128,8 +128,8 @@ pub struct BranchFact {
 pub struct RepoSnapshot {
     /// Commits, any order; the projection orders them newest-first by timestamp.
     pub commits: Vec<CommitFact>,
-    /// Promoted Stände (Meilensteine).
-    pub milestones: Vec<MilestoneFact>,
+    /// Promoted Stände (Revisionen).
+    pub revisions: Vec<RevisionFact>,
     /// Commit ids whose binary content has been offloaded to a cold archive (E36). The
     /// git history is untouched — only the heavy LFS content left the server.
     pub offloaded: Vec<String>,
@@ -148,7 +148,7 @@ pub struct RepoSnapshot {
     pub active_branch: Option<String>,
 }
 
-/// A single node in the version tree: a Stand, possibly promoted to a Meilenstein and/or
+/// A single node in the version tree: a Stand, possibly promoted to a Revision and/or
 /// with its binary content offloaded. Serialized straight to the UI.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct StandNode {
@@ -157,14 +157,14 @@ pub struct StandNode {
     /// Machine timestamp `YYYY-MM-DDTHH:MM:SSZ`.
     pub timestamp: String,
     /// Product-relative path the auto-commit recorded, parsed from the boring message;
-    /// `"."` when the message is not the auto shape (e.g. a Meilenstein/import commit).
+    /// `"."` when the message is not the auto shape (e.g. a Revision/import commit).
     pub path: String,
-    /// Set when this Stand has been promoted to a Meilenstein: its human version label.
-    pub milestone: Option<String>,
-    /// The Meilenstein-Art (Prototyp/Freigabe — E42), present only when `milestone` is set.
+    /// Set when this Stand has been promoted to a Revision: its human version label.
+    pub revision: Option<String>,
+    /// The Revision-Art (Prototyp/Freigabe — E42), present only when `revision` is set.
     /// A Freigabe write-protects the tag; a Prototyp is lax. `None` for a plain Stand.
-    pub milestone_art: Option<MilestoneArt>,
-    /// Whether a `VERSION_NOTES.md` text exists for this Meilenstein (only if `milestone`).
+    pub revision_art: Option<RevisionArt>,
+    /// Whether a `VERSION_NOTES.md` text exists for this Revision (only if `revision`).
     pub has_notes: bool,
     /// Whether this node's binary content has been offloaded (E36). The node stays in the
     /// tree, honestly marked "Inhalt ausgelagert".
@@ -189,18 +189,18 @@ pub struct StandNode {
     pub parents: Vec<String>,
 }
 
-/// The dark "display" version tree the UI renders, plus the active milestone version that
+/// The dark "display" version tree the UI renders, plus the active revision version that
 /// the version bar shows in Mono.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct VersionGraph {
     /// Stände newest-first.
     pub nodes: Vec<StandNode>,
-    /// The active Meilenstein version (newest promoted Stand), or `None` if the product has
-    /// no Meilenstein yet. The version bar shows this in Mono.
-    pub active_milestone: Option<String>,
-    /// The Art of the active Meilenstein (Prototyp/Freigabe — E42), or `None` if there is no
-    /// active Meilenstein. The version bar shows the Freigabe/Prototyp state alongside it.
-    pub active_milestone_art: Option<MilestoneArt>,
+    /// The active Revision version (newest promoted Stand), or `None` if the product has
+    /// no Revision yet. The version bar shows this in Mono.
+    pub active_revision: Option<String>,
+    /// The Art of the active Revision (Prototyp/Freigabe — E42), or `None` if there is no
+    /// active Revision. The version bar shows the Freigabe/Prototyp state alongside it.
+    pub active_revision_art: Option<RevisionArt>,
     /// Archive label for offloaded nodes, surfaced once for the legend; `None` if none.
     pub offloaded_archive: Option<String>,
     /// Name of the active line (Zweig), echoed for the UI marker; `None` if unknown.
@@ -212,7 +212,7 @@ pub struct VersionGraph {
 
 /// Parse the product-relative path out of a boring auto-commit message
 /// (`auto: <path>, <timestamp>` — see [`crate::autocommit::machine_message`]). Returns the
-/// path, or `"."` for any message that is not the auto shape (Meilenstein, import, init).
+/// path, or `"."` for any message that is not the auto shape (Revision, import, init).
 /// Pure over the message string so it is table-testable.
 pub fn path_from_message(message: &str) -> String {
     let rest = match message.strip_prefix("auto: ") {
@@ -239,7 +239,7 @@ pub fn path_from_message(message: &str) -> String {
 /// on that Zweig's own lane, so an externally-created branch shows up as a distinct line. A
 /// single linear history collapses to one lane and is unchanged.
 pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
-    let milestone_of = |id: &str| snapshot.milestones.iter().find(|m| m.commit_id == id);
+    let revision_of = |id: &str| snapshot.revisions.iter().find(|m| m.commit_id == id);
     let is_offloaded = |id: &str| snapshot.offloaded.iter().any(|o| o == id);
     let is_published = |id: &str| snapshot.published.iter().any(|p| p == id);
 
@@ -249,13 +249,13 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
         .commits
         .iter()
         .map(|c| {
-            let ms = milestone_of(&c.id);
+            let ms = revision_of(&c.id);
             StandNode {
                 id: c.id.clone(),
                 timestamp: c.timestamp.clone(),
                 path: path_from_message(&c.message),
-                milestone: ms.map(|m| m.version.clone()),
-                milestone_art: ms.map(|m| m.art),
+                revision: ms.map(|m| m.version.clone()),
+                revision_art: ms.map(|m| m.art),
                 has_notes: ms.map(|m| m.has_notes).unwrap_or(false),
                 offloaded: is_offloaded(&c.id),
                 veroeffentlicht: is_published(&c.id),
@@ -270,20 +270,20 @@ pub fn project_graph(snapshot: &RepoSnapshot) -> VersionGraph {
     // Newest first; deterministic tie-break on id so equal timestamps order stably.
     nodes.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.id.cmp(&a.id)));
 
-    // Active Meilenstein = the newest promoted Stand *on the active line* (lane 0). Diverging
-    // Zweige carry their own Meilensteine on the node but must not steal the version bar. We
-    // pick the node so the version label and its Art come from the same Meilenstein.
+    // Active Revision = the newest promoted Stand *on the active line* (lane 0). Diverging
+    // Zweige carry their own Revisionen on the node but must not steal the version bar. We
+    // pick the node so the version label and its Art come from the same Revision.
     let active_node = nodes
         .iter()
         .filter(|n| n.on_active)
-        .find(|n| n.milestone.is_some());
-    let active_milestone = active_node.and_then(|n| n.milestone.clone());
-    let active_milestone_art = active_node.and_then(|n| n.milestone_art);
+        .find(|n| n.revision.is_some());
+    let active_revision = active_node.and_then(|n| n.revision.clone());
+    let active_revision_art = active_node.and_then(|n| n.revision_art);
 
     VersionGraph {
         nodes,
-        active_milestone,
-        active_milestone_art,
+        active_revision,
+        active_revision_art,
         offloaded_archive: snapshot.offloaded_archive.clone(),
         active_branch: layout.active_branch.clone(),
         lane_count: layout.lane_count.max(1),
@@ -409,7 +409,7 @@ mod tests {
             ),
             // not the auto shape -> "."
             ("init", "."),
-            ("Meilenstein v0.4", "."),
+            ("Revision v0.4", "."),
         ];
         for (msg, expected) in cases {
             assert_eq!(path_from_message(msg), *expected, "msg={msg}");
@@ -424,7 +424,7 @@ mod tests {
                 commit("c", "2026-05-30T11:00:00Z", "auto: x, 2026-05-30T11:00:00Z"),
                 commit("b", "2026-05-30T10:00:00Z", "auto: y, 2026-05-30T10:00:00Z"),
             ],
-            milestones: vec![],
+            revisions: vec![],
             offloaded: vec![],
             offloaded_archive: None,
             published: vec![],
@@ -434,33 +434,33 @@ mod tests {
         let g = project_graph(&snap);
         let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["c", "b", "a"], "newest-first by timestamp");
-        assert_eq!(g.active_milestone, None, "no Meilenstein yet");
-        assert!(g.nodes.iter().all(|n| n.milestone.is_none()));
+        assert_eq!(g.active_revision, None, "no Revision yet");
+        assert!(g.nodes.iter().all(|n| n.revision.is_none()));
         // No branch facts => one linear lane, every Stand on the active line.
         assert_eq!(g.lane_count, 1);
         assert!(g.nodes.iter().all(|n| n.lane == 0 && n.on_active));
     }
 
     #[test]
-    fn promoted_stand_becomes_a_meilenstein_and_drives_the_version_bar() {
+    fn promoted_stand_becomes_a_revision_and_drives_the_version_bar() {
         let snap = RepoSnapshot {
             commits: vec![
                 commit("a", "2026-05-30T09:00:00Z", "auto: x, 2026-05-30T09:00:00Z"),
                 commit("b", "2026-05-30T10:00:00Z", "auto: y, 2026-05-30T10:00:00Z"),
                 commit("c", "2026-05-30T11:00:00Z", "auto: z, 2026-05-30T11:00:00Z"),
             ],
-            milestones: vec![
-                MilestoneFact {
+            revisions: vec![
+                RevisionFact {
                     commit_id: "a".into(),
                     version: "v0.1".into(),
                     has_notes: true,
-                    art: MilestoneArt::Freigabe,
+                    art: RevisionArt::Freigabe,
                 },
-                MilestoneFact {
+                RevisionFact {
                     commit_id: "b".into(),
                     version: "v0.2".into(),
                     has_notes: true,
-                    art: MilestoneArt::Prototyp,
+                    art: RevisionArt::Prototyp,
                 },
             ],
             offloaded: vec![],
@@ -471,19 +471,19 @@ mod tests {
         };
         let g = project_graph(&snap);
 
-        // The newest Meilenstein wins the version bar, and its Art rides along with it.
-        assert_eq!(g.active_milestone.as_deref(), Some("v0.2"));
-        assert_eq!(g.active_milestone_art, Some(MilestoneArt::Prototyp));
+        // The newest Revision wins the version bar, and its Art rides along with it.
+        assert_eq!(g.active_revision.as_deref(), Some("v0.2"));
+        assert_eq!(g.active_revision_art, Some(RevisionArt::Prototyp));
 
-        // b and a carry their milestone label + Art; c does not.
+        // b and a carry their revision label + Art; c does not.
         let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
-        assert_eq!(node("b").milestone.as_deref(), Some("v0.2"));
+        assert_eq!(node("b").revision.as_deref(), Some("v0.2"));
         assert!(node("b").has_notes);
-        assert_eq!(node("b").milestone_art, Some(MilestoneArt::Prototyp));
-        assert_eq!(node("a").milestone.as_deref(), Some("v0.1"));
-        assert_eq!(node("a").milestone_art, Some(MilestoneArt::Freigabe));
-        assert_eq!(node("c").milestone, None);
-        assert_eq!(node("c").milestone_art, None);
+        assert_eq!(node("b").revision_art, Some(RevisionArt::Prototyp));
+        assert_eq!(node("a").revision.as_deref(), Some("v0.1"));
+        assert_eq!(node("a").revision_art, Some(RevisionArt::Freigabe));
+        assert_eq!(node("c").revision, None);
+        assert_eq!(node("c").revision_art, None);
     }
 
     #[test]
@@ -501,11 +501,11 @@ mod tests {
                     "auto: g.f3d, 2026-05-30T11:00:00Z",
                 ),
             ],
-            milestones: vec![MilestoneFact {
+            revisions: vec![RevisionFact {
                 commit_id: "old".into(),
                 version: "v0.1".into(),
                 has_notes: true,
-                art: MilestoneArt::Prototyp,
+                art: RevisionArt::Prototyp,
             }],
             offloaded: vec!["old".into()],
             offloaded_archive: Some("2025-11".into()),
@@ -521,8 +521,8 @@ mod tests {
         // Still in the tree, honestly marked — history untouched (E36).
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.offloaded_archive.as_deref(), Some("2025-11"));
-        // The Meilenstein label survives offloading (only content left, not the pointer/tag).
-        assert_eq!(node("old").milestone.as_deref(), Some("v0.1"));
+        // The Revision label survives offloading (only content left, not the pointer/tag).
+        assert_eq!(node("old").revision.as_deref(), Some("v0.1"));
     }
 
     #[test]
@@ -534,7 +534,7 @@ mod tests {
                 commit("b", "2026-05-30T10:00:00Z", "auto: x, 2026-05-30T10:00:00Z"),
                 commit("local", "2026-05-30T11:00:00Z", "auto: y, 2026-05-30T11:00:00Z"),
             ],
-            milestones: vec![],
+            revisions: vec![],
             offloaded: vec![],
             offloaded_archive: None,
             // Only a and b are reachable from origin/<shared>; "local" is not yet published.
@@ -556,7 +556,7 @@ mod tests {
     fn empty_repo_projects_to_an_empty_tree() {
         let snap = RepoSnapshot {
             commits: vec![],
-            milestones: vec![],
+            revisions: vec![],
             offloaded: vec![],
             offloaded_archive: None,
             published: vec![],
@@ -565,7 +565,7 @@ mod tests {
         };
         let g = project_graph(&snap);
         assert!(g.nodes.is_empty());
-        assert_eq!(g.active_milestone, None);
+        assert_eq!(g.active_revision, None);
         assert_eq!(g.lane_count, 1);
     }
 
@@ -582,7 +582,7 @@ mod tests {
                 commit_p("d", "2026-05-30T10:30:00Z", &["b"]),
                 commit_p("e", "2026-05-30T12:00:00Z", &["d"]),
             ],
-            milestones: vec![],
+            revisions: vec![],
             offloaded: vec![],
             offloaded_archive: None,
             published: vec![],
@@ -630,7 +630,7 @@ mod tests {
                 commit_p("d", "2026-05-30T10:30:00Z", &["b"]),
                 commit_p("e", "2026-05-30T12:00:00Z", &["d"]),
             ],
-            milestones: vec![],
+            revisions: vec![],
             offloaded: vec![],
             offloaded_archive: None,
             published: vec![],
@@ -653,11 +653,11 @@ mod tests {
     }
 
     #[test]
-    fn a_new_meilenstein_defaults_to_prototyp() {
+    fn a_new_revision_defaults_to_prototyp() {
         // E42: the default Art is the lax Prototyp — tagging is frictionless.
-        assert_eq!(MilestoneArt::default(), MilestoneArt::Prototyp);
-        assert!(!MilestoneArt::Prototyp.is_write_protected());
-        assert!(MilestoneArt::Freigabe.is_write_protected());
+        assert_eq!(RevisionArt::default(), RevisionArt::Prototyp);
+        assert!(!RevisionArt::Prototyp.is_write_protected());
+        assert!(RevisionArt::Freigabe.is_write_protected());
     }
 
     #[test]
@@ -665,15 +665,15 @@ mod tests {
         // table: current Art -> Art after the toggle. Prototyp→Freigabe is „Releasen",
         // Freigabe→Prototyp is the deliberate reversible „Un-Release" (E42).
         let cases = [
-            (MilestoneArt::Prototyp, MilestoneArt::Freigabe),
-            (MilestoneArt::Freigabe, MilestoneArt::Prototyp),
+            (RevisionArt::Prototyp, RevisionArt::Freigabe),
+            (RevisionArt::Freigabe, RevisionArt::Prototyp),
         ];
         for (current, expected) in cases {
-            assert_eq!(toggle_milestone_art(current), expected, "from {current:?}");
+            assert_eq!(toggle_revision_art(current), expected, "from {current:?}");
         }
         // Two toggles return to the start — the act is fully reversible.
-        for start in [MilestoneArt::Prototyp, MilestoneArt::Freigabe] {
-            assert_eq!(toggle_milestone_art(toggle_milestone_art(start)), start);
+        for start in [RevisionArt::Prototyp, RevisionArt::Freigabe] {
+            assert_eq!(toggle_revision_art(toggle_revision_art(start)), start);
         }
     }
 
@@ -681,16 +681,16 @@ mod tests {
     fn art_tokens_round_trip_and_default_when_unknown() {
         // table: token written/read for the per-tag `_plm` store. Unknown/empty => Prototyp.
         let known = [
-            ("prototyp", MilestoneArt::Prototyp),
-            ("freigabe", MilestoneArt::Freigabe),
+            ("prototyp", RevisionArt::Prototyp),
+            ("freigabe", RevisionArt::Freigabe),
         ];
         for (token, art) in known {
-            assert_eq!(MilestoneArt::from_token(token), art);
+            assert_eq!(RevisionArt::from_token(token), art);
             assert_eq!(art.as_token(), token);
         }
         // A tag with no recorded Art is lax (E42), never an error.
         for unknown in ["", "  ", "release", "garbage"] {
-            assert_eq!(MilestoneArt::from_token(unknown), MilestoneArt::Prototyp);
+            assert_eq!(RevisionArt::from_token(unknown), RevisionArt::Prototyp);
         }
     }
 }

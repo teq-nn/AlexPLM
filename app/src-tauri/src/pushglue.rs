@@ -215,10 +215,10 @@ pub fn auto_unlock(root: &Path, rel_path: &str) -> std::io::Result<()> {
 }
 
 /// **Freigabe (branch-weit)** — publish the whole current branch to the shared stand. The explicit
-/// „ich bin fertig"-act of a Meilenstein. Unlike the per-path [`freigabe_push`], this does NOT gate
-/// on a single path being dirty: at Meilenstein time the work is already committed (a Stand *is* a
+/// „ich bin fertig"-act of a Revision. Unlike the per-path [`freigabe_push`], this does NOT gate
+/// on a single path being dirty: at Revision time the work is already committed (a Stand *is* a
 /// commit, so every path is clean), which made the per-path Warden always `Refuse` and the publish
-/// unreachable through the milestone button (Issue #54-Folge). Here we simply push the branch onto
+/// unreachable through the revision button (Issue #54-Folge). Here we simply push the branch onto
 /// the *actually shared* branch of the remote (Issue #64: `master`-repo → `master`, never a silent
 /// `main` split). The per-path Warden stays as-is for the silent laufend rhythm; the lock release
 /// is the caller's self-healing sweep over held-clean binaries ("unlock at push", E35).

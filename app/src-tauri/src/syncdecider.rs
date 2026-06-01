@@ -6,7 +6,7 @@
 //! decides. Snapshot in, exactly **one** [`SyncDecision`] out.
 //!
 //! The daily net-sync runs **silently** (E41): pull on open/idle, Sicherungs-Push laufend,
-//! Freigabe-Push at the Meilenstein (the push types are the #9 Warden's job — this module never
+//! Freigabe-Push at the Revision (the push types are the #9 Warden's job — this module never
 //! re-decides them). When the local and remote stands have **diverged**, the Sync Decider judges
 //! whether that divergence can be merged without ever showing the user a thing:
 //!

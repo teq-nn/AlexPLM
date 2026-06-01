@@ -1,32 +1,39 @@
 //! Git/LFS reading glue for the Graph Projection (Issue #8).
 //!
 //! Thin, side-effecting layer that turns a real repository into a [`RepoSnapshot`] for the
-//! pure [`crate::graph::project_graph`], and promotes a Stand to a **Meilenstein**. All git
+//! pure [`crate::graph::project_graph`], and promotes a Stand to a **Revision**. All git
 //! invocation and filesystem access lives here; the pure projection in `graph.rs` never
 //! does I/O. This is the same split as `watcher.rs` over `autocommit.rs`.
 //!
-//! A **Meilenstein** is a promoted Stand. Promoting persists the user's human text into
+//! A **Revision** is a promoted Stand. Promoting persists the user's human text into
 //! `VERSION_NOTES.md` — the **only** place human text lives (E28) — and tags the commit so
 //! the version label is durable. The words "commit"/"tag" never leave this layer.
 
 use crate::artstore::{read_art, set_art};
 use crate::autocommit::{format_timestamp, machine_message};
 use crate::graph::{
-    toggle_milestone_art, BranchFact, CommitFact, MilestoneFact, RepoSnapshot, VersionGraph,
+    toggle_revision_art, BranchFact, CommitFact, RepoSnapshot, RevisionFact, VersionGraph,
 };
 use std::path::Path;
 use std::time::SystemTime;
 
-/// File that holds all human milestone text (E28). One section per Meilenstein, newest on
+/// File that holds all human revision text (E28). One section per Revision, newest on
 /// top; the only place the tool ever stores text a human wrote.
 pub const VERSION_NOTES: &str = "VERSION_NOTES.md";
 
 /// Prefix of the durable version tag we write when promoting a Stand. Internal — the user
 /// only ever sees the version label, never the tag mechanism. `pub(crate)` so the push glue can
 /// carry exactly these Revision labels to the server at Freigabe (E47, #30).
+///
+/// Tag-prefix decision (Issue #93): the **value** stays `"version/"` and is **not** renamed to
+/// `"revision/"`. The Meilenstein→Revision change (E47/#30, #93) is a pure code-vocabulary rename
+/// with no behavior change; the tag prefix is on-disk state in existing repositories. Renaming it
+/// would silently orphan every already-written `version/<label>` tag (Revisionen would vanish from
+/// the tree, and the push glue would stop carrying them) unless we also migrated tags. We keep the
+/// on-disk format stable and only renamed the surrounding identifiers and docs.
 pub(crate) const TAG_PREFIX: &str = "version/";
 
-/// Prefix of the durable **write-protect marker** tag set on a Freigabe Meilenstein (E8/E42).
+/// Prefix of the durable **write-protect marker** tag set on a Freigabe Revision (E8/E42).
 /// Its presence is the git-side signal that the version tag is schreibgeschützt; un-releasing
 /// removes it. Internal — the user only ever sees the Prototyp/Freigabe state, never the tag.
 const PROTECT_PREFIX: &str = "version-protect/";
@@ -38,18 +45,18 @@ pub fn read_graph(root: &Path) -> std::io::Result<VersionGraph> {
     Ok(crate::graph::project_graph(&snapshot))
 }
 
-/// Collect commits (Stände) and version tags (Meilensteine) into a [`RepoSnapshot`].
+/// Collect commits (Stände) and version tags (Revisionen) into a [`RepoSnapshot`].
 /// Offloading (E36) is v1-fern (its bookkeeping lands later); we report none for now but
 /// the projection already handles offloaded markers, exercised by the snapshot tests.
 pub fn read_snapshot(root: &Path) -> std::io::Result<RepoSnapshot> {
     let commits = read_commits(root)?;
-    let milestones = read_milestones(root, &commits)?;
+    let revisions = read_revisions(root, &commits)?;
     let branches = read_branches(root)?;
     let active_branch = read_active_branch(root)?;
     let published = read_published(root)?;
     Ok(RepoSnapshot {
         commits,
-        milestones,
+        revisions,
         offloaded: Vec::new(),
         offloaded_archive: None,
         published,
@@ -187,7 +194,7 @@ fn read_active_branch(root: &Path) -> std::io::Result<Option<String>> {
 
 /// Read version tags (`version/<label>`) and resolve each to the commit it points at,
 /// noting whether `VERSION_NOTES.md` carries text for that label.
-fn read_milestones(root: &Path, commits: &[CommitFact]) -> std::io::Result<Vec<MilestoneFact>> {
+fn read_revisions(root: &Path, commits: &[CommitFact]) -> std::io::Result<Vec<RevisionFact>> {
     let out = git(root, &["tag", "--list", &format!("{TAG_PREFIX}*")])?;
     if !out.status.success() {
         return Ok(Vec::new());
@@ -195,7 +202,7 @@ fn read_milestones(root: &Path, commits: &[CommitFact]) -> std::io::Result<Vec<M
     let notes = std::fs::read_to_string(root.join(VERSION_NOTES)).unwrap_or_default();
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    let mut milestones = Vec::new();
+    let mut revisions = Vec::new();
     for tag in stdout.lines().map(str::trim).filter(|t| !t.is_empty()) {
         let version = tag.trim_start_matches(TAG_PREFIX).to_string();
         // Resolve the tag to its commit; skip silently if it cannot be resolved.
@@ -208,14 +215,14 @@ fn read_milestones(root: &Path, commits: &[CommitFact]) -> std::io::Result<Vec<M
             continue;
         }
         let art = read_art(root, &version);
-        milestones.push(MilestoneFact {
+        revisions.push(RevisionFact {
             commit_id,
             has_notes: notes_have_section(&notes, &version),
             art,
             version,
         });
     }
-    Ok(milestones)
+    Ok(revisions)
 }
 
 /// Whether `VERSION_NOTES.md` contains real human text for `version`. The section header
@@ -245,8 +252,8 @@ pub fn notes_have_section(notes: &str, version: &str) -> bool {
     false
 }
 
-/// Prepend a milestone section to `VERSION_NOTES.md` text. Pure string transform so it is
-/// table-testable: newest milestone on top, `## <version>` header, then the human text.
+/// Prepend a revision section to `VERSION_NOTES.md` text. Pure string transform so it is
+/// table-testable: newest revision on top, `## <version>` header, then the human text.
 pub fn append_version_note(existing: &str, version: &str, text: &str, timestamp: &str) -> String {
     let body = text.trim();
     let section = format!("## {version}\n_{timestamp}_\n\n{body}\n");
@@ -257,13 +264,13 @@ pub fn append_version_note(existing: &str, version: &str, text: &str, timestamp:
     }
 }
 
-/// Promote the Stand at `commit_id` to a **Meilenstein**: persist the human `notes` text
+/// Promote the Stand at `commit_id` to a **Revision**: persist the human `notes` text
 /// into `VERSION_NOTES.md` (E28), commit that file, and tag the *promoted* Stand with its
 /// version label so it is durable. Side-effecting — the only place that writes git here.
 ///
 /// Returns the freshly projected [`VersionGraph`] so the UI updates in one round-trip.
 /// `now` is injected so the persisted timestamp is testable.
-pub fn promote_to_milestone(
+pub fn promote_to_revision(
     root: &Path,
     commit_id: &str,
     version: &str,
@@ -275,12 +282,12 @@ pub fn promote_to_milestone(
         return Err(std::io::Error::other("Version darf nicht leer sein"));
     }
     if notes.trim().is_empty() {
-        // VERSION_NOTES.md is the only place human text lives; a Meilenstein must carry it.
+        // VERSION_NOTES.md is the only place human text lives; a Revision must carry it.
         return Err(std::io::Error::other("Revision braucht einen Text"));
     }
 
     // Write-protect (E8): a Freigabe tag is schreibgeschützt — promoting must not silently
-    // overwrite a released Meilenstein. The user has to deliberately un-release it first
+    // overwrite a released Revision. The user has to deliberately un-release it first
     // (toggle back to Prototyp), which is one handle away (E22).
     if read_art(root, version).is_write_protected() && tag_exists(root, version)? {
         return Err(std::io::Error::other(format!(
@@ -302,15 +309,15 @@ pub fn promote_to_milestone(
     git_ok(root, &["commit", "-m", &msg])?;
 
     // 3) Tag the *promoted* Stand with its durable version label. The user picks which Stand
-    //    is the Meilenstein; the notes commit above only carries the human text.
+    //    is the Revision; the notes commit above only carries the human text.
     let tag = format!("{TAG_PREFIX}{version}");
     git_ok(root, &["tag", "-f", &tag, commit_id])?;
 
     read_graph(root)
 }
 
-/// Toggle a Meilenstein's **Art** between Prototyp and Freigabe (Issue #41, E42). The pure
-/// two-state machine lives in [`toggle_milestone_art`]; this glue persists the new Art and
+/// Toggle a Revision's **Art** between Prototyp and Freigabe (Issue #41, E42). The pure
+/// two-state machine lives in [`toggle_revision_art`]; this glue persists the new Art and
 /// applies the git-side write-protect on the tag, then re-projects so the UI updates in one
 /// round-trip.
 ///
@@ -321,7 +328,7 @@ pub fn promote_to_milestone(
 /// SEAM for Issue #52: the dreistufige Freigabe-Gate block-check (E19.3) belongs *here*,
 /// right before raising to Freigabe — if the gate fails, this would refuse the toggle. This
 /// slice intentionally performs only the Art flip + write-protect; the gate check is #52.
-pub fn toggle_milestone_freigabe(root: &Path, version: &str) -> std::io::Result<VersionGraph> {
+pub fn toggle_revision_freigabe(root: &Path, version: &str) -> std::io::Result<VersionGraph> {
     let version = version.trim();
     if version.is_empty() {
         return Err(std::io::Error::other("Version darf nicht leer sein"));
@@ -332,7 +339,7 @@ pub fn toggle_milestone_freigabe(root: &Path, version: &str) -> std::io::Result<
         )));
     }
 
-    let next = toggle_milestone_art(read_art(root, version));
+    let next = toggle_revision_art(read_art(root, version));
 
     // <<< Issue #52 plugs the dreistufige Freigabe-Gate block-check in here (before Freigabe).
 
@@ -351,7 +358,7 @@ fn tag_exists(root: &Path, version: &str) -> std::io::Result<bool> {
 /// Apply (or lift) the write-protect on a version tag (E8). A Freigabe tag is marked
 /// `version-protect/<label>`; un-releasing removes that marker tag. The protect marker is the
 /// durable git-side signal a server-side hook (or a future #52 gate) can enforce; locally it
-/// is also what [`promote_to_milestone`] checks before overwriting a released Meilenstein.
+/// is also what [`promote_to_revision`] checks before overwriting a released Revision.
 fn apply_write_protect(root: &Path, version: &str, protect: bool) -> std::io::Result<()> {
     let target = format!("{TAG_PREFIX}{version}");
     let marker = format!("{PROTECT_PREFIX}{version}");

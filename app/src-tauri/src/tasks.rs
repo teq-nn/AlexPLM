@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskKind {
-    /// Verpflichtend — *kann* blockieren (am Freigabe-Meilenstein, abhängig vom Kontext, E42).
+    /// Verpflichtend — *kann* blockieren (am Freigabe-Revision, abhängig vom Kontext, E42).
     Aufgabe,
     /// Blockiert nie — eine reine Notiz/Erinnerung.
     Hinweis,
@@ -50,7 +50,7 @@ pub enum TaskStatus {
 pub enum TaskLink {
     /// The product as a whole.
     Produkt,
-    /// A specific Version/Meilenstein, by its human label or Stand id.
+    /// A specific Version/Revision, by its human label or Stand id.
     Version(String),
     /// An Arbeitsbereich, by its product-relative path.
     Arbeitsbereich(String),

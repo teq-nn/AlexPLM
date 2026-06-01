@@ -93,11 +93,11 @@ fn freigabe_push_lands_on_shared_master_not_main() {
     git(&product, &["commit", "-m", "auto: docs.md, t"]);
     let local_master = git_out(&product, &["rev-parse", "master"]);
 
-    // Dirty the text path so the snapshot decides Freigabe at a Meilenstein.
+    // Dirty the text path so the snapshot decides Freigabe at a Revision.
     std::fs::write(product.join("docs.md"), b"# done, edited").unwrap();
 
-    let action = run_checkpoint(&product, "docs.md", Checkpoint::Meilenstein).unwrap();
-    assert_eq!(action, WardenAction::FreigabePush, "dirty text at a Meilenstein -> Freigabe-Push");
+    let action = run_checkpoint(&product, "docs.md", Checkpoint::Revision).unwrap();
+    assert_eq!(action, WardenAction::FreigabePush, "dirty text at a Revision -> Freigabe-Push");
 
     // The shared branch is `master`, and it advanced to the published commit.
     let shared_after = git_out(&bare, &["rev-parse", "master"]);
@@ -146,7 +146,7 @@ fn sicherungs_push_lands_in_personal_namespace_not_shared_main() {
     assert_ne!(shared_after, local_main, "the new local commit is NOT on shared main");
 }
 
-/// A Meilenstein checkpoint on a dirty text file → Freigabe-Push: moves the shared `main` on the
+/// A Revision checkpoint on a dirty text file → Freigabe-Push: moves the shared `main` on the
 /// remote to the published work (the public act). (Text holds no lock, so there is nothing to
 /// unlock — the lock-bearing path is covered by the pure warden tests + the snapshot test below.)
 #[test]
@@ -163,11 +163,11 @@ fn freigabe_push_moves_shared_main_on_the_remote() {
     git(&product, &["commit", "-m", "auto: docs.md, t"]);
     let local_main = git_out(&product, &["rev-parse", "main"]);
 
-    // Make the worktree dirty on the text path so the snapshot decides Freigabe at a Meilenstein.
+    // Make the worktree dirty on the text path so the snapshot decides Freigabe at a Revision.
     std::fs::write(product.join("docs.md"), b"# done, edited").unwrap();
 
-    let action = run_checkpoint(&product, "docs.md", Checkpoint::Meilenstein).unwrap();
-    assert_eq!(action, WardenAction::FreigabePush, "dirty text at a Meilenstein -> Freigabe-Push");
+    let action = run_checkpoint(&product, "docs.md", Checkpoint::Revision).unwrap();
+    assert_eq!(action, WardenAction::FreigabePush, "dirty text at a Revision -> Freigabe-Push");
 
     // The shared main on the remote advanced to the published commit (the public act).
     let shared_after = git_out(&bare, &["rev-parse", SHARED_BRANCH]);
@@ -291,7 +291,7 @@ fn freigabe_carries_the_revision_label_and_leaves_unpublished_ones_behind() {
     seed_product_with_remote(&product, &bare);
 
     // A finished Stand on the shared line, named as a Revision (a lightweight `version/*` tag —
-    // exactly what promote_to_milestone writes).
+    // exactly what promote_to_revision writes).
     std::fs::write(product.join("docs.md"), b"# done").unwrap();
     git(&product, &["add", "-A"]);
     git(&product, &["commit", "-m", "auto: docs.md, t"]);
@@ -381,21 +381,21 @@ fn manual_sicherung_backs_up_half_finished_binary_and_never_publishes() {
 }
 
 /// Issue #54 AC: the **Freigabe** publishes AND releases the lock — proven via the Warden's
-/// decision (the safety-critical core). A held, dirty binary at a Meilenstein is the only state
+/// decision (the safety-critical core). A held, dirty binary at a Revision is the only state
 /// that yields a Freigabe-Push, and that one action both publishes to shared `main` AND releases
 /// the lock. Asserted at the decision boundary because `git lfs` is not assumed installed; the pure
 /// `WardenAction` flags encode the exact carry-out the glue obeys.
 #[test]
 fn freigabe_decision_publishes_and_releases_the_lock_via_warden() {
-    // A held binary with open work, at a Meilenstein → Freigabe-Push (the release).
+    // A held binary with open work, at a Revision → Freigabe-Push (the release).
     let snap = WardenSnapshot {
         kind: PathKind::Binary,
         lock: LockState::HeldByMe,
         clean: Cleanliness::Dirty,
-        checkpoint: Checkpoint::Meilenstein,
+        checkpoint: Checkpoint::Revision,
     };
     let action = decide(snap);
-    assert_eq!(action, WardenAction::FreigabePush, "held dirty binary at a Meilenstein -> Freigabe");
+    assert_eq!(action, WardenAction::FreigabePush, "held dirty binary at a Revision -> Freigabe");
     // The one action that publishes to shared main AND, by the same decision, releases the lock.
     assert!(action.publishes_to_shared_main(), "Freigabe publishes to the shared main");
     assert!(action.releases_lock(), "Freigabe releases the lock (unlock-at-push)");

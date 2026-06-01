@@ -168,7 +168,7 @@ fn read_branch(root: &Path) -> String {
 }
 
 /// A version-like tag from `.git/refs/tags`, defaulting to `v0.0`. Cosmetic for this slice;
-/// real milestone/version logic lands with Graph Projection (Issue #8).
+/// real revision/version logic lands with Graph Projection (Issue #8).
 fn read_version(root: &Path) -> String {
     let tags_dir = root.join(".git/refs/tags");
     let mut best: Option<String> = None;

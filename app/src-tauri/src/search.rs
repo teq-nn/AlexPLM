@@ -7,7 +7,7 @@
 //!
 //! 1. **Dateinamen** — every (non-hidden) file's path under the product.
 //! 2. **`_plm`** — the product's metadata store (the only PLM facts Git cannot know).
-//! 3. **`VERSION_NOTES.md`** — the one place human milestone text lives (E28).
+//! 3. **`VERSION_NOTES.md`** — the one place human revision text lives (E28).
 //!
 //! A product whose folder cannot be opened (deleted, on an unmounted network drive, no read
 //! permission) is **reported honestly** as offline — never silently dropped — so the user can
@@ -137,7 +137,7 @@ const DIR_DENYLIST: &[&str] = &["node_modules", "target", "__pycache__"];
 
 /// The product's metadata store directory (the only PLM facts Git cannot know).
 const PLM_DIR: &str = "_plm";
-/// The one file where human milestone text lives (E28).
+/// The one file where human revision text lives (E28).
 const VERSION_NOTES: &str = "VERSION_NOTES.md";
 
 /// Search one product live. Returns its hits, or an [`OfflineProduct`] if the folder cannot be
@@ -192,7 +192,7 @@ pub fn search_product(
         });
     }
 
-    // 3) VERSION_NOTES.md: grep the human milestone text.
+    // 3) VERSION_NOTES.md: grep the human revision text.
     let notes = root.join(VERSION_NOTES);
     if notes.is_file() {
         grep_file_lines(&notes, needle, &mut |line| {

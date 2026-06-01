@@ -3,17 +3,17 @@
 //! Two layers, matching the project's "reiner Kern + Tabellentest" pattern:
 //!
 //! 1. **Pure snapshot -> projection (no I/O).** A hand-built `RepoSnapshot` (the git/LFS
-//!    facts) projects to the expected Stände, Meilenstein, and offloaded markers without
+//!    facts) projects to the expected Stände, Revision, and offloaded markers without
 //!    touching a disk or git. This is the acceptance-criterion test.
 //! 2. **End-to-end glue.** A real temp repo is read into a snapshot and promoting a Stand
-//!    to a Meilenstein persists `VERSION_NOTES.md` and drives the version bar — exercising
+//!    to a Revision persists `VERSION_NOTES.md` and drives the version bar — exercising
 //!    the thin git/LFS reading layer over the pure core.
 
 use app_lib::graph::{
-    project_graph, BranchFact, CommitFact, MilestoneArt, MilestoneFact, RepoSnapshot,
+    project_graph, BranchFact, CommitFact, RevisionArt, RevisionFact, RepoSnapshot,
 };
 use app_lib::graphread::{
-    promote_to_milestone, read_graph, read_snapshot, toggle_milestone_freigabe, VERSION_NOTES,
+    promote_to_revision, read_graph, read_snapshot, toggle_revision_freigabe, VERSION_NOTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -22,8 +22,8 @@ use std::time::{Duration, UNIX_EPOCH};
 // ---- Layer 1: pure snapshot -> projection, no I/O -------------------------------------
 
 #[test]
-fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
-    // A git/LFS snapshot: three Stände, the middle one a Meilenstein, the oldest offloaded.
+fn snapshot_projects_to_expected_stande_revision_and_offloaded_markers() {
+    // A git/LFS snapshot: three Stände, the middle one a Revision, the oldest offloaded.
     let snapshot = RepoSnapshot {
         commits: vec![
             CommitFact {
@@ -45,11 +45,11 @@ fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
                 timestamp: "2026-05-30T09:15:00Z".into(),
             },
         ],
-        milestones: vec![MilestoneFact {
+        revisions: vec![RevisionFact {
             commit_id: "c2".into(),
             version: "v0.4".into(),
             has_notes: true,
-            art: MilestoneArt::Prototyp,
+            art: RevisionArt::Prototyp,
         }],
         offloaded: vec!["c1".into()],
         offloaded_archive: Some("2025-11".into()),
@@ -66,13 +66,13 @@ fn snapshot_projects_to_expected_stande_meilenstein_and_offloaded_markers() {
 
     let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
 
-    // Meilenstein marker on c2, with its human-text flag; version bar reads the active one.
-    assert_eq!(node("c2").milestone.as_deref(), Some("v0.4"));
+    // Revision marker on c2, with its human-text flag; version bar reads the active one.
+    assert_eq!(node("c2").revision.as_deref(), Some("v0.4"));
     assert!(node("c2").has_notes);
-    assert_eq!(g.active_milestone.as_deref(), Some("v0.4"));
+    assert_eq!(g.active_revision.as_deref(), Some("v0.4"));
 
-    // Plain Stände carry no milestone.
-    assert_eq!(node("c3").milestone, None);
+    // Plain Stände carry no revision.
+    assert_eq!(node("c3").revision, None);
 
     // Offloaded marker on c1, node still present, archive label surfaced.
     assert!(node("c1").offloaded);
@@ -101,7 +101,7 @@ fn an_externally_created_zweig_surfaces_as_a_distinct_line() {
             CommitFact { id: "f1".into(), parents: vec!["c2".into()], message: "auto: d, 2026-05-04T00:00:00Z".into(), timestamp: "2026-05-04T00:00:00Z".into() },
             CommitFact { id: "f2".into(), parents: vec!["f1".into()], message: "auto: e, 2026-05-05T00:00:00Z".into(), timestamp: "2026-05-05T00:00:00Z".into() },
         ],
-        milestones: vec![],
+        revisions: vec![],
         offloaded: vec![],
         offloaded_archive: None,
         published: vec![],
@@ -167,7 +167,7 @@ fn head(root: &Path) -> String {
 }
 
 #[test]
-fn reads_a_real_repo_into_stande_then_promotes_one_to_a_meilenstein() {
+fn reads_a_real_repo_into_stande_then_promotes_one_to_a_revision() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     init_repo(root);
@@ -177,21 +177,21 @@ fn reads_a_real_repo_into_stande_then_promotes_one_to_a_meilenstein() {
     commit_file(root, "b.txt", "two", "auto: b.txt, 2026-05-30T10:00:00Z");
     let target = head(root); // the Stand the user will promote
 
-    // Before promotion: two nodes, no Meilenstein, version bar empty.
+    // Before promotion: two nodes, no Revision, version bar empty.
     let g = read_graph(root).unwrap();
     assert_eq!(g.nodes.len(), 2);
-    assert_eq!(g.active_milestone, None);
-    assert!(g.nodes.iter().all(|n| n.milestone.is_none()));
+    assert_eq!(g.active_revision, None);
+    assert!(g.nodes.iter().all(|n| n.revision.is_none()));
 
-    // Promote the newest Stand to a Meilenstein with human text.
+    // Promote the newest Stand to a Revision with human text.
     let now = UNIX_EPOCH + Duration::from_secs(1_777_000_000);
     let g =
-        promote_to_milestone(root, &target, "v1.0", "Erstes vorzeigbares Gehäuse.", now).unwrap();
+        promote_to_revision(root, &target, "v1.0", "Erstes vorzeigbares Gehäuse.", now).unwrap();
 
     // The promoted Stand now carries the version; the version bar shows it (Mono in UI).
-    assert_eq!(g.active_milestone.as_deref(), Some("v1.0"));
+    assert_eq!(g.active_revision.as_deref(), Some("v1.0"));
     let promoted = g.nodes.iter().find(|n| n.id == target).unwrap();
-    assert_eq!(promoted.milestone.as_deref(), Some("v1.0"));
+    assert_eq!(promoted.revision.as_deref(), Some("v1.0"));
     assert!(promoted.has_notes, "VERSION_NOTES text was persisted");
 
     // VERSION_NOTES.md is the ONLY place the human text lives (E28).
@@ -218,16 +218,16 @@ fn reads_a_real_repo_into_stande_then_promotes_one_to_a_meilenstein() {
         "human text must not be in the commit message"
     );
 
-    // Re-reading the repo (fresh snapshot) shows the durable Meilenstein.
+    // Re-reading the repo (fresh snapshot) shows the durable Revision.
     let snap = read_snapshot(root).unwrap();
     assert!(snap
-        .milestones
+        .revisions
         .iter()
         .any(|m| m.version == "v1.0" && m.has_notes));
 }
 
 #[test]
-fn a_new_meilenstein_is_prototyp_and_the_toggle_releases_and_un_releases_it() {
+fn a_new_revision_is_prototyp_and_the_toggle_releases_and_un_releases_it() {
     // Issue #41 / E42 end-to-end over a real repo: promote -> Prototyp by default; the toggle
     // raises it to Freigabe (write-protected) and toggles back to Prototyp ("Un-Release").
     let dir = tempfile::tempdir().unwrap();
@@ -237,48 +237,48 @@ fn a_new_meilenstein_is_prototyp_and_the_toggle_releases_and_un_releases_it() {
     let target = head(root);
 
     let now = UNIX_EPOCH + Duration::from_secs(1_777_000_000);
-    let g = promote_to_milestone(root, &target, "v1.0", "Erstes Gehäuse.", now).unwrap();
+    let g = promote_to_revision(root, &target, "v1.0", "Erstes Gehäuse.", now).unwrap();
 
-    // Acceptance: a new Meilenstein defaults to Prototyp (lax).
-    assert_eq!(g.active_milestone.as_deref(), Some("v1.0"));
-    assert_eq!(g.active_milestone_art, Some(MilestoneArt::Prototyp));
+    // Acceptance: a new Revision defaults to Prototyp (lax).
+    assert_eq!(g.active_revision.as_deref(), Some("v1.0"));
+    assert_eq!(g.active_revision_art, Some(RevisionArt::Prototyp));
     let node = |g: &app_lib::graph::VersionGraph, id: &str| {
         g.nodes.iter().find(|n| n.id == id).cloned().unwrap()
     };
-    assert_eq!(node(&g, &target).milestone_art, Some(MilestoneArt::Prototyp));
+    assert_eq!(node(&g, &target).revision_art, Some(RevisionArt::Prototyp));
 
     // Toggle -> Freigabe: the Art is now Freigabe (write-protected).
-    let g = toggle_milestone_freigabe(root, "v1.0").unwrap();
-    assert_eq!(g.active_milestone_art, Some(MilestoneArt::Freigabe));
-    assert_eq!(node(&g, &target).milestone_art, Some(MilestoneArt::Freigabe));
+    let g = toggle_revision_freigabe(root, "v1.0").unwrap();
+    assert_eq!(g.active_revision_art, Some(RevisionArt::Freigabe));
+    assert_eq!(node(&g, &target).revision_art, Some(RevisionArt::Freigabe));
 
-    // Write-protect (E8): a released Meilenstein refuses to be overwritten by a re-promote.
-    let err = promote_to_milestone(root, &target, "v1.0", "nochmal", now).unwrap_err();
+    // Write-protect (E8): a released Revision refuses to be overwritten by a re-promote.
+    let err = promote_to_revision(root, &target, "v1.0", "nochmal", now).unwrap_err();
     assert!(
         err.to_string().contains("schreibgeschützt"),
         "Freigabe must be write-protected, got {err}"
     );
 
     // Toggle back -> Prototyp ("Un-Release"): reversible, and re-promote is allowed again.
-    let g = toggle_milestone_freigabe(root, "v1.0").unwrap();
-    assert_eq!(g.active_milestone_art, Some(MilestoneArt::Prototyp));
-    let g = promote_to_milestone(root, &target, "v1.0", "geänderter Text.", now).unwrap();
+    let g = toggle_revision_freigabe(root, "v1.0").unwrap();
+    assert_eq!(g.active_revision_art, Some(RevisionArt::Prototyp));
+    let g = promote_to_revision(root, &target, "v1.0", "geänderter Text.", now).unwrap();
     assert!(node(&g, &target).has_notes);
 
     // The Art survives a fresh read of the repo (persisted per tag in the _plm-style store).
     let snap = read_snapshot(root).unwrap();
-    let ms = snap.milestones.iter().find(|m| m.version == "v1.0").unwrap();
-    assert_eq!(ms.art, MilestoneArt::Prototyp);
+    let ms = snap.revisions.iter().find(|m| m.version == "v1.0").unwrap();
+    assert_eq!(ms.art, RevisionArt::Prototyp);
 }
 
 #[test]
-fn toggling_an_unknown_meilenstein_is_refused() {
+fn toggling_an_unknown_revision_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     init_repo(root);
     commit_file(root, "a.txt", "one", "auto: a.txt, 2026-05-30T09:00:00Z");
 
-    let err = toggle_milestone_freigabe(root, "v9.9").unwrap_err();
+    let err = toggle_revision_freigabe(root, "v9.9").unwrap_err();
     assert!(
         err.to_string().contains("Keine Revision"),
         "must refuse a non-existent Revision, got {err}"
@@ -293,7 +293,7 @@ fn promoting_requires_human_text() {
     commit_file(root, "a.txt", "one", "auto: a.txt, 2026-05-30T09:00:00Z");
     let target = head(root);
 
-    let err = promote_to_milestone(root, &target, "v1.0", "   ", UNIX_EPOCH).unwrap_err();
+    let err = promote_to_revision(root, &target, "v1.0", "   ", UNIX_EPOCH).unwrap_err();
     assert!(
         err.to_string().contains("Text"),
         "must demand notes, got {err}"
@@ -308,7 +308,7 @@ fn fresh_repo_with_no_commits_projects_to_empty_tree() {
 
     let g = read_graph(root).unwrap();
     assert!(g.nodes.is_empty());
-    assert_eq!(g.active_milestone, None);
+    assert_eq!(g.active_revision, None);
 }
 
 #[test]
