@@ -35,7 +35,9 @@ pub struct RemoteConfig {
     /// (Issue #22: credentials live in the OS keystore, never in the URL) and what a colleague
     /// clones (the invite). Never carries a secret.
     pub clone_url: String,
-    /// The `https://host` origin, used to scope the `lfs.<url>.locksverify` config (E41 note).
+    /// The `https://host` origin (no owner/repo). Carried for callers that need the bare host;
+    /// `locksverify` is scoped to the repo's LFS endpoint via [`clone_url`](Self::clone_url), not
+    /// this (Issue #110).
     pub host_url: String,
 }
 
@@ -125,15 +127,21 @@ fn clean_segment(value: &str, field: &str) -> Result<String, String> {
 // Pure core 2 — the `locksverify` config invocation (E41 / Realitätsbefund)
 // ----------------------------------------------------------------------------------------------
 
-/// The exact `git config` arguments that switch on LFS lock verification for a host (E41:
-/// "`locksverify` muss aktiv eingeschaltet werden"). Pure: builds `git config --local
-/// lfs.<host>/info/lfs.locksverify true`, the key git-lfs reads per-endpoint. Kept pure so the
-/// precise key string is asserted by a unit test rather than discovered in production.
-pub fn locksverify_config(host_url: &str) -> Vec<String> {
+/// The exact `git config` arguments that switch on LFS lock verification (E41: "`locksverify`
+/// muss aktiv eingeschaltet werden"). Pure: builds `git config --local
+/// lfs.<repo>.git/info/lfs.locksverify true`.
+///
+/// git-lfs keys `locksverify` **per LFS endpoint**, not per host (Issue #110): the endpoint for a
+/// Forgejo/Gitea repo is the clone URL with `/info/lfs` appended — `https://host/owner/repo.git/info/lfs`.
+/// Scoping the config to the bare host (`lfs.https://host/info/lfs.locksverify`) writes a key
+/// git-lfs never reads, so verification stays silently **off**. So this takes the repo's clone URL,
+/// not the host origin. Kept pure so the precise key string is asserted by a unit test rather than
+/// discovered in production.
+pub fn locksverify_config(clone_url: &str) -> Vec<String> {
     vec![
         "config".into(),
         "--local".into(),
-        format!("lfs.{}/info/lfs.locksverify", host_url.trim_end_matches('/')),
+        format!("lfs.{}/info/lfs.locksverify", clone_url.trim_end_matches('/')),
         "true".into(),
     ]
 }
@@ -272,11 +280,12 @@ pub fn configure_remote(
         run_git(root, &["remote", "add", REMOTE_NAME, &cfg.clone_url])?;
     }
 
-    // Enable locksverify for the host (E41). Best-effort: a config write failing must not abort
-    // the whole connect step — the remote is the important part, and the user can retry.
+    // Enable locksverify for the repo's LFS endpoint (E41, Issue #110). Best-effort: a config write
+    // failing must not abort the whole connect step — the remote is the important part, and the
+    // user can retry.
     let _ = run_git(
         root,
-        &locksverify_config(&cfg.host_url)
+        &locksverify_config(&cfg.clone_url)
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -528,22 +537,34 @@ mod tests {
     // ---- locksverify_config: the exact git config invocation ----
 
     #[test]
-    fn locksverify_config_targets_the_host_lfs_endpoint() {
+    fn locksverify_config_targets_the_repo_lfs_endpoint() {
+        // Issue #110: git-lfs keys locksverify per LFS endpoint (the clone URL + /info/lfs), not
+        // per host. Scoping to the bare host writes a key git-lfs never reads → verification off.
         assert_eq!(
-            locksverify_config("https://forge.example.de"),
+            locksverify_config("https://forge.example.de/team/ember-reverb.git"),
             vec![
                 "config",
                 "--local",
-                "lfs.https://forge.example.de/info/lfs.locksverify",
+                "lfs.https://forge.example.de/team/ember-reverb.git/info/lfs.locksverify",
                 "true",
             ]
         );
     }
 
     #[test]
+    fn locksverify_config_matches_the_normalized_clone_url() {
+        // The key must target exactly the clone URL `configure_remote` writes as the remote, so
+        // git-lfs (which derives its endpoint from that same remote URL) actually reads it.
+        let cfg =
+            normalize_remote("https://forge.example.de", "team", "ember-reverb", "anna").unwrap();
+        let args = locksverify_config(&cfg.clone_url);
+        assert_eq!(args[2], format!("lfs.{}/info/lfs.locksverify", cfg.clone_url));
+    }
+
+    #[test]
     fn locksverify_config_trims_trailing_slash() {
-        let args = locksverify_config("https://h/");
-        assert_eq!(args[2], "lfs.https://h/info/lfs.locksverify");
+        let args = locksverify_config("https://h/o/p.git/");
+        assert_eq!(args[2], "lfs.https://h/o/p.git/info/lfs.locksverify");
         assert_eq!(args[3], "true");
     }
 
