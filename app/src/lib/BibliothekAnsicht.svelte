@@ -5,7 +5,10 @@
   // Zähler, ein Glob-Auszug), wirken klickbar, tun aber noch nichts — Bearbeiten/Anlegen/Löschen
   // kommen in späteren Stufen. Quelle ist das bestehende `cmd.listBibliothek`; kein neues Kommando.
   //
-  // Bewusst KEIN herkunft-Badge (mitgeliefert/eigen) — der gehört in Slice 5 (server-autoritativ).
+  // Slice 5 ergänzt: ein Herkunft-Etikett je Karte (mitgeliefert vs. eigen) und das Löschen — beide
+  // server-autoritativ aus `view.bundled_ids` abgeleitet (KEINE im Frontend hartcodierte Liste). Eigene
+  // Bausteine sind löschbar; mitgelieferte zeigen keine Lösch-Aktion (sie kämen beim nächsten Start
+  // ohnehin per Seeding zurück — die Schranke sitzt zusätzlich hart im Backend).
   import { onMount } from "svelte";
   import { cmd } from "$lib/commands";
   import type { Baustein } from "$lib/types";
@@ -20,8 +23,19 @@
   } = $props();
 
   let bausteine = $state<Baustein[]>([]);
+  // Server-autoritative Herkunft: die Kennungen der gebündelten Defaults. Speist das Etikett
+  // (mitgeliefert vs. eigen) und die Lösch-Schranke (nur eigen ist löschbar).
+  let bundledIds = $state<string[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // Welche Karte gerade die stille Löschbestätigung zeigt (`id`), und ob ein Löschen läuft.
+  let confirmingDelete = $state<string | null>(null);
+  let deleting = $state(false);
+  let deleteError = $state<string | null>(null);
+
+  function isBundled(id: string): boolean {
+    return bundledIds.includes(id);
+  }
   // Der gerade bearbeitete Baustein (Slice 2) bzw. der leere Anlege-Entwurf (Slice 3). Gesetzt ⇒ der
   // Voll-Editor übernimmt die Bühne. `creating` unterscheidet die Absicht: Anlegen prüft die Kennung
   // auf Eindeutigkeit und schreibt mit `isCreate=true` (server-autoritativ), Bearbeiten ist ein Upsert.
@@ -36,6 +50,7 @@
     try {
       const view = await cmd.listBibliothek();
       bausteine = view.bausteine;
+      bundledIds = view.bundled_ids;
     } catch (e) {
       // Eine Lese-Hiccup darf die Schau nicht sprengen (Haus-Stil: degradieren, nie krachen).
       error = String(e);
@@ -76,8 +91,36 @@
   async function saveBaustein(b: Baustein) {
     const view = await cmd.saveBausteinCmd(b, creating);
     bausteine = view.bausteine;
+    bundledIds = view.bundled_ids;
     editing = null;
     creating = false;
+  }
+
+  // Slice 5 (Löschen): nur für eigene (nicht gebündelte) Bausteine. Stiller zweistufiger Bestätiger
+  // direkt auf der Karte (kein Native-Dialog, keine Git-/Technik-Vokabel) — „Löschen" ⇒ „Wirklich
+  // entfernen?" mit Bestätigen/Abbrechen. Bei Erfolg die Galerie aus der zurückgegebenen Wahrheit neu
+  // rendern. Das Backend lehnt einen gebündelten Löschwunsch zusätzlich hart ab (server-autoritativ).
+  function askDelete(id: string) {
+    deleteError = null;
+    confirmingDelete = id;
+  }
+  function cancelDelete() {
+    confirmingDelete = null;
+    deleteError = null;
+  }
+  async function confirmDelete(id: string) {
+    deleting = true;
+    deleteError = null;
+    try {
+      const view = await cmd.deleteBausteinCmd(id);
+      bausteine = view.bausteine;
+      bundledIds = view.bundled_ids;
+      confirmingDelete = null;
+    } catch (e) {
+      deleteError = String(e);
+    } finally {
+      deleting = false;
+    }
   }
 </script>
 
@@ -134,6 +177,18 @@
             <button class="card" onclick={() => openBaustein(b)}>
               <div class="ctop">
                 <span class="cname">{b.name}</span>
+                <!-- Herkunft-Etikett (server-autoritativ): LED-Punkt + Kapitälchen-Sublabel, ruhig.
+                     Kein Orange — beide Herkünfte sind Normalzustand, keine laute Ausnahme. -->
+                <span
+                  class="herkunft"
+                  class:eigen={!isBundled(b.id)}
+                  title={isBundled(b.id)
+                    ? "Mitgeliefert — Teil der Standard-Bibliothek"
+                    : "Eigen — von Hand angelegt"}
+                >
+                  <span class="hdot" aria-hidden="true"></span>
+                  <span class="label">{isBundled(b.id) ? "mitgeliefert" : "eigen"}</span>
+                </span>
               </div>
               <span class="cid mono"
                 >{b.id}{#if b.stillgelegt} · stillgelegt{/if}</span
@@ -170,6 +225,37 @@
             >
               <span class="label">Duplizieren</span>
             </button>
+
+            <!-- Löschen: nur für eigene Bausteine. Mitgelieferte bekommen keine Aktion (Schranke auch
+                 hart im Backend). Zweistufig: erst die ruhige Aktion, dann die kurze Bestätigung. -->
+            {#if !isBundled(b.id)}
+              {#if confirmingDelete === b.id}
+                <div class="delconfirm">
+                  {#if deleteError}
+                    <span class="delerr mono">{deleteError}</span>
+                  {/if}
+                  <span class="delask label">Wirklich entfernen?</span>
+                  <button
+                    class="delyes"
+                    onclick={() => confirmDelete(b.id)}
+                    disabled={deleting}
+                  >
+                    <span class="label">{deleting ? "entfernt …" : "Entfernen"}</span>
+                  </button>
+                  <button class="delno" onclick={cancelDelete} disabled={deleting}>
+                    <span class="label">Abbrechen</span>
+                  </button>
+                </div>
+              {:else}
+                <button
+                  class="del"
+                  onclick={() => askDelete(b.id)}
+                  title="Diesen eigenen Baustein entfernen"
+                >
+                  <span class="label">Löschen</span>
+                </button>
+              {/if}
+            {/if}
           </div>
         {/each}
       </div>
@@ -335,6 +421,118 @@
     color: var(--ink-strong);
   }
   .dup .label {
+    color: inherit;
+    font-size: 9.5px;
+  }
+
+  /* Herkunft-Etikett: ruhiger LED-Punkt + Kapitälchen, im Karten-Kopf neben dem Namen. „mitgeliefert"
+     ruht gedämpft (off-LED), „eigen" trägt den grünen Frei-Punkt — orange bleibt der lauten Ausnahme
+     vorbehalten, beide Herkünfte sind Normalzustand. */
+  .herkunft {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    margin-top: 2px;
+  }
+  .herkunft .hdot {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--led-off);
+  }
+  .herkunft.eigen .hdot {
+    background: var(--led-free);
+  }
+  .herkunft .label {
+    font-size: 8.5px;
+    color: var(--ink-muted);
+  }
+
+  /* Löschen spiegelt die ruhige „Duplizieren"-Sprache: erst beim Überfahren sichtbar, kein Orange.
+     Liegt in der unteren Ecke, damit Bearbeiten (Primärklick) + Duplizieren (obere Ecke) frei bleiben. */
+  .del {
+    appearance: none;
+    cursor: pointer;
+    position: absolute;
+    bottom: 10px;
+    right: 12px;
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--ink-muted);
+    opacity: 0;
+    transition:
+      opacity var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+  .cardwrap:hover .del,
+  .del:focus-visible {
+    opacity: 1;
+  }
+  .del:hover {
+    color: var(--ink-strong);
+  }
+  .del .label {
+    color: inherit;
+    font-size: 9.5px;
+  }
+
+  /* Bestätigung: kurz, ruhig, deutsch — keine Git-/Technik-Vokabel. Liegt über der unteren Karten-
+     kante, damit sie die Karte nicht aufbläht. Bleibt sichtbar (nicht nur on-hover), solange offen. */
+  .delconfirm {
+    position: absolute;
+    bottom: 8px;
+    right: 10px;
+    left: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+  }
+  .delask {
+    margin-right: auto;
+    font-size: 9.5px;
+    color: var(--ink-default);
+  }
+  .delerr {
+    flex-basis: 100%;
+    font-size: 10px;
+    color: var(--accent);
+  }
+  .delyes,
+  .delno {
+    appearance: none;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 3px 8px;
+    color: var(--ink-default);
+    transition:
+      border-color var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+  .delyes:hover:not(:disabled) {
+    border-color: var(--ink-strong);
+    color: var(--ink-strong);
+  }
+  .delno:hover:not(:disabled) {
+    border-color: var(--ink-muted);
+  }
+  .delyes:disabled,
+  .delno:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .delyes .label,
+  .delno .label {
     color: inherit;
     font-size: 9.5px;
   }

@@ -251,6 +251,14 @@ pub fn dedup_globs(globs: &[String]) -> Vec<String> {
     globs.iter().filter(|g| seen.insert((*g).clone())).cloned().collect()
 }
 
+/// Ob eine Kennung zu einem **gebündelten** Default gehört (Issue #108). Rein und total: ein einfacher
+/// Mitgliedschaftstest gegen die Kennungen der mitgelieferten Bausteine. Trägt die Boomerang-Schranke
+/// fürs Löschen — ein gebündelter Baustein würde beim nächsten Start ohnehin wieder eingesät, darum
+/// ist er nicht löschbar. Dieselbe Quelle speist auch das Herkunft-Etikett (mitgeliefert vs. eigen).
+pub fn is_bundled_id(id: &str, bundled_ids: &[String]) -> bool {
+    bundled_ids.iter().any(|x| x == id)
+}
+
 /// Ein **Toolstack**: eine benannte, geordnete Auswahl von Baustein-`id`s aus der Bibliothek
 /// (ADR 0003). Repräsentiert einen Standard-Toolstack, aus dem ein Produkt-Stack kopiert wird.
 #[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +515,18 @@ mod tests {
             let want: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
             assert_eq!(got, want, "input = {input:?}");
         }
+    }
+
+    #[test]
+    fn is_bundled_id_table() {
+        let bundled: Vec<String> = ["kicad", "fusion"].iter().map(|s| s.to_string()).collect();
+        // gebündelte Kennung → erkannt (löschen geblockt, Etikett „mitgeliefert")
+        assert!(is_bundled_id("kicad", &bundled));
+        assert!(is_bundled_id("fusion", &bundled));
+        // nutzer-eigene Kennung → nicht gebündelt (löschbar, Etikett „eigen")
+        assert!(!is_bundled_id("meine-cnc", &bundled));
+        // leere Quelle → nichts ist gebündelt
+        assert!(!is_bundled_id("kicad", &[]));
     }
 
     #[test]

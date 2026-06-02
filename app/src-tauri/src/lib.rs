@@ -49,7 +49,7 @@ pub mod zuordnungstore;
 
 use aufgabenblock::BlockDecision;
 use aufgabenblockglue::block_for_art;
-use baustein::{validate_baustein, dedup_globs, Baustein, Toolstack};
+use baustein::{validate_baustein, dedup_globs, is_bundled_id, Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{
     add_persisted_edge, confirm_pair_edge, onboard_default_edges, read_edge_view,
@@ -742,18 +742,44 @@ fn seed_bibliothek(app: &tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[specta::specta]
 fn list_bibliothek(app: tauri::AppHandle) -> Result<BibliothekView, String> {
-    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    build_bibliothek_view(&app)
+}
+
+/// Die Kennungen der **gebündelten** Default-Bausteine, die die App als Tauri-Resource mitliefert
+/// (Issue #108, ADR 0003). Server-autoritativ: das Frontend leitet daraus Herkunft (mitgeliefert vs.
+/// eigen) und die Lösch-Schranke ab — es gibt KEINE im Frontend hartcodierte Liste. Degradiert wie
+/// jedes Lesen: ein fehlendes/leeres Resource-Verzeichnis ⇒ leere Liste, nie Fehler.
+fn bundled_baustein_ids(app: &tauri::AppHandle) -> Vec<String> {
+    let dir = match bundled_bibliothek_dir(app) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let (bausteine, _) = bibliothek::load_bundled(&dir);
+    bausteine.into_iter().map(|b| b.id).collect()
+}
+
+/// Die frisch gelesene [`BibliothekView`] aus der lokalen Bibliothek + den gebündelten Kennungen
+/// bauen. Geteilt von `list_bibliothek`, `save_baustein_cmd` und `delete_baustein_cmd`, damit die UI
+/// immer aus derselben Wahrheit neu rendert.
+fn build_bibliothek_view(app: &tauri::AppHandle) -> Result<BibliothekView, String> {
+    let lib = Bibliothek::new(bibliothek_root(app)?);
     Ok(BibliothekView {
         bausteine: lib.list_bausteine(),
         toolstacks: lib.list_toolstacks(),
+        bundled_ids: bundled_baustein_ids(app),
     })
 }
 
-/// The Bibliothek as sent to the UI: the available Bausteine and Toolstacks.
+/// The Bibliothek as sent to the UI: the available Bausteine and Toolstacks. `bundled_ids` lists the
+/// ids that ship as bundled defaults (server-authoritative herkunft signal, Issue #108): the frontend
+/// renders the „mitgeliefert" vs „eigen" badge and gates the delete action off this — a bundled id is
+/// not deletable (it would be re-seeded next launch). Derived from `bibliothek::load_bundled`, never
+/// hardcoded in the frontend.
 #[derive(specta::Type, serde::Serialize)]
 struct BibliothekView {
     bausteine: Vec<Baustein>,
     toolstacks: Vec<Toolstack>,
+    bundled_ids: Vec<String>,
 }
 
 /// Einen Bibliothek-Baustein **anlegen oder bearbeiten** (Issue #108, ADR 0003): ein Upsert auf der
@@ -802,10 +828,35 @@ fn save_baustein_cmd(
     lib.write_baustein(&to_write)
         .map_err(|e| format!("Baustein konnte nicht gespeichert werden: {e}"))?;
 
-    Ok(BibliothekView {
-        bausteine: lib.list_bausteine(),
-        toolstacks: lib.list_toolstacks(),
-    })
+    build_bibliothek_view(&app)
+}
+
+/// Einen Bibliothek-Baustein **hart löschen** (Issue #108, ADR 0003). Server-autoritativ geschützt:
+/// ein **gebündelter** Default ist NICHT löschbar — seine Kennung würde beim nächsten Start ohnehin
+/// wieder eingesät („Boomerang"), darum wird ein solcher Löschwunsch mit einer deutschen Meldung
+/// abgelehnt (gleiche `Result<_, String>`-Form wie die Geschwister-Kommandos). Die Schranke sitzt
+/// hier im Backend, nicht nur in der UI — sie wird gegen die gebündelten Defaults
+/// (`bibliothek::load_bundled`) entschieden, nicht gegen eine hartcodierte Liste. Eine bereits
+/// fehlende Datei degradiert still (idempotent). Hängende Toolstack-/Produkt-Verweise nach dem
+/// Löschen werden toleriert (Handoff §1.7). Gibt die frisch gelesene [`BibliothekView`] zurück.
+///
+/// Nur die **Bibliothek-Vorlage** wird berührt — niemals die produkt-lokale Anti-Drift-Kopie (ADR 0003).
+#[tauri::command]
+#[specta::specta]
+fn delete_baustein_cmd(app: tauri::AppHandle, id: String) -> Result<BibliothekView, String> {
+    // Boomerang-Schranke: gebündelte Defaults sind unlöschbar (sie kämen beim nächsten Seeding zurück).
+    if is_bundled_id(&id, &bundled_baustein_ids(&app)) {
+        return Err(
+            "Mitgelieferte Bausteine lassen sich nicht entfernen — sie würden beim nächsten Start wiederkehren."
+                .to_string(),
+        );
+    }
+
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    lib.delete_baustein(&id)
+        .map_err(|e| format!("Baustein konnte nicht entfernt werden: {e}"))?;
+
+    build_bibliothek_view(&app)
 }
 
 /// List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
@@ -1564,6 +1615,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         sync_product,
         list_bibliothek,
         save_baustein_cmd,
+        delete_baustein_cmd,
         list_toolstacks,
         toolstack_baustein_ids,
         create_product_stack_cmd,

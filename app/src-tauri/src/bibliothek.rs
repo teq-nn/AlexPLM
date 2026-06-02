@@ -130,6 +130,17 @@ impl Bibliothek {
         crate::plmstore::write_pretty(&self.toolstack_path(&t.id), t)
     }
 
+    /// Einen lokalen Baustein **hart löschen** (Issue #108): die `id`-Datei entfernen. Degradiert
+    /// wie das Lesen — eine bereits fehlende Datei ist kein Fehler (idempotent, nie Panik). Die
+    /// Boomerang-Schranke (gebündelte Defaults werden nie gelöscht) sitzt im Kommando, nicht hier.
+    pub fn delete_baustein(&self, id: &str) -> std::io::Result<()> {
+        match std::fs::remove_file(self.baustein_path(id)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Idempotentes, version-gegates Seeding aus den gebündelten Defaults (ADR 0003).
     ///
     /// Für jeden gebündelten Baustein wird [`seed_decision`] gefällt und nur bei `Install`/`Upgrade`
@@ -316,6 +327,24 @@ mod tests {
         let outcomes = lib.seed_from(&[baustein("kicad", 2, "elektronik")], &[]).unwrap();
         assert_eq!(outcomes[0].action, SeedAction::Upgrade);
         assert_eq!(lib.read_baustein("kicad").unwrap().version, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_removes_file_and_is_idempotent_on_missing() {
+        let dir = tmp();
+        let lib = Bibliothek::new(&dir);
+        lib.write_baustein(&baustein("kicad", 1, "elektronik")).unwrap();
+        assert!(lib.read_baustein("kicad").is_some());
+
+        // löschen entfernt die Datei
+        lib.delete_baustein("kicad").unwrap();
+        assert!(lib.read_baustein("kicad").is_none());
+
+        // erneutes Löschen einer fehlenden Datei degradiert still (idempotent, nie Panik)
+        lib.delete_baustein("kicad").unwrap();
+        lib.delete_baustein("nie-dagewesen").unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
     }
