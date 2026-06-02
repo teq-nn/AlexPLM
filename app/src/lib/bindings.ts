@@ -248,8 +248,13 @@ export const commands = {
 	/**
 	 *  Einen Bibliothek-Baustein **anlegen oder bearbeiten** (Issue #108, ADR 0003): ein Upsert auf der
 	 *  `id` (`write_baustein` überschreibt nach `id`; das Anlegen und das Bearbeiten teilen sich diesen
-	 *  Schreibpfad). Validiert den Baustein im **reinen Kern** (`baustein::validate_baustein`) gegen die
-	 *  bereits vorhandenen Kennungen; harte Feld-Fehler werden als deutsche Fehlermeldung zurückgegeben,
+	 *  Schreibpfad). `is_create` unterscheidet die Absicht: beim Anlegen prüft der reine Kern die
+	 *  **Eindeutigkeit** der Kennung gegen die vorhandenen Bausteine und blockiert eine Kollision
+	 *  (server-autoritativ); beim Bearbeiten ist die `id` unveränderlich, der Upsert überschreibt den
+	 *  gleichnamigen Datensatz, daher entfällt die Eindeutigkeitsprüfung (sonst würde jedes Bearbeiten
+	 *  als Kollision durchfallen). Validiert den Baustein im **reinen Kern**
+	 *  (`baustein::validate_baustein`) gegen die bereits vorhandenen Kennungen; harte Feld-Fehler werden
+	 *  als deutsche Fehlermeldung zurückgegeben,
 	 *  die die UI anzeigen kann (gleiche `Result<_, String>`-Form wie die Geschwister-Kommandos). Weiche
 	 *  Warnungen (z.B. ein noch fehlender Partner-Baustein) blockieren NICHT — sie erscheinen erst beim
 	 *  Lesen wieder, der Vorschlag greift einfach, sobald der Partner existiert. Exakte Duplikat-Globs
@@ -259,7 +264,7 @@ export const commands = {
 	 *  Nur die **Bibliothek-Vorlage** wird berührt — niemals die produkt-lokale Anti-Drift-Kopie in
 	 *  `_plm/stack.json` (ADR 0003).
 	 */
-	saveBausteinCmd: (baustein: Baustein) => typedError<BibliothekView, string>(__TAURI_INVOKE("save_baustein_cmd", { baustein })),
+	saveBausteinCmd: (baustein: Baustein, isCreate: boolean) => typedError<BibliothekView, string>(__TAURI_INVOKE("save_baustein_cmd", { baustein, isCreate })),
 	/**
 	 *  List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
 	 *  the „Standard-Toolstack wählen"-Schritt der Produkt-Anlage (#50).

@@ -10,6 +10,7 @@
   import { cmd } from "$lib/commands";
   import type { Baustein } from "$lib/types";
   import BausteinEditor from "$lib/bibliothek/BausteinEditor.svelte";
+  import { emptyBaustein } from "$lib/bibliothek/validate";
 
   let {
     onClose,
@@ -21,8 +22,11 @@
   let bausteine = $state<Baustein[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  // Der gerade bearbeitete Baustein (Slice 2). Gesetzt ⇒ der Voll-Editor übernimmt die Bühne.
+  // Der gerade bearbeitete Baustein (Slice 2) bzw. der leere Anlege-Entwurf (Slice 3). Gesetzt ⇒ der
+  // Voll-Editor übernimmt die Bühne. `creating` unterscheidet die Absicht: Anlegen prüft die Kennung
+  // auf Eindeutigkeit und schreibt mit `isCreate=true` (server-autoritativ), Bearbeiten ist ein Upsert.
   let editing = $state<Baustein | null>(null);
+  let creating = $state(false);
 
   onMount(load);
 
@@ -43,22 +47,28 @@
 
   // Slice 2 (Bearbeiten): eine Karte öffnet den Voll-Editor, vorgefüllt mit dem gewählten Baustein.
   function openBaustein(b: Baustein) {
+    creating = false;
     editing = b;
   }
 
-  // Speichern (Slice 2): Upsert über cmd.saveBausteinCmd; bei Erfolg die Galerie aus der
-  // zurückgegebenen Wahrheit neu rendern und zurück zur Galerie. Fehler wirft das Kommando — der
-  // Editor fängt sie und zeigt sie in seiner Fußleiste an (kein eigenes Try/Catch hier nötig).
-  async function saveBaustein(b: Baustein) {
-    const view = await cmd.saveBausteinCmd(b);
-    bausteine = view.bausteine;
-    editing = null;
+  // Slice 3 (Anlegen): die Ghost-Kachel öffnet DENSELBEN Voll-Editor im Anlege-Modus mit einem leeren
+  // Entwurf. Anlegen == Klon-aus-leer — gleicher Editor, gleicher Schreibpfad (Upsert). Die Kennung
+  // ist editierbar + wird aus dem Namen abgeleitet; `version`=1 und `stillgelegt`=false stehen bereits
+  // im leeren Entwurf (emptyBaustein).
+  function createBaustein() {
+    creating = true;
+    editing = emptyBaustein();
   }
 
-  // TODO (Slice 3): Die Ghost-Kachel „+ Neuer Baustein" verdrahtet das Anlegen (createBaustein +
-  // cloneBaustein, Anlege-Eindeutigkeitsprüfung der Kennung). Bewusst noch no-op.
-  function createBaustein() {
-    // no-op bis Slice 3 das Anlegen verdrahtet.
+  // Speichern (Slice 2 + 3): Upsert über cmd.saveBausteinCmd. `isCreate` trägt die Absicht zum
+  // server-autoritativen Kern: beim Anlegen wird die Kennung auf Eindeutigkeit geprüft. Bei Erfolg die
+  // Galerie aus der zurückgegebenen Wahrheit neu rendern und zurück zur Galerie. Fehler wirft das
+  // Kommando — der Editor fängt sie und zeigt sie in seiner Fußleiste an (kein eigenes Try/Catch hier).
+  async function saveBaustein(b: Baustein) {
+    const view = await cmd.saveBausteinCmd(b, creating);
+    bausteine = view.bausteine;
+    editing = null;
+    creating = false;
   }
 </script>
 
@@ -69,8 +79,12 @@
       <BausteinEditor
         baustein={editing}
         {bausteine}
+        create={creating}
         onSave={saveBaustein}
-        onCancel={() => (editing = null)}
+        onCancel={() => {
+          editing = null;
+          creating = false;
+        }}
       />
     </div>
   {:else}

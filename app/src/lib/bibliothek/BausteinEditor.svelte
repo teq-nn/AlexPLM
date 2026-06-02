@@ -1,15 +1,20 @@
 <script lang="ts">
-  // Voll-Editor eines Bibliothek-Bausteins (Issue #108, Slice 2 — BEARBEITEN). Voll-Flächen-Editor
-  // mit Modus-Tabs (Grunddaten · Artefakte · Aufgaben · Kanten), gepfropft aus dem Prototyp-Takeover
-  // (VariantC). Alle Felder editierbar INKL. der strukturierten — AUSSER `stillgelegt` (das ist ein
-  // Produkt-Stack-Label und wird hier nie geschrieben). Die `id` ist beim Bearbeiten unveränderlich
-  // (Dateiname + Stack-Referenz); `version` ist in der UI unsichtbar.
+  // Voll-Editor eines Bibliothek-Bausteins (Issue #108, Slice 2 — BEARBEITEN, Slice 3 — ANLEGEN).
+  // Voll-Flächen-Editor mit Modus-Tabs (Grunddaten · Artefakte · Aufgaben · Kanten), gepfropft aus dem
+  // Prototyp-Takeover (VariantC). Alle Felder editierbar INKL. der strukturierten — AUSSER `stillgelegt`
+  // (das ist ein Produkt-Stack-Label und wird hier nie geschrieben). `version` ist in der UI unsichtbar.
   //
-  // Anlegen/Duplizieren/Löschen sind NICHT Teil von Slice 2 — diese Komponente bearbeitet nur einen
-  // bestehenden Baustein. Speichern läuft über `cmd.saveBausteinCmd`; die Validierung spiegelt den
-  // reinen Rust-Kern (validate.ts), der Rust-Kern bleibt die Autorität.
+  // Zwei Modi, unterschieden über das `create`-Prop:
+  //   • BEARBEITEN (create=false): die `id` ist unveränderlich (Dateiname + Stack-Referenz), wird nur
+  //     angezeigt; keine Eindeutigkeitsprüfung.
+  //   • ANLEGEN (create=true): die `id` ist editierbar und sichtbar, wird live aus dem Namen als Kebab
+  //     abgeleitet (Umlaute transliteriert), bis der Nutzer sie selbst überschreibt — danach bleibt sie
+  //     stehen. Anlege-Eindeutigkeit wird live geprüft (Rust bleibt die Autorität).
+  //
+  // Speichern läuft über `cmd.saveBausteinCmd`; die Validierung spiegelt den reinen Rust-Kern
+  // (validate.ts), der Rust-Kern bleibt die Autorität.
   import type { Baustein } from "$lib/types";
-  import { validate, emptyBaustein, type BausteinVoll } from "./validate";
+  import { validate, emptyBaustein, toKebab, type BausteinVoll } from "./validate";
   import GlobListe from "./parts/GlobListe.svelte";
   import MusterListe from "./parts/MusterListe.svelte";
   import OeffnenWahl from "./parts/OeffnenWahl.svelte";
@@ -20,13 +25,16 @@
   let {
     baustein,
     bausteine,
+    create = false,
     onSave,
     onCancel,
   }: {
-    /** Der zu bearbeitende Baustein (bereits geladene Wahrheit aus der Bibliothek). */
+    /** Der zu bearbeitende bzw. der leere Anlege-Entwurf (für create=true: `emptyBaustein()`). */
     baustein: Baustein;
     /** Die ganze Bibliothek — Quelle für die Partner-Dropdown und die Existenz-Warnung. */
     bausteine: Baustein[];
+    /** Anlege-Modus (Slice 3): `id` editierbar + aus dem Namen abgeleitet, Eindeutigkeit geprüft. */
+    create?: boolean;
     /** Speichert den Entwurf; löst beim Erfolg den Stage-Wechsel zurück zur Galerie aus. */
     onSave: (b: Baustein) => Promise<void>;
     /** Verwirft den Entwurf, zurück zur Galerie. */
@@ -41,6 +49,16 @@
   let saving = $state(false);
   let saveError = $state<string | null>(null);
 
+  // Anlege-Modus: die Kennung wird live aus dem Namen als Kebab abgeleitet, bis der Nutzer sie selbst
+  // anfasst (typisches Slug-Verhalten). Danach bleibt die Hand-Eingabe stehen — keine Auto-Ableitung mehr.
+  let idTouched = $state(false);
+  function onNameInput() {
+    if (create && !idTouched) draft.id = toKebab(draft.name);
+  }
+  function onIdInput() {
+    idTouched = true;
+  }
+
   type Mode = "grund" | "artefakte" | "aufgaben" | "kanten";
   let mode = $state<Mode>("grund");
   const modes: { k: Mode; label: string }[] = [
@@ -54,8 +72,8 @@
   let partners = $derived(
     bausteine.filter((b) => b.id !== draft.id).map((b) => ({ id: b.id, name: b.name })),
   );
-  // Bearbeiten ⇒ isCreate = false (keine Anlege-Eindeutigkeitsprüfung in Slice 2).
-  let check = $derived(validate(draft, bausteine, false));
+  // Anlegen (Slice 3) ⇒ isCreate = true: Live-Eindeutigkeitsprüfung der Kennung. Bearbeiten ⇒ false.
+  let check = $derived(validate(draft, bausteine, create));
   let errCount = $derived(Object.keys(check.errors).length);
   let canSave = $derived(errCount === 0 && !saving);
 
@@ -84,7 +102,7 @@
     </div>
     <div class="idline">
       <span class="mono idval">{draft.id || "—"}</span>
-      <span class="label idtag">fest</span>
+      <span class="label idtag">{create ? "neu" : "fest"}</span>
     </div>
   </header>
 
@@ -104,13 +122,18 @@
       <div class="pane narrow">
         <div class="fld">
           <span class="label fl">Name</span>
-          <input class="in" bind:value={draft.name} placeholder="z.B. KiCad" />
+          <input class="in" bind:value={draft.name} oninput={onNameInput} placeholder="z.B. KiCad" />
           {#if check.errors.name}<span class="err label">{check.errors.name}</span>{/if}
         </div>
         <div class="fld">
           <span class="label fl">Kennung</span>
-          <div class="frozen mono">{draft.id}</div>
-          <span class="hint">fest — Dateiname und Stack-Referenz</span>
+          {#if create}
+            <input class="in mono" bind:value={draft.id} oninput={onIdInput} placeholder="z.B. kicad" />
+            <span class="hint">Dateiname und Stack-Referenz — aus dem Namen abgeleitet, anpassbar</span>
+          {:else}
+            <div class="frozen mono">{draft.id}</div>
+            <span class="hint">fest — Dateiname und Stack-Referenz</span>
+          {/if}
           {#if check.errors.id}<span class="err label">{check.errors.id}</span>{/if}
         </div>
         <div class="fld">

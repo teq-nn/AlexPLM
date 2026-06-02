@@ -44,8 +44,9 @@ export type FieldErrors = Partial<
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /** Validierung (Handoff §1.9). Weich gehalten: baumelnde Partner-Refs warnen nur, blockieren nie.
- *  `isCreate` ist für Slice 2 (Bearbeiten) immer false — die Anlege-Eindeutigkeitsprüfung folgt in
- *  Slice 3. Der Parameter bleibt für die Symmetrie mit dem Rust-Kern erhalten. */
+ *  `isCreate=true` (Anlegen, Slice 3) schaltet die Eindeutigkeitsprüfung der Kennung ein; beim
+ *  Bearbeiten ist die `id` unveränderlich und der Schreibpfad ein Upsert, daher false. Spiegelt den
+ *  reinen Rust-Kern `validate_baustein(b, existing_ids, is_create)` (Autorität). */
 export function validate(
   b: Baustein,
   all: Baustein[],

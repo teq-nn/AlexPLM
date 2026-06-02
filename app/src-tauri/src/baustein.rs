@@ -170,8 +170,10 @@ pub fn is_kebab_id(id: &str) -> bool {
 /// Validiert einen Baustein vor dem Speichern (Issue #108, ADR 0003). **Reiner Kern**, kein I/O.
 ///
 /// Regeln (Handoff §1.9):
-/// - `id`: nichtleer, Kebab-Format. (Eindeutigkeit beim Anlegen ist Slice 3; beim Bearbeiten ist die
-///   `id` unveränderlich — hier wird nur das Format geprüft.)
+/// - `id`: nichtleer, Kebab-Format. **Beim Anlegen** (`is_create == true`) zusätzlich eindeutig — die
+///   Kennung darf noch nicht in der Bibliothek liegen. **Beim Bearbeiten** (`is_create == false`) ist
+///   die `id` unveränderlich und der Schreibpfad ein Upsert auf genau diese `id` — daher wird die
+///   Eindeutigkeit dort NICHT geprüft (sonst würde jedes Bearbeiten als Kollision durchfallen).
 /// - `name`, `heimat`: nichtleer (getrimmt).
 /// - `globs`: mindestens ein nichtleerer (getrimmter) Eintrag.
 /// - Sub-Record-Globs (Default-/Paar-Kanten) nichtleer; `paar_default_kanten.partner_id` nichtleer.
@@ -179,14 +181,17 @@ pub fn is_kebab_id(id: &str) -> bool {
 /// - Partner-Existenz: **weiche** Warnung, kein harter Fehler.
 ///
 /// `existing_ids` = die Kennungen aller bereits in der Bibliothek liegenden Bausteine (Quelle für die
-/// Partner-Existenz-Warnung). Der eigene Baustein darf darin enthalten sein (Upsert).
-pub fn validate_baustein(b: &Baustein, existing_ids: &[String]) -> ValidationReport {
+/// Anlege-Eindeutigkeit und die Partner-Existenz-Warnung). Beim Bearbeiten darf der eigene Baustein
+/// darin enthalten sein (Upsert).
+pub fn validate_baustein(b: &Baustein, existing_ids: &[String], is_create: bool) -> ValidationReport {
     let mut r = ValidationReport::default();
 
     if b.id.is_empty() {
         r.err("id", "Kennung darf nicht leer sein");
     } else if !is_kebab_id(&b.id) {
         r.err("id", "Nur Kleinbuchstaben, Ziffern, Bindestriche");
+    } else if is_create && existing_ids.iter().any(|x| x == &b.id) {
+        r.err("id", "Kennung schon vergeben");
     }
 
     if b.name.trim().is_empty() {
@@ -384,8 +389,8 @@ mod tests {
         let base = b("kicad", &["*.kicad_pro"], Oeffnen::Auto);
         let existing = vec!["kicad".to_string(), "fusion".to_string()];
 
-        // Happy path: clean Baustein has no errors.
-        assert!(validate_baustein(&base, &existing).ok());
+        // Happy path: clean Baustein has no errors (edit path — its own id may be in `existing`).
+        assert!(validate_baustein(&base, &existing, false).ok());
 
         // table: (mutate, expected error field)
         let cases: Vec<(Baustein, &str)> = vec![
@@ -434,7 +439,7 @@ mod tests {
             ),
         ];
         for (bs, field) in cases {
-            let r = validate_baustein(&bs, &existing);
+            let r = validate_baustein(&bs, &existing, false);
             assert!(!r.ok(), "expected error for field {field}, baustein = {bs:?}");
             assert!(
                 r.errors.iter().any(|(f, _)| f == field),
@@ -442,6 +447,34 @@ mod tests {
                 r.errors
             );
         }
+    }
+
+    #[test]
+    fn create_time_uniqueness_blocks_a_colliding_id_but_edit_does_not() {
+        let existing = vec!["kicad".to_string(), "fusion".to_string()];
+
+        // CREATE with an id already in the Bibliothek ⇒ hard error on `id`.
+        let collide = b("kicad", &["*.kicad_pro"], Oeffnen::Auto);
+        let r = validate_baustein(&collide, &existing, true);
+        assert!(!r.ok(), "create with a colliding id must be blocked");
+        assert!(
+            r.errors.iter().any(|(f, m)| f == "id" && m == "Kennung schon vergeben"),
+            "expected the dedup id error, got {:?}",
+            r.errors
+        );
+
+        // CREATE with a fresh id ⇒ fine.
+        let fresh = b("freecad", &["*.fcstd"], Oeffnen::Auto);
+        assert!(
+            validate_baustein(&fresh, &existing, true).ok(),
+            "create with a fresh id must pass"
+        );
+
+        // EDIT of an existing record (its own id is in `existing`) ⇒ NOT a collision (upsert).
+        assert!(
+            validate_baustein(&collide, &existing, false).ok(),
+            "edit-save of an existing baustein must not trip the uniqueness rule"
+        );
     }
 
     #[test]
@@ -454,7 +487,7 @@ mod tests {
                 source_glob: "*.kicad_pcb".into(),
             }];
         });
-        let r = validate_baustein(&bs, &existing);
+        let r = validate_baustein(&bs, &existing, false);
         assert!(r.ok(), "dangling partner must NOT be a hard error: {:?}", r.errors);
         assert_eq!(r.warnings.len(), 1, "dangling partner should warn once");
         assert!(r.warnings[0].contains("ghost"));
