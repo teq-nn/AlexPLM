@@ -43,7 +43,7 @@ fn resolved_branch(root: &Path) -> String {
 /// The quiet daily sync state shown to the user, in the tool's OWN vocabulary (E41). Never
 /// push/pull/merge. This is what the calm status readout reflects after a silent sync; a loud
 /// exception is carried separately as the [`SyncDecision`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SyncStatus {
     /// Local and remote agree — "aktuell". Nothing to do, nothing shown.
@@ -56,7 +56,7 @@ pub enum SyncStatus {
 }
 
 /// The outcome of one silent daily sync pass, ready for the UI in the tool's vocabulary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncOutcome {
     pub status: SyncStatus,
 }

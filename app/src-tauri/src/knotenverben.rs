@@ -24,7 +24,7 @@ use serde::Serialize;
 
 /// Eines der drei **Knoten-Verben** des Graph-Raums (E27). Serialisiert in kebab-case zur UI
 /// (`"als-ordner-oeffnen"` / `"von-hier-abzweigen"` / `"zurueckwerfen"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KnotenVerb {
     /// Default: schreibgeschützte Kopie des Stands als Ordner daneben (Worktree). Werkbank ruht.
@@ -83,7 +83,7 @@ pub fn verb_allowed(f: KnotenFakten, verb: KnotenVerb) -> bool {
 /// - `varianten`: Varianten (Zweige neben der aktiven Linie) ein-/ausblenden. `false` = nur die
 ///   aktive Linie (der Stamm) bleibt sichtbar.
 /// - `nur_revisionen`: nur Revisionen zeigen (E9) — die promovierten Stände, der Rest ruht.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct GraphFilter {
     /// Varianten (nicht-aktive Zweige) sichtbar? Default `true`.
     pub varianten: bool,

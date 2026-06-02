@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import type { RegisteredProduct } from "./types";
 
   // ── Produktliste / Verlauf (Issue #73) ──────────────────────────────────────
@@ -66,7 +66,7 @@
   /** Re-read the registry (path-only). Best-effort: a missing/corrupt registry reads as empty. */
   export async function refresh() {
     try {
-      products = await invoke<RegisteredProduct[]>("list_products");
+      products = await cmd.listProducts();
       error = null;
     } catch (e) {
       error = String(e);
@@ -102,7 +102,7 @@
     // Don't let the row's click (switch) fire when the ✕ is pressed.
     ev.stopPropagation();
     try {
-      products = await invoke<RegisteredProduct[]>("unregister_product", { path });
+      products = await cmd.unregisterProduct(path);
       // Drop the local Verlauf stamp too, so a removed product cannot resurface ranked.
       if (path in history) {
         const next = { ...history };

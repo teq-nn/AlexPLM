@@ -112,7 +112,7 @@ fn account_name_from_body(body: &str) -> Option<String> {
 /// Was das Frontend über das Konto sieht: die normalisierte Base-URL und der angemeldete Account —
 /// **nie** der Token. Ein fehlendes Konto ist `None`-felder-frei: dann wird gar kein [`KontoView`]
 /// geliefert (das Command gibt `Option<KontoView>` zurück).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KontoView {
     /// Die normalisierte Server-Base-URL `scheme://host[:port]`.
     pub base_url: String,
@@ -122,7 +122,7 @@ pub struct KontoView {
 
 /// Die app-level persistierte Konto-Server-Adresse (nur die Base-URL + der zuletzt bestätigte
 /// Account-Name). JSON-Form auf der Platte; **nie** der Token (der lebt im OS-Keystore).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KontoConfig {
     /// Normalisierte Base-URL `scheme://host[:port]`.
     pub base_url: String,

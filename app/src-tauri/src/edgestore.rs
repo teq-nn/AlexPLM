@@ -13,7 +13,7 @@ use crate::defaultkanten::{
     baustein_default_kanten, mit_default_kanten, paar_default_vorschlaege, ArtefaktDatei,
     KantenVorschlag,
 };
-use crate::edges::{add_edge, remove_edge, stale_warnings, ArtifactStamp, Edge, Herkunft, StaleWarning};
+use crate::edges::{add_edge, remove_edge, stale_warnings, ArtifactStamp, Edge, KantenHerkunft, StaleWarning};
 use crate::plmstore::{self, PlmDocument};
 use crate::projection::project_product;
 use crate::stackstore::read_stack;
@@ -76,7 +76,7 @@ pub fn remove_persisted_edge(
 
 /// The edge set plus its computed Stale-Warnungen, returned to the UI in one round-trip. Trägt seit
 /// #56 zusätzlich die offenen **Paar-Default-Vorschläge** (deterministisch, per Klick bestätigt).
-#[derive(Debug, serde::Serialize)]
+#[derive(specta::Type, Debug, serde::Serialize)]
 pub struct EdgeView {
     pub edges: Vec<Edge>,
     pub warnings: Vec<StaleWarning>,
@@ -119,7 +119,7 @@ pub fn onboard_default_edges(root: &Path) -> std::io::Result<Vec<Edge>> {
 /// Einen **Paar-Default-Vorschlag bestätigen** (E20): eine Kante mit Herkunft `PaarDefault` zwischen
 /// `derived` und `source` anlegen und persistieren. Dünn über [`add_persisted_edge_with_herkunft`].
 pub fn confirm_pair_edge(root: &Path, derived: &str, source: &str) -> std::io::Result<Vec<Edge>> {
-    add_persisted_edge_with_herkunft(root, derived, source, Herkunft::PaarDefault)
+    add_persisted_edge_with_herkunft(root, derived, source, KantenHerkunft::PaarDefault)
 }
 
 /// Wie [`add_persisted_edge`], aber mit ausdrücklicher Herkunft (für Default-/Paar-Kanten).
@@ -127,7 +127,7 @@ pub fn add_persisted_edge_with_herkunft(
     root: &Path,
     derived: &str,
     source: &str,
-    herkunft: Herkunft,
+    herkunft: KantenHerkunft,
 ) -> std::io::Result<Vec<Edge>> {
     let edges = add_edge(read_edges(root), Edge::with_herkunft(derived, source, herkunft));
     write_edges(root, &edges)?;
@@ -210,7 +210,7 @@ mod tests {
         let dir = tmp();
         let edges = confirm_pair_edge(&dir, "fertigung", "elektronik/board").unwrap();
         assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].herkunft, Herkunft::PaarDefault);
+        assert_eq!(edges[0].herkunft, KantenHerkunft::PaarDefault);
         // auf der Platte ebenso
         let back = read_edges(&dir);
         assert_eq!(back, edges);
@@ -225,10 +225,10 @@ mod tests {
     #[test]
     fn add_persisted_with_herkunft_round_trips() {
         let dir = tmp();
-        add_persisted_edge_with_herkunft(&dir, "d", "s", Herkunft::BausteinDefault).unwrap();
+        add_persisted_edge_with_herkunft(&dir, "d", "s", KantenHerkunft::BausteinDefault).unwrap();
         let back = read_edges(&dir);
         assert_eq!(back.len(), 1);
-        assert_eq!(back[0].herkunft, Herkunft::BausteinDefault);
+        assert_eq!(back[0].herkunft, KantenHerkunft::BausteinDefault);
         let _ = fs::remove_dir_all(&dir);
     }
 

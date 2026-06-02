@@ -35,7 +35,7 @@ use serde::Serialize;
 
 /// Whether the artifact at the path is an unmergeable binary (lockable, E31) or mergeable text.
 /// Derived from the #3 classifier upstream; the Warden takes it as a plain fact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PathKind {
     /// An unmergeable binary (CAD/mesh/photo/KiCad) — lockable; the invariant guards these.
@@ -45,7 +45,7 @@ pub enum PathKind {
 }
 
 /// The lock state of the path, as read back from `git lfs locks` (E37, single source of truth).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LockState {
     /// We hold the lock on this path (our own coordination claim, E31).
@@ -59,7 +59,7 @@ pub enum LockState {
 /// Whether the path is locally **clean** — committed and nothing open — or **dirty**.
 /// "Clean" is the precondition for auto-unlock (E35: „committet, gepusht, keine offene
 /// Bearbeitung"); a dirty path still has work the user has not let go of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Cleanliness {
     /// No open local work on the path — safe to release the lock.
@@ -69,7 +69,7 @@ pub enum Cleanliness {
 }
 
 /// Which kind of checkpoint the Warden is reasoning about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Checkpoint {
     /// An ongoing, intermediate checkpoint — the silent everyday rhythm. The release-bearing
@@ -93,7 +93,7 @@ pub struct WardenSnapshot {
 
 /// Exactly one action the Lock Warden returns per snapshot. The glue in [`crate::pushglue`] is
 /// the only thing that turns one of these into git/LFS calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WardenAction {
     /// **Freigabe-Push** — publish the finished binary to the shared `main` stand AND release the

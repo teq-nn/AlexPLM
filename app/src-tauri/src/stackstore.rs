@@ -19,7 +19,7 @@ pub const STACK_FILE: &str = "stack.json";
 
 /// Herkunfts-Stempel einer kopierten Baustein-Definition: aus welchem Bibliotheks-Baustein
 /// (`from`) und in welcher `version` sie kopiert wurde. Nur Anzeige; kein Live-Link (ADR 0003).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Herkunft {
     /// Bibliotheks-`id`, aus der kopiert wurde.
     pub from: String,
@@ -28,7 +28,7 @@ pub struct Herkunft {
 }
 
 /// Eine Baustein-Vollkopie im Produkt-Stack: die ganze Definition **plus** Herkunfts-Stempel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackBaustein {
     /// Herkunfts-Stempel (Anzeige/„Update verfügbar"); kein Live-Link.
     pub herkunft: Herkunft,
@@ -49,7 +49,7 @@ impl StackBaustein {
 
 /// Der Produkt-Stack: die kopierten Bausteine eines Produkts. Vollständig selbsttragend; das
 /// Produkt funktioniert auch ohne Bibliothek (ADR 0003).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProduktStack {
     /// Optionaler Herkunfts-Name des gewählten Toolstacks (Anzeige).
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Baustein, ArtifactSignal } from "./types";
+  import type { ProduktBaustein, ArtifactSignal } from "./types";
   import Led from "./Led.svelte";
 
   let {
@@ -19,9 +19,9 @@
     signal = null,
     onedit = undefined,
   }: {
-    baustein: Baustein;
+    baustein: ProduktBaustein;
     index?: number;
-    candidates?: Baustein[];
+    candidates?: ProduktBaustein[];
     source?: string | null;
     stale?: boolean;
     onDeriveFrom?: (source: string) => void;

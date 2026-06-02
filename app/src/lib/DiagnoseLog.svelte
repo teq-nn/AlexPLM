@@ -5,7 +5,7 @@
   // ring — every Lock-Warden decision (incl. the common „Refuse" = nothing to push) and every real
   // git exit + stderr. It never changes behavior; it only lets the user SEE why. Stays out of the
   // daily rhythm: closed by default, polls only while open.
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
 
   let {
     open = false,
@@ -24,7 +24,7 @@
 
   async function refresh() {
     try {
-      lines = await invoke<string[]>("read_git_log");
+      lines = await cmd.readGitLog();
       if (pinned && view) view.scrollTop = view.scrollHeight;
     } catch {
       // The panel is purely diagnostic; a read hiccup must not surface as a loud error.
@@ -33,7 +33,7 @@
 
   async function loadPath() {
     try {
-      filePath = await invoke<string | null>("git_log_path");
+      filePath = await cmd.gitLogPath();
     } catch {
       filePath = null;
     }
@@ -41,7 +41,7 @@
 
   async function clear() {
     try {
-      await invoke("clear_git_log");
+      await cmd.clearGitLog();
       lines = [];
     } catch {
       // ignore — the on-disk file remains the durable record anyway

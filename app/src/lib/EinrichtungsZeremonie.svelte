@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import { onMount } from "svelte";
   import type { KontoView, LoudQuestion, PublishOutcome, SetupReport } from "./types";
 
@@ -53,7 +53,7 @@
   async function loadKonto() {
     kontoErr = null;
     try {
-      konto = await invoke<KontoView | null>("read_konto");
+      konto = await cmd.readKonto();
     } catch (e) {
       konto = null;
       kontoErr = String(e);
@@ -78,11 +78,7 @@
     error = null;
     busy = true;
     try {
-      const r = await invoke<SetupReport>("connect_server", {
-        path: productPath,
-        owner,
-        repo,
-      });
+      const r = await cmd.connectServer(productPath, owner, repo);
       onUpdated(r);
     } catch (e) {
       // The backend returns a typed { code, message } — show the human message; an auth/keystore
@@ -98,9 +94,7 @@
     error = null;
     busy = true;
     try {
-      const outcome = await invoke<PublishOutcome>("publish_to_server", {
-        path: productPath,
-      });
+      const outcome = await cmd.publishToServer(productPath, null);
       if (outcome.kind === "laute-ausnahme") {
         // The Server-Repo already held a contradicting unmergeable Stand (Issue #44). Hand the
         // question to the shell's single orange-frame exception; it resolves and re-publishes.

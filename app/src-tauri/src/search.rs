@@ -23,7 +23,7 @@ use std::path::Path;
 
 /// Which of a product's three searched sources a hit came from. Lets the UI label a hit and
 /// lets ranking prefer the most meaningful source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HitField {
     /// A file name / path under the product matched.
@@ -37,7 +37,7 @@ pub enum HitField {
 /// One match inside one product. Carries enough context for the UI to show *where* without a
 /// second round-trip: the product, the field, the relative file the hit lives in, and the
 /// matched text (a file path, or the matched line for content hits).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchHit {
     /// Absolute path of the product this hit belongs to.
     pub product_path: String,
@@ -54,7 +54,7 @@ pub struct SearchHit {
 }
 
 /// One registered product that could not be searched, with a short honest reason.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OfflineProduct {
     pub product_path: String,
     pub product_name: String,
@@ -64,7 +64,7 @@ pub struct OfflineProduct {
 
 /// The full result of one fan-out search. Reachable hits plus the honest offline tally, so the
 /// UI can render results AND "N von M offline, nicht durchsucht" from one payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SearchResult {
     /// All hits across all reachable products, already merged + ranked (best first).
     pub hits: Vec<SearchHit>,

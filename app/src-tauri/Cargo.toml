@@ -27,6 +27,13 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 notify = "8"
+# Single source of truth for the frontend command seam (Candidate B): every #[tauri::command]
+# carries #[specta::specta], and a tauri_specta::Builder exports the typed bindings + domain types
+# to ../src/lib/bindings.ts at debug build time. A Rust signature change becomes a frontend compile
+# error instead of a silent runtime drift; types.ts is no longer hand-mirrored.
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta-typescript = "=0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 # Cross-platform OS keystore for the auth token (Issue #22). The token lives in the
 # native keystore, never in `.git/config`; git pulls it at runtime via the askpass helper.
 keyring = { version = "3", default-features = false }

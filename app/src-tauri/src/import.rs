@@ -37,7 +37,7 @@ const IMPORT_MARKER_ID: &str = "_import";
 const GIANT_BINARY_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Outcome of an import, returned to the UI shell.
-#[derive(Debug, Serialize, Clone)]
+#[derive(specta::Type, Debug, Serialize, Clone)]
 pub struct ImportResult {
     /// Whether this run ran `git init` (true) or found an existing repo and left it as-is (false).
     pub git_initialized: bool,
@@ -288,7 +288,7 @@ fn commit(root: &Path, message: &str) -> std::io::Result<()> {
 
 /// What the Import Gate decided for a folder, plus the facts it decided on, for the UI to
 /// explain the stakes before any history is touched.
-#[derive(Debug, Serialize, Clone)]
+#[derive(specta::Type, Debug, Serialize, Clone)]
 pub struct GateReport {
     /// The one decision: clean-init | migrate-behind-gate | refuse.
     pub decision: GateDecision,

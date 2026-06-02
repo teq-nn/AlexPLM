@@ -27,7 +27,7 @@ const WORKTREE_DIR: &str = ".plm-ordner";
 
 /// Das Ergebnis von „Als Ordner öffnen": der materialisierte Pfad (Vorwärts-Schrägstriche), den die
 /// UI dem OS zum Öffnen übergibt, plus ob er neu angelegt oder schon vorhanden war.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GeoeffneterOrdner {
     /// Absoluter Pfad des materialisierten Ordners, in Vorwärts-Schrägstrich-Anzeige.
     pub pfad: String,

@@ -151,7 +151,7 @@ pub fn label_id_from_body(body: &str) -> Option<i64> {
 /// Ein Etikett, wie es der Etiketten-Picker im Formular zeigt (Issue #85): Id (zum Anhängen), Name
 /// und Farbe (Hex **ohne** führendes `#`, wie Forgejo/Gitea sie liefert — das Frontend setzt das
 /// `#` zum Rendern davor). Kein Token, keine Server-Interna.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Label {
     pub id: i64,
     pub name: String,
@@ -208,7 +208,7 @@ pub fn interpret_labels_list(code: u16, body: &str) -> Result<Vec<Label>, String
 
 /// Eine Referenz auf das angelegte Issue, wie sie ans Frontend geht (für die „angelegt"-Bestätigung
 /// mit Link). **Kein** Token, keine Server-Interna.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct IssueRef {
     /// Die Issue-Nummer im Repo (`#<number>`).
     pub number: u64,

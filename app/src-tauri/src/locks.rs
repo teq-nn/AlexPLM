@@ -71,7 +71,7 @@ pub struct StatusSnapshot {
 /// The derived status of one artifact — the direct translation of the lock signals into the
 /// LED colours from the Stilbeschreibung (§ Status-Punkt). Nothing here is stored; it is
 /// recomputed from a [`StatusSnapshot`] every time (E37).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ArtifactStatus {
     /// Free / clean, no lock anywhere → **green** LED (`--led-free`).
@@ -86,7 +86,7 @@ pub enum ArtifactStatus {
 
 /// What the UI needs to render one artifact's LED: the derived status plus, when foreign-
 /// locked, who holds it and since when (for the "gesperrt von X seit …" tooltip).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ArtifactSignal {
     /// Product-relative artifact path the signal is for.
     pub path: String,

@@ -49,7 +49,7 @@ fn task_blocks_at(task: &Task, art: RevisionArt) -> bool {
 /// The single decision the Aufgaben-Block core returns for a checkpoint. Exactly one; total. It
 /// carries the **ids of the blocking tasks** so the UI can name them („Freigabe blockiert durch
 /// N offene Aufgaben") without re-running the rule.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct BlockDecision {
     /// Whether the checkpoint is blocked at all. `true` iff [`BlockDecision::blocking_task_ids`]

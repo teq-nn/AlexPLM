@@ -90,7 +90,7 @@ use watcher::{watch_product, WatchHandle};
 /// react precisely — `"auth"` reopens the credential field, `"keystore"` reports the OS keystore is
 /// unreachable — while `message` carries the human German text. Serialised to the frontend as
 /// `{ code, message }`.
-#[derive(serde::Serialize)]
+#[derive(specta::Type, serde::Serialize)]
 struct AppError {
     code: String,
     message: String,
@@ -164,6 +164,7 @@ where
 /// Open a product folder read-only and project it for the UI Shell.
 /// No commits, no pushes, no locks — pure read path (Issue #2).
 #[tauri::command]
+#[specta::specta]
 fn open_product(path: String) -> Result<ProductView, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -183,6 +184,7 @@ struct WatcherState(Mutex<Option<WatchHandle>>);
 /// product-relative path so the UI re-reads the LED signal. Replaces any previous watch. The user
 /// is never prompted; no git vocabulary surfaces.
 #[tauri::command]
+#[specta::specta]
 fn start_watching(path: String, app: tauri::AppHandle) -> Result<(), String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -218,6 +220,7 @@ fn start_watching(path: String, app: tauri::AppHandle) -> Result<(), String> {
 
 /// Stop watching the current product folder, if any.
 #[tauri::command]
+#[specta::specta]
 fn stop_watching(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<WatcherState>();
     *state.0.lock().unwrap() = None; // drop -> stop + join
@@ -228,6 +231,7 @@ fn stop_watching(app: tauri::AppHandle) -> Result<(), String> {
 /// Revisionen marked, offloaded markers reserved. Pure read — the git/LFS facts are
 /// collected then projected; no mutation.
 #[tauri::command]
+#[specta::specta]
 fn read_version_graph(path: String) -> Result<VersionGraph, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -240,6 +244,7 @@ fn read_version_graph(path: String) -> Result<VersionGraph, String> {
 /// `VERSION_NOTES.md` (the only place human text lives — E28) and durably label the version.
 /// Returns the refreshed version tree so the UI updates in one round-trip.
 #[tauri::command]
+#[specta::specta]
 fn promote_revision(
     path: String,
     stand_id: String,
@@ -262,6 +267,7 @@ fn promote_revision(
 /// The dreistufige Freigabe-Gate block-check that will run on raising to Freigabe is a
 /// separate slice (Issue #52); its seam lives in [`toggle_revision_freigabe`].
 #[tauri::command]
+#[specta::specta]
 fn toggle_revision_art(path: String, version: String) -> Result<VersionGraph, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -276,6 +282,7 @@ fn toggle_revision_art(path: String, version: String) -> Result<VersionGraph, St
 /// bewegt sie nie still. Idempotent: ein schon materialisierter Ordner wird nur zurückgegeben. Die
 /// UI übergibt den zurückgegebenen Pfad dem OS zum Öffnen.
 #[tauri::command]
+#[specta::specta]
 async fn knoten_als_ordner(
     path: String,
     stand_id: String,
@@ -296,6 +303,7 @@ async fn knoten_als_ordner(
 /// gewöhnlichen Stand (E8) — kein `stash`, nichts geht verloren —, dann `checkout -b`. Gibt den
 /// frisch projizierten Versionsbaum zurück, damit die neue Linie sofort erscheint.
 #[tauri::command]
+#[specta::specta]
 async fn knoten_abzweigen(
     path: String,
     stand_id: String,
@@ -317,6 +325,7 @@ async fn knoten_abzweigen(
 /// alten Inhalt in die Werkbank und schreibt ihn als **neuen, vorwärts gerichteten Stand** fest
 /// („behalten, nie umschreiben", E9 — voll reversibel). Gibt den frischen Versionsbaum zurück.
 #[tauri::command]
+#[specta::specta]
 async fn knoten_zurueckwerfen(path: String, stand_id: String) -> Result<VersionGraph, String> {
     on_blocking(move || {
         let root = Path::new(&path);
@@ -332,6 +341,7 @@ async fn knoten_zurueckwerfen(path: String, stand_id: String) -> Result<VersionG
 /// Edges are opt-in: a product with no edge file has zero edges and no warnings (E40). Pure
 /// read — the edges + artifact timestamps are gathered then judged by the pure core.
 #[tauri::command]
+#[specta::specta]
 fn read_edges(path: String) -> Result<EdgeView, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -344,6 +354,7 @@ fn read_edges(path: String) -> Result<EdgeView, String> {
 /// (Issue #10). Returns the refreshed edge view (edges + Stale-Warnungen) so the UI updates
 /// in one round-trip.
 #[tauri::command]
+#[specta::specta]
 fn add_edge(path: String, derived: String, source: String) -> Result<EdgeView, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -355,6 +366,7 @@ fn add_edge(path: String, derived: String, source: String) -> Result<EdgeView, S
 
 /// Remove a manual edge and persist the result (Issue #10). Returns the refreshed edge view.
 #[tauri::command]
+#[specta::specta]
 fn remove_edge(path: String, derived: String, source: String) -> Result<EdgeView, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -369,6 +381,7 @@ fn remove_edge(path: String, derived: String, source: String) -> Result<EdgeView
 /// nie automatisch angelegt — erst dieser Klick bestätigt sie. Gibt die frische Kantensicht zurück
 /// (samt verbleibender Vorschläge und Stale-Warnungen).
 #[tauri::command]
+#[specta::specta]
 fn confirm_pair_edge_cmd(path: String, derived: String, source: String) -> Result<EdgeView, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -382,6 +395,7 @@ fn confirm_pair_edge_cmd(path: String, derived: String, source: String) -> Resul
 /// `git init` if needed (existing repo left as-is), write `.gitattributes` lockable markers
 /// from the Mergeability Classifier, make the first commit, then project it for the shell.
 #[tauri::command]
+#[specta::specta]
 async fn import_product(path: String) -> Result<ImportResult, String> {
     // Off the main thread: `git init` + first commit of a large folder can take seconds, and a
     // synchronous command body would block the WebView (Tauri runs sync commands on the main
@@ -397,6 +411,7 @@ async fn import_product(path: String) -> Result<ImportResult, String> {
 /// decision (clean-init | migrate-behind-gate | refuse) plus the facts it rests on, so the UI
 /// can explain the stakes before any history is touched.
 #[tauri::command]
+#[specta::specta]
 fn evaluate_gate(path: String) -> Result<GateReport, String> {
     let root = Path::new(&path);
     evaluate_import_gate(root).map_err(|e| e.to_string())
@@ -406,6 +421,7 @@ fn evaluate_gate(path: String) -> Result<GateReport, String> {
 /// crosses the "Historie anfassen" gate in the UI, and only honoured when the live repo still
 /// decides `migrate-behind-gate` (re-checked server-side; a shared repo is always refused).
 #[tauri::command]
+#[specta::specta]
 async fn migrate_history(path: String) -> Result<ImportResult, String> {
     // The `git lfs migrate` rewrite is the heaviest operation in the app; never on the main thread.
     on_blocking(move || {
@@ -419,6 +435,7 @@ async fn migrate_history(path: String) -> Result<ImportResult, String> {
 /// Mergeable-text paths are a no-op (returns `false`); lockable paths get locked (`true`).
 /// The path is product-relative with forward slashes.
 #[tauri::command]
+#[specta::specta]
 async fn lock_artifact(product: String, path: String) -> Result<bool, String> {
     // `git lfs lock` is a networked call (bounded by `output_bounded`); keep it off the main thread.
     on_blocking(move || {
@@ -432,6 +449,7 @@ async fn lock_artifact(product: String, path: String) -> Result<bool, String> {
 /// derive the per-artifact LED status (green/grey/orange) for the given product-relative paths.
 /// No second source of truth — every call reads git back (E37).
 #[tauri::command]
+#[specta::specta]
 async fn read_status(product: String, paths: Vec<String>) -> Result<Vec<ArtifactSignal>, String> {
     // `snapshot` reads `git lfs locks` (networked, bounded); off the main thread so the 4s status
     // tick can never freeze the UI.
@@ -453,6 +471,7 @@ async fn read_status(product: String, paths: Vec<String>) -> Result<Vec<Artifact
 /// The live "Belegte Bausteine" panel (Issue #6, E37): the locks held by anyone but us, read
 /// purely from `git lfs locks`. No presence service.
 #[tauri::command]
+#[specta::specta]
 async fn read_foreign_locks(product: String) -> Result<Vec<ForeignLock>, String> {
     // Same networked `git lfs locks` read as `read_status`; off the main thread.
     on_blocking(move || {
@@ -464,7 +483,7 @@ async fn read_foreign_locks(product: String) -> Result<Vec<ForeignLock>, String>
 }
 
 /// A foreign lock as sent to the UI (serializable view of [`LockInfo`] plus the ready tooltip).
-#[derive(serde::Serialize)]
+#[derive(specta::Type, serde::Serialize)]
 struct ForeignLock {
     path: String,
     owner: String,
@@ -490,6 +509,7 @@ impl From<LockInfo> for ForeignLock {
 /// "eingerichtet" readout otherwise. This ceremony is the rare, explicit exception where
 /// git-near wording is allowed; the daily sync stays silent.
 #[tauri::command]
+#[specta::specta]
 fn read_setup_state(path: String) -> Result<SetupReport, String> {
     let root = Path::new(&path);
     read_setup(root).map_err(|e| e.to_string())
@@ -504,6 +524,7 @@ fn read_setup_state(path: String) -> Result<SetupReport, String> {
 /// refuses with a clear typed `error` so the frontend points the user at the Konto panel instead of
 /// asking for credentials. The returned report carries only the credential-free clone URL.
 #[tauri::command]
+#[specta::specta]
 async fn connect_server(
     app: tauri::AppHandle,
     path: String,
@@ -540,6 +561,7 @@ async fn connect_server(
 /// E41), setting the upstream so the later silent daily sync has a tracking ref. Returns the
 /// refreshed ceremony state (now `eingerichtet`).
 #[tauri::command]
+#[specta::specta]
 async fn publish_to_server(path: String, other: Option<String>) -> Result<PublishOutcome, AppError> {
     // The first publish push is networked (bounded to 20s on a bad credential); off the main thread
     // so this exact ceremony step can no longer freeze the WebView while it runs. A non-empty
@@ -561,6 +583,7 @@ async fn publish_to_server(path: String, other: Option<String>) -> Result<Publis
 /// never raw git. The Binär-Invariante lives in the pure core: a locked binary change is never
 /// published while the lock is held.
 #[tauri::command]
+#[specta::specta]
 async fn run_checkpoint(product: String, path: String, revision: bool) -> Result<WardenAction, String> {
     // The Warden carries out a push (networked, bounded); off the main thread.
     on_blocking(move || {
@@ -579,6 +602,7 @@ async fn run_checkpoint(product: String, path: String, revision: bool) -> Result
 /// branch never pushed to the shared stand. Returns `freigabe-push` so the readout lights
 /// „freigegeben"; the per-path Warden stays unchanged for the silent laufend backup rhythm.
 #[tauri::command]
+#[specta::specta]
 async fn freigeben(product: String) -> Result<WardenAction, String> {
     // Pushes the branch + releases locks (networked, bounded); off the main thread.
     on_blocking(move || {
@@ -599,6 +623,7 @@ async fn freigeben(product: String) -> Result<WardenAction, String> {
 /// so the Sicherungsstatus readout lights „gesichert". Distinct from the silent laufend rhythm: the
 /// daily Auto-Commit stays quiet; this is the user's deliberate, visible backup gesture.
 #[tauri::command]
+#[specta::specta]
 async fn sichern(product: String) -> Result<WardenAction, String> {
     // The Sicherungs-Push reaches the network (bounded); off the main thread.
     on_blocking(move || {
@@ -618,6 +643,7 @@ async fn sichern(product: String) -> Result<WardenAction, String> {
 /// the UI can re-read the LED signals; a freed binary rests read-only (frei) again. Best-effort:
 /// an LFS/network hiccup must never break the silent rhythm.
 #[tauri::command]
+#[specta::specta]
 async fn sweep_clean_locks(product: String) -> Result<Vec<String>, String> {
     // Reads `git lfs locks` + status and may release locks (networked, bounded); off the main thread.
     on_blocking(move || {
@@ -636,6 +662,7 @@ async fn sweep_clean_locks(product: String) -> Result<Vec<String>, String> {
 /// widersprechen sich — welcher gilt?"), never a git conflict marker. The daily vocabulary is
 /// "aktuell / X arbeitet an Y / gesichert"; raw git (push/pull/merge) never surfaces.
 #[tauri::command]
+#[specta::specta]
 async fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome, String> {
     // The silent daily sync does a `fetch` (networked, bounded); off the main thread so the 8s
     // sync tick can never freeze the UI.
@@ -713,6 +740,7 @@ fn seed_bibliothek(app: &tauri::AppHandle) -> Result<(), String> {
 /// List the local Bibliothek (Issue #39, ADR 0003): the seeded + user-added Bausteine and the
 /// available Toolstacks. Pure read; missing/corrupt entries degrade to an empty list.
 #[tauri::command]
+#[specta::specta]
 fn list_bibliothek(app: tauri::AppHandle) -> Result<BibliothekView, String> {
     let lib = Bibliothek::new(bibliothek_root(&app)?);
     Ok(BibliothekView {
@@ -722,7 +750,7 @@ fn list_bibliothek(app: tauri::AppHandle) -> Result<BibliothekView, String> {
 }
 
 /// The Bibliothek as sent to the UI: the available Bausteine and Toolstacks.
-#[derive(serde::Serialize)]
+#[derive(specta::Type, serde::Serialize)]
 struct BibliothekView {
     bausteine: Vec<Baustein>,
     toolstacks: Vec<Toolstack>,
@@ -731,6 +759,7 @@ struct BibliothekView {
 /// List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
 /// the „Standard-Toolstack wählen"-Schritt der Produkt-Anlage (#50).
 #[tauri::command]
+#[specta::specta]
 fn list_toolstacks(app: tauri::AppHandle) -> Result<Vec<Toolstack>, String> {
     let lib = Bibliothek::new(bibliothek_root(&app)?);
     Ok(lib.list_toolstacks())
@@ -739,6 +768,7 @@ fn list_toolstacks(app: tauri::AppHandle) -> Result<Vec<Toolstack>, String> {
 /// Resolve a named Toolstack from the Bibliothek to its ordered Baustein-`id`s (Issue #39).
 /// Returns an error if the Toolstack is unknown. Used to seed a product stack from a chosen stack.
 #[tauri::command]
+#[specta::specta]
 fn toolstack_baustein_ids(app: tauri::AppHandle, toolstack_id: String) -> Result<Vec<String>, String> {
     let lib = Bibliothek::new(bibliothek_root(&app)?);
     lib.read_toolstack(&toolstack_id)
@@ -752,6 +782,7 @@ fn toolstack_baustein_ids(app: tauri::AppHandle, toolstack_id: String) -> Result
 /// (anti-drift). `toolstack` is the optional display name of the chosen standard stack. The
 /// product-creation UI is #50; this is the backend the ceremony calls.
 #[tauri::command]
+#[specta::specta]
 fn create_product_stack_cmd(
     app: tauri::AppHandle,
     product: String,
@@ -782,6 +813,7 @@ fn create_product_stack_cmd(
 /// full copies. The newly onboarded Bausteine get their Tag-1 marker blocks written too (idempotent,
 /// Issue #48). Returns the extended stack.
 #[tauri::command]
+#[specta::specta]
 fn extend_product_stack_cmd(
     app: tauri::AppHandle,
     product: String,
@@ -803,7 +835,7 @@ fn extend_product_stack_cmd(
 /// Die Antwort des Stilllegens (Issue #51): die label-only-**Wirkung** (welche Globs erlöschen,
 /// welche Dateien zu Waisen werden, welches Sediment liegen bleibt) **plus** die frisch berechnete
 /// Werkbank, sodass die UI die neuen Waisen im Unzugeordnet-Fach sofort sieht.
-#[derive(serde::Serialize)]
+#[derive(specta::Type, serde::Serialize)]
 struct StilllegenResult {
     wirkung: stilllegen::StilllegenWirkung,
     stack: ProduktStack,
@@ -817,6 +849,7 @@ struct StilllegenResult {
 /// wird verschoben oder gelöscht**. Gibt die Wirkung + den neuen Stack + die frisch gefaltete
 /// Werkbank zurück. Eine unbekannte `id` ist eine no-op (kein Fehler).
 #[tauri::command]
+#[specta::specta]
 async fn stilllegen_baustein_cmd(
     product: String,
     baustein_id: String,
@@ -849,6 +882,7 @@ async fn stilllegen_baustein_cmd(
 /// with no stack file reads as an empty stack (never an error). This is the anti-drift copy — it
 /// reflects only what was copied in, never the live Bibliothek.
 #[tauri::command]
+#[specta::specta]
 fn read_product_stack(product: String) -> Result<ProduktStack, String> {
     let root = Path::new(&product);
     if !root.is_dir() {
@@ -865,6 +899,7 @@ fn read_product_stack(product: String) -> Result<ProduktStack, String> {
 /// once, then the pure core folds it; no mutation. A product without a Produkt-Stack has no
 /// Glob-Satz, so every tracked file becomes a Waise (nothing is ever lost) rather than an error.
 #[tauri::command]
+#[specta::specta]
 async fn read_werkbank_cmd(product: String) -> Result<WerkbankView, String> {
     // `git ls-files` is local but walks the index; off the main thread for the same reason the other
     // git reads are — a large product can never freeze the WebView.
@@ -884,6 +919,7 @@ async fn read_werkbank_cmd(product: String) -> Result<WerkbankView, String> {
 /// gewinnt über die Glob/Heimat-Konvention und ignoriert die Heimat-Grenze. Gibt die frisch
 /// berechnete Werkbank zurück, sodass die Karte sofort erscheint.
 #[tauri::command]
+#[specta::specta]
 async fn assign_artefakt_cmd(
     product: String,
     file: String,
@@ -903,6 +939,7 @@ async fn assign_artefakt_cmd(
 /// Die **manuelle Zuordnung** einer Datei wieder lösen (Folge von Issue #47/#50): die Datei fällt
 /// zurück auf die Konvention bzw. wird wieder zur Waise. Gibt die frisch berechnete Werkbank zurück.
 #[tauri::command]
+#[specta::specta]
 async fn clear_artefakt_cmd(product: String, file: String) -> Result<WerkbankView, String> {
     on_blocking(move || {
         let root = Path::new(&product);
@@ -921,6 +958,7 @@ async fn clear_artefakt_cmd(product: String, file: String) -> Result<WerkbankVie
 /// the dangerous hand-resolution stays hidden behind "mein Stand" / "Bens Stand". On success the
 /// daily rhythm resumes quietly (`gesichert`); raw git (push/pull/merge) never surfaces.
 #[tauri::command]
+#[specta::specta]
 async fn resolve_sync_cmd(
     path: String,
     artifact: String,
@@ -952,6 +990,7 @@ fn resolve_registry_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, S
 /// List the registered products (Issue #45). Path-only: each entry is a folder path plus its
 /// derived display name — no content is cached. A missing/corrupt registry reads as empty.
 #[tauri::command]
+#[specta::specta]
 fn list_products(app: tauri::AppHandle) -> Result<Vec<RegisteredProduct>, String> {
     let file = resolve_registry_file(&app)?;
     Ok(read_registry(&file))
@@ -960,6 +999,7 @@ fn list_products(app: tauri::AppHandle) -> Result<Vec<RegisteredProduct>, String
 /// Register a product folder into the app-level Produkt-Registry (Issue #45). Stores ONLY the
 /// path (de-duplicated, normalized); the content is never copied. Returns the refreshed list.
 #[tauri::command]
+#[specta::specta]
 fn register_product(app: tauri::AppHandle, path: String) -> Result<Vec<RegisteredProduct>, String> {
     let file = resolve_registry_file(&app)?;
     add_registered(&file, &path).map_err(|e| e.to_string())
@@ -968,6 +1008,7 @@ fn register_product(app: tauri::AppHandle, path: String) -> Result<Vec<Registere
 /// Remove a product from the Produkt-Registry (Issue #45). Drops only the registry entry; the
 /// product folder on disk is never touched. Returns the refreshed list.
 #[tauri::command]
+#[specta::specta]
 fn unregister_product(
     app: tauri::AppHandle,
     path: String,
@@ -1003,6 +1044,7 @@ fn check_plausible_product(path: &Path) -> Result<(), String> {
 /// normalize/de-dup as registering, so re-linking onto an already-registered product merges instead
 /// of duplicating. The display name is re-derived from the new path. Returns the refreshed list.
 #[tauri::command]
+#[specta::specta]
 fn relink_product(
     app: tauri::AppHandle,
     old_path: String,
@@ -1030,6 +1072,7 @@ fn resolve_konto_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Stri
 /// keystore and never leaves the backend. A missing/corrupt config reads as "kein Konto" (`None`),
 /// never an error.
 #[tauri::command]
+#[specta::specta]
 fn read_konto(app: tauri::AppHandle) -> Result<Option<KontoView>, String> {
     let file = resolve_konto_file(&app)?;
     Ok(read_konto_file(&file).map(|c| KontoView {
@@ -1049,6 +1092,7 @@ fn read_konto(app: tauri::AppHandle) -> Result<Option<KontoView>, String> {
 /// The check deliberately covers ONLY connection + token validity — the repo-create permission is
 /// NOT pre-checked (it surfaces honestly on first publish via `forgejo::ensure_repo`'s 403).
 #[tauri::command]
+#[specta::specta]
 async fn save_konto(
     app: tauri::AppHandle,
     server: String,
@@ -1120,6 +1164,7 @@ async fn save_konto(
 /// rewriting, no mass-repoint. Removing the Konto only pauses *sharing*; local work on products
 /// continues unchanged, and a product re-shares once a Konto is set again.
 #[tauri::command]
+#[specta::specta]
 fn clear_konto(app: tauri::AppHandle) -> Result<(), String> {
     let file = resolve_konto_file(&app)?;
     // Read the Base-URL first so we know which host's keystore entries to forget. A missing/corrupt
@@ -1140,6 +1185,7 @@ fn clear_konto(app: tauri::AppHandle) -> Result<(), String> {
 /// No central index, no mirror. Unreachable products are reported honestly in the result's
 /// `offline` list with searched/total counts — never silently dropped.
 #[tauri::command]
+#[specta::specta]
 async fn search_products(app: tauri::AppHandle, query: String) -> Result<SearchResult, String> {
     // The fan-out walks N product trees off disk; keep it off the WebView main thread so a slow /
     // large registry can never freeze the UI (same reason as the git commands above).
@@ -1155,6 +1201,7 @@ async fn search_products(app: tauri::AppHandle, query: String) -> Result<SearchR
 /// file has zero tasks — never an error. Pure read; the list is returned as-is, the UI splits it
 /// into Aufgaben (block-capable) and Hinweise (never block) by `kind`.
 #[tauri::command]
+#[specta::specta]
 fn list_tasks(path: String) -> Result<Vec<Task>, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -1167,6 +1214,7 @@ fn list_tasks(path: String) -> Result<Vec<Task>, String> {
 /// timestamp; the minimal model (Titel/Typ/Verknüpfung/Fälligkeit + „blockiert überall") comes
 /// from the caller. Returns the refreshed list so the UI updates in one round-trip.
 #[tauri::command]
+#[specta::specta]
 fn create_task_cmd(
     path: String,
     title: String,
@@ -1198,6 +1246,7 @@ fn create_task_cmd(
 /// [`TaskEdit`] keeps the finer clear-vs-untouched distinction for internal use; the wire stays
 /// JSON-honest by always setting these fields.) Returns the refreshed list.
 #[tauri::command]
+#[specta::specta]
 fn edit_task_cmd(
     path: String,
     id: String,
@@ -1229,6 +1278,7 @@ fn edit_task_cmd(
 /// Set just the status of one task — erledigen / verwerfen / wieder öffnen (Issue #40). The
 /// common gesture, kept separate from the full edit. Returns the refreshed list.
 #[tauri::command]
+#[specta::specta]
 fn set_task_status_cmd(path: String, id: String, status: TaskStatus) -> Result<Vec<Task>, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -1239,6 +1289,7 @@ fn set_task_status_cmd(path: String, id: String, status: TaskStatus) -> Result<V
 
 /// Delete one task (Issue #40). Absent id ⇒ no-op. Returns the refreshed list.
 #[tauri::command]
+#[specta::specta]
 fn delete_task_cmd(path: String, id: String) -> Result<Vec<Task>, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -1254,6 +1305,7 @@ fn delete_task_cmd(path: String, id: String) -> Result<Vec<Task>, String> {
 /// Returns whether it is blocked and the ids of the blocking tasks (so Issue #52's Freigabe-Gate
 /// can name them). A product with no task store is never blocked.
 #[tauri::command]
+#[specta::specta]
 fn evaluate_task_block(path: String, art: RevisionArt) -> Result<BlockDecision, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -1270,6 +1322,7 @@ fn evaluate_task_block(path: String, art: RevisionArt) -> Result<BlockDecision, 
 /// Aufgabe mit ihren Auswegen. Reine Lesepfade der `_plm`-Stores; das Urteil ist der reine
 /// [`freigabegate::decide_gate`]-Kern. Ein leeres Produkt ist sauber (sperrt nie aus — E22).
 #[tauri::command]
+#[specta::specta]
 fn evaluate_freigabe_gate(path: String, art: RevisionArt) -> Result<GateVerdict, String> {
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -1283,6 +1336,7 @@ fn evaluate_freigabe_gate(path: String, art: RevisionArt) -> Result<GateVerdict,
 /// protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
 /// „Trotzdem freigeben" nachvollziehbar bleibt.
 #[tauri::command]
+#[specta::specta]
 fn log_freigabe_begruendung(version: String, begruendung: String) {
     gitlog::record(
         "freigabe-begruendung",
@@ -1295,18 +1349,21 @@ fn log_freigabe_begruendung(version: String, begruendung: String) {
 /// zu zeigen, **ob und warum** ein Push lief oder nicht (Warden-Entscheidung + reale git-Exits).
 /// Älteste Zeile zuerst, jüngste zuletzt.
 #[tauri::command]
+#[specta::specta]
 fn read_git_log() -> Vec<String> {
     gitlog::snapshot()
 }
 
 /// Den In-Memory-Ring des Diagnose-Logs leeren (die Logdatei bleibt als dauerhaftes Protokoll).
 #[tauri::command]
+#[specta::specta]
 fn clear_git_log() {
     gitlog::clear();
 }
 
 /// Der absolute Pfad der Diagnose-Logdatei, damit das Panel „`tail -f <pfad>`" anbieten kann.
 #[tauri::command]
+#[specta::specta]
 fn git_log_path() -> Option<String> {
     gitlog::file_path().map(|p| p.display().to_string())
 }
@@ -1352,6 +1409,7 @@ fn resolve_repo_creds(
 /// Die Etiketten des Produkt-Repos für den Picker im Melde-Formular lesen (Issue #85). Adresse +
 /// Zugangsdaten wie bei `melde_problem` aus Remote + Konto. Off the main thread (Keystore + Netz).
 #[tauri::command]
+#[specta::specta]
 async fn produkt_etiketten(path: String) -> Result<Vec<feedback::Label>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let (host_url, owner, repo, user, token) = resolve_repo_creds(&path)?;
@@ -1373,6 +1431,7 @@ async fn produkt_etiketten(path: String) -> Result<Vec<feedback::Label>, AppErro
 /// geloggt. Typisierte Fehler wie die Zeremonie-Commands: `auth` öffnet das Token-Feld, `keystore`
 /// meldet den unerreichbaren Schlüsselbund, `error` ist alles übrige.
 #[tauri::command]
+#[specta::specta]
 async fn melde_problem(
     path: String,
     titel: String,
@@ -1404,11 +1463,107 @@ async fn melde_problem(
     })?
 }
 
+/// The one command seam (Candidate B): every command is collected here, once. tauri-specta uses this
+/// single list to wire the invoke handler *and* to regenerate `../src/lib/bindings.ts` (typed command
+/// fns + the domain types they carry) from these exact Rust signatures — so a signature change becomes
+/// a frontend compile error rather than a silent runtime drift. The bindings file is checked in and
+/// regenerated two ways: on every debug build of `run()`, and by the `export_bindings` test below
+/// (`cargo test export_bindings`) — the latter needs no display, which is what CI uses.
+fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
+    tauri_specta::Builder::<tauri::Wry>::new()
+        // The hand-written types.ts mirrored Rust's usize/u64 counts as plain `number`; keep that —
+        // these are small counts/indices, never near 2^53 — so the bindings stay a drop-in replacement
+        // instead of forcing `bigint` through every call site.
+        .dangerously_cast_bigints_to_number()
+        .commands(tauri_specta::collect_commands![
+        open_product,
+        start_watching,
+        stop_watching,
+        read_version_graph,
+        promote_revision,
+        toggle_revision_art,
+        knoten_als_ordner,
+        knoten_abzweigen,
+        knoten_zurueckwerfen,
+        read_edges,
+        add_edge,
+        remove_edge,
+        confirm_pair_edge_cmd,
+        import_product,
+        evaluate_gate,
+        migrate_history,
+        lock_artifact,
+        read_status,
+        read_foreign_locks,
+        read_setup_state,
+        connect_server,
+        publish_to_server,
+        run_checkpoint,
+        freigeben,
+        sichern,
+        evaluate_freigabe_gate,
+        log_freigabe_begruendung,
+        read_git_log,
+        clear_git_log,
+        git_log_path,
+        produkt_etiketten,
+        melde_problem,
+        sweep_clean_locks,
+        sync_product,
+        list_bibliothek,
+        list_toolstacks,
+        toolstack_baustein_ids,
+        create_product_stack_cmd,
+        extend_product_stack_cmd,
+        stilllegen_baustein_cmd,
+        read_product_stack,
+        read_werkbank_cmd,
+        assign_artefakt_cmd,
+        clear_artefakt_cmd,
+        resolve_sync_cmd,
+        list_products,
+        register_product,
+        unregister_product,
+        relink_product,
+        read_konto,
+        save_konto,
+        clear_konto,
+        search_products,
+        list_tasks,
+        create_task_cmd,
+        edit_task_cmd,
+        set_task_status_cmd,
+        delete_task_cmd,
+        evaluate_task_block
+    ])
+}
+
+/// Write the typed TS bindings to `../src/lib/bindings.ts` from the command seam. Shared by the debug
+/// build (`run()`) and the `export_bindings` test so the checked-in file always matches the Rust side.
+#[cfg(debug_assertions)]
+fn export_specta_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
+    builder
+        .export(
+            specta_typescript::Typescript::default()
+                .header(
+                    "// @generated by tauri-specta from the Rust command signatures — do not edit by hand.\n// Regenerate with a debug build (`npm run tauri dev`) or `cargo test export_bindings`. See src-tauri/src/lib.rs.\n",
+                ),
+            "../src/lib/bindings.ts",
+        )
+        .expect("failed to export typescript bindings");
+}
+
 pub fn run() {
+    let builder = specta_builder();
+    // Regenerate the checked-in TS bindings on every debug build; release builds skip the export.
+    #[cfg(debug_assertions)]
+    export_specta_bindings(&builder);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState::default())
+        .invoke_handler(builder.invoke_handler())
         .setup(|app| {
             // Diagnose-Log (Issue #54-Folge) auf den App-Log-Ordner zeigen lassen, damit ein
             // still scheiternder Push nachvollziehbar wird — im In-App-Panel ODER per `tail -f`.
@@ -1432,67 +1587,22 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            open_product,
-            start_watching,
-            stop_watching,
-            read_version_graph,
-            promote_revision,
-            toggle_revision_art,
-            knoten_als_ordner,
-            knoten_abzweigen,
-            knoten_zurueckwerfen,
-            read_edges,
-            add_edge,
-            remove_edge,
-            confirm_pair_edge_cmd,
-            import_product,
-            evaluate_gate,
-            migrate_history,
-            lock_artifact,
-            read_status,
-            read_foreign_locks,
-            read_setup_state,
-            connect_server,
-            publish_to_server,
-            run_checkpoint,
-            freigeben,
-            sichern,
-            evaluate_freigabe_gate,
-            log_freigabe_begruendung,
-            read_git_log,
-            clear_git_log,
-            git_log_path,
-            produkt_etiketten,
-            melde_problem,
-            sweep_clean_locks,
-            sync_product,
-            list_bibliothek,
-            list_toolstacks,
-            toolstack_baustein_ids,
-            create_product_stack_cmd,
-            extend_product_stack_cmd,
-            stilllegen_baustein_cmd,
-            read_product_stack,
-            read_werkbank_cmd,
-            assign_artefakt_cmd,
-            clear_artefakt_cmd,
-            resolve_sync_cmd,
-            list_products,
-            register_product,
-            unregister_product,
-            relink_product,
-            read_konto,
-            save_konto,
-            clear_konto,
-            search_products,
-            list_tasks,
-            create_task_cmd,
-            edit_task_cmd,
-            set_task_status_cmd,
-            delete_task_cmd,
-            evaluate_task_block
-        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regenerate `../src/lib/bindings.ts` from the command seam without launching a window. This is
+    /// the display-free path CI uses; running `cargo test export_bindings` after any command-signature
+    /// change re-emits the typed frontend bindings. Asserts the file lands non-empty.
+    #[test]
+    fn export_bindings() {
+        export_specta_bindings(&specta_builder());
+        let written = std::fs::read_to_string("../src/lib/bindings.ts")
+            .expect("bindings.ts should exist after export");
+        assert!(written.contains("export const commands"), "bindings must carry the typed command map");
+    }
 }

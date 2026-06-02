@@ -45,7 +45,7 @@ pub struct BausteinRegel {
 }
 
 /// Wohin ein Pfad fällt: in **genau ein** Artefakt **oder** zur **Waise** (total).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Zuordnung {
     /// Dem Artefakt `artefakt_id` zugeordnet, getroffen durch `glob` mit Priorität `prioritaet`
@@ -220,7 +220,7 @@ pub fn zuordnen(path: &str, regeln: &[BausteinRegel]) -> Zuordnung {
 /// trifft die höchste Priorität), wird die Datei geöffnet, sonst der Ordner. Eine ausdrückliche
 /// Baustein-Wahl (`Datei`/`Ordner`) bleibt. Rein und total — dieselbe Tabelle wie
 /// `Baustein::resolve_oeffnen`, hier aber an die abgeleitete Dominanz gekoppelt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PrimaerAktion {
     /// Die Hauptdatei im OS-Standardprogramm öffnen.

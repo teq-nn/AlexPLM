@@ -25,7 +25,7 @@ use serde::Serialize;
 
 /// Die **Wirkung** eines Stilllegens, rein berechnet aus Stack + erfassten Dateien (kein I/O).
 /// Das ist die Antwort der tiefen Sub-Funktion: *Was passiert, wenn ich diesen Baustein stilllege?*
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct StilllegenWirkung {
     /// Die Globs des Bausteins, die mit dem Stilllegen **erlöschen** (nicht mehr greifen).
     pub erloschene_globs: Vec<String>,

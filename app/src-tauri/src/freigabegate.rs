@@ -39,7 +39,7 @@ use serde::Serialize;
 /// The Härte of a single open point at the Freigabe-Gate (E19). Ordered **härtestes zuerst**:
 /// the `Ord` derive ranks `Hart < Weich < Warnung`, so a plain ascending sort puts the hardest
 /// items at the top of the list — exactly the „nach Härte sortierte Liste" of E19.3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Haerte {
     /// Harter Block: an open blocking Aufgabe. Button off; only the task itself dismisses it.
@@ -53,7 +53,7 @@ pub enum Haerte {
 /// What kind of open point an item is — the source axis behind its [`Haerte`]. Kept distinct from
 /// the Härte so the UI can render the right Auswege (a hard task gets Erledigen/Verwerfen/…; a
 /// Waise gets nothing but the Begründung path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Punktart {
     /// An open blocking Aufgabe (→ harter Block).
@@ -71,8 +71,10 @@ pub enum Punktart {
 /// id, the orphan path, the missing artefact label, or the stale derivation path) and a human
 /// `label`. A hard task additionally carries its three Auswege via `ref_id` (the UI acts on the
 /// task by that id).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+// Serialize-only (a computed verdict, never read back), so field names are free to be snake_case —
+// which is what the frontend reads (`ref_id`). A kebab `rename_all` here would silently ship
+// `ref-id` and the UI would read `undefined`; specta now pins these names across the seam.
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OffenerPunkt {
     /// The Härte of this point — drives both the sort and the row's visual weight.
     pub haerte: Haerte,
@@ -86,7 +88,7 @@ pub struct OffenerPunkt {
 }
 
 /// The three Zustände of the *one* context-dependent button (E19.3). Exactly one; total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KnopfZustand {
     /// Alles sauber (or only Warnungen) → the button is the plain „Taggen". Proceeds freely.
@@ -100,7 +102,7 @@ pub enum KnopfZustand {
 
 /// A personenübergreifende Warnung (E19.1/E33): a colleague's frischer Stand is being co-tagged.
 /// Informational — carries no Härte. `None` ⇔ no foreign recent work to warn about.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct FremdWarnung {
     /// The colleague whose Stand is being co-tagged.
@@ -113,8 +115,10 @@ pub struct FremdWarnung {
 /// carries the **härte-sortierte Liste** (härtestes zuerst), the resulting **Knopf-Zustand**, and
 /// the optional personenübergreifende Warnung — so the UI renders the whole gate without
 /// re-deciding anything.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+// Serialize-only; field names stay snake_case to match the UI (`harter_block`, `begruendung_noetig`,
+// `fremd_warnung`). The enum-valued fields (`knopf`) keep their kebab *values* from KnopfZustand —
+// only this container's field names changed.
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GateVerdict {
     /// The open points, **härtestes zuerst** (Hart, then Weich, then Warnung), stable within a
     /// Härte (input order preserved). Empty ⇔ alles sauber.
