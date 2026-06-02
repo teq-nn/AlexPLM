@@ -652,6 +652,29 @@
     }
   }
 
+  // Rehydrate the Commits-Schiene from Git on open (Issue #115). The version graph already holds
+  // every Stand as a node; seed `stands` from the active line's nodes (newest-first, as the
+  // projection orders them) so reopening a product shows the full history — not just this
+  // session's live saves. Carries each node's commit hash as a stable dedupe key. Idempotent:
+  // re-seeding replaces only the seeded (hash-bearing) rows and never drops live event rows, so
+  // a `stand-created` event that fires between open and this call is preserved at the top.
+  function seedStandsFromGraph() {
+    if (!graph) return;
+    const seeded: Stand[] = graph.nodes
+      .filter((n) => n.on_active)
+      .map((n) => ({
+        path: n.path,
+        timestamp: n.timestamp,
+        hash: n.id,
+        id: standSeq++,
+      }));
+    const seededHashes = new Set(seeded.map((s) => s.hash));
+    // Keep any live (hashless) Stände that arrived in this session, drop already-seeded ones to
+    // avoid duplicates, then place live rows on top (they are newer than the rehydrated history).
+    const live = stands.filter((s) => !s.hash || !seededHashes.has(s.hash));
+    stands = [...live, ...seeded];
+  }
+
   // ── Räume: Werkbank vs. Graph-Raum (Issue #55, E45) ─────────────────────────
   // Two separate, equal rooms. The Werkbank (Jetzt-Zustand) is the start; the Graph-Raum
   // (Verlauf) is something the user *sucht auf* — never the start screen. The switch lives in
@@ -842,6 +865,9 @@
       stands = [];
       await invoke("start_watching", { path });
       await refreshGraph();
+      // Rehydrate the Commits-Schiene from the version graph (Issue #115): the ledger now shows
+      // the existing Stand history (incl. unpushed) on reopen, not just this session's saves.
+      seedStandsFromGraph();
       await refreshEdges();
       await refreshTasks();
       await refreshWerkbank();
@@ -925,6 +951,9 @@
       stands = [];
       await invoke("start_watching", { path });
       await refreshGraph();
+      // An import may have adopted an existing repo with history (clean-init), so rehydrate the
+      // Commits-Schiene from the graph too (Issue #115); a truly fresh init seeds nothing.
+      seedStandsFromGraph();
       await refreshEdges();
       await refreshTasks();
       await refreshWerkbank();

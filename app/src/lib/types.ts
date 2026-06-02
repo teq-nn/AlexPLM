@@ -30,6 +30,10 @@ export interface StandEvent {
  *  so repeated saves of the same path at the same second remain distinct rows. */
 export interface Stand extends StandEvent {
   id: number;
+  /** Stable commit hash for Stände rehydrated from the version graph on open (Issue #115);
+   *  absent for Stände prepended live from a `stand-created` event (those carry no hash and
+   *  are always genuinely new). Used only to dedupe the seeded set, never shown as git. */
+  hash?: string;
 }
 
 /** The Art (kind) of a Revision (Issue #41, E42). A new Revision is "prototyp" (lax)
