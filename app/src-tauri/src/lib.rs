@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod defaultkanten;
 pub mod edges;
 pub mod edgestore;
+pub mod feedback;
 pub mod forgejo;
 pub mod freigabegate;
 pub mod freigabegateglue;
@@ -1309,6 +1310,99 @@ fn git_log_path() -> Option<String> {
     gitlog::file_path().map(|p| p.display().to_string())
 }
 
+/// Adresse + Repo + Zugangsdaten für ein Produkt auflösen (Issue #85): die `origin`-Remote in
+/// `(host_url, owner, repo)` lesen und die Konto-Zugangsdaten host-keyed aus dem OS-Keystore holen
+/// (dieselbe Stelle wie askpass/Push). Gemeinsamer Vorlauf von `produkt_etiketten` (Etiketten lesen)
+/// und `melde_problem` (Issue anlegen). Berührt den Keystore — gehört auf den Blocking-Thread.
+/// Typisierte Fehler wie die Zeremonie: `auth`/`keystore`/`error`. Gibt den Token NIE nach außer an
+/// den direkten Aufrufer (der ihn nur an Forgejo per Basic-Auth weiterreicht, nie ans Frontend).
+fn resolve_repo_creds(
+    path: &str,
+) -> Result<(String, String, String, String, String), AppError> {
+    let root = Path::new(path);
+    // Adresse + Repo aus der Produkt-Remote. Kein Remote → noch nicht veröffentlicht.
+    let remote = setup::remote_get_url(root).ok_or_else(|| AppError {
+        code: "error".to_string(),
+        message: "Dieses Produkt ist noch nicht mit einem Server verbunden — bitte zuerst veröffentlichen."
+            .to_string(),
+    })?;
+    let (host_url, owner, repo) =
+        feedback::repo_coords_from_remote(&remote).ok_or_else(|| AppError {
+            code: "error".to_string(),
+            message: "Die Server-Adresse des Produkts ist nicht lesbar.".to_string(),
+        })?;
+    let map_cred = |e: credentials::CredentialError| match e {
+        credentials::CredentialError::NotFound => AppError {
+            code: "error".to_string(),
+            message: "Kein Konto eingerichtet — bitte zuerst im Konto den Server anmelden."
+                .to_string(),
+        },
+        credentials::CredentialError::Unavailable(d) => AppError {
+            code: "keystore".to_string(),
+            message: format!("OS-Schlüsselbund nicht erreichbar: {d}"),
+        },
+        other => AppError { code: "keystore".to_string(), message: other.to_string() },
+    };
+    let user = credentials::username(&host_url).map_err(map_cred)?;
+    let token = credentials::token(&host_url).map_err(map_cred)?;
+    Ok((host_url, owner, repo, user, token))
+}
+
+/// Die Etiketten des Produkt-Repos für den Picker im Melde-Formular lesen (Issue #85). Adresse +
+/// Zugangsdaten wie bei `melde_problem` aus Remote + Konto. Off the main thread (Keystore + Netz).
+#[tauri::command]
+async fn produkt_etiketten(path: String) -> Result<Vec<feedback::Label>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (host_url, owner, repo, user, token) = resolve_repo_creds(&path)?;
+        feedback::list_labels(&host_url, &owner, &repo, &user, &token).map_err(AppError::from_io)
+    })
+    .await
+    .map_err(|e| AppError {
+        code: "error".to_string(),
+        message: format!("Hintergrund-Task abgebrochen: {e}"),
+    })?
+}
+
+/// **Ein Problem aus der laufenden Werkbank melden** (Issue #85): legt im Repository des gerade
+/// geöffneten Produkts ein Forgejo/Gitea-Issue an — Titel + Beschreibung, getragt mit dem
+/// Laufzeit-Etikett (`feedback::RUNTIME_LABEL_NAME`) plus den im Formular gewählten `labels`,
+/// optional mit angehängtem Diagnose-Log (`log_anhaengen`). Adresse + Besitzer/Repo kommen aus der
+/// `origin`-Remote des Produkts; authentifiziert mit den Konto-Zugangsdaten (host-keyed im
+/// OS-Keystore — derselbe Pfad wie Push/Locks). Der Token wird nie ans Frontend gegeben oder
+/// geloggt. Typisierte Fehler wie die Zeremonie-Commands: `auth` öffnet das Token-Feld, `keystore`
+/// meldet den unerreichbaren Schlüsselbund, `error` ist alles übrige.
+#[tauri::command]
+async fn melde_problem(
+    path: String,
+    titel: String,
+    beschreibung: String,
+    log_anhaengen: bool,
+    labels: Vec<i64>,
+) -> Result<feedback::IssueRef, AppError> {
+    // Titel ist Pflicht — leer scheitert sofort, vor jedem Netz-/Keystore-Zugriff.
+    let titel = titel.trim().to_string();
+    if titel.is_empty() {
+        return Err(AppError {
+            code: "error".to_string(),
+            message: "Titel fehlt — bitte das Problem kurz benennen.".to_string(),
+        });
+    }
+    // Den In-Memory-Diagnose-Ring jetzt (auf dem Aufruf-Thread, billig) schnappen, falls gewünscht.
+    let log = log_anhaengen.then(gitlog::snapshot);
+    // Netz + Keystore off the main thread; der typisierte Fehler verlangt inline `spawn_blocking`.
+    tauri::async_runtime::spawn_blocking(move || {
+        let (host_url, owner, repo, user, token) = resolve_repo_creds(&path)?;
+        let body = feedback::compose_issue_body(&beschreibung, log.as_deref());
+        feedback::submit_issue(&host_url, &owner, &repo, &user, &token, &titel, &body, &labels)
+            .map_err(AppError::from_io)
+    })
+    .await
+    .map_err(|e| AppError {
+        code: "error".to_string(),
+        message: format!("Hintergrund-Task abgebrochen: {e}"),
+    })?
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1368,6 +1462,8 @@ pub fn run() {
             read_git_log,
             clear_git_log,
             git_log_path,
+            produkt_etiketten,
+            melde_problem,
             sweep_clean_locks,
             sync_product,
             list_bibliothek,

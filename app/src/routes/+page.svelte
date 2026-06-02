@@ -51,6 +51,7 @@
   import AufgabenListe from "$lib/AufgabenListe.svelte";
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
   import DiagnoseLog from "$lib/DiagnoseLog.svelte";
+  import MeldeProblem from "$lib/MeldeProblem.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -310,6 +311,10 @@
   // Issue #54-Folge — the diagnostic log panel. Off by default (the silent rhythm is untouched);
   // a quiet toggle in the toolbar opens it so a push that does nothing can be inspected.
   let diagnoseOpen = $state(false);
+
+  // „Problem melden" (Issue #85): das Rückmelde-Modal. Nur sinnvoll mit offenem Produkt — der
+  // Bericht geht ins Repo dieses Produkts. Bleibt aus dem täglichen Rhythmus; öffnet auf Klick.
+  let meldeOpen = $state(false);
 
   /** Read the ceremony state from git (server connected? published?). Best-effort. */
   async function refreshSetup() {
@@ -1329,6 +1334,31 @@
       <span class="label">Suche über Produkte</span>
     </button>
 
+    <!-- Problem melden (Issue #85): ein Issue aus der laufenden App ins Repo des offenen Produkts.
+         Nur sichtbar mit offenem Produkt — der Bericht braucht ein Ziel-Repository. Teilt die
+         ruhige Geste der Zahnrad-/Suche-Knöpfe; kein orange-gerahmter lauter Moment. -->
+    {#if productPath}
+      <button
+        class="gear"
+        class:on={meldeOpen}
+        aria-pressed={meldeOpen}
+        title="Problem melden: Rückmeldung als Issue ins Produkt-Repository"
+        onclick={() => (meldeOpen = true)}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+          <path
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+            stroke-linecap="round"
+            d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H9.5L5.5 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5Z"
+          />
+        </svg>
+        <span class="label gr-text">Problem melden</span>
+      </button>
+    {/if}
+
     <!-- Einstellungen · Konto (ADR 0004, Issue #90): a gear in the app-level entry bar, always
          reachable — even with no product open. Opens the global Konto panel (one app-wide server
          identity). It does not gate daily work; the Konto is only needed in the Teilen-Moment. -->
@@ -1781,6 +1811,9 @@
 
 <!-- Diagnose-Log (Issue #54-Folge): toggleable git/sync trace so a silent push can be inspected. -->
 <DiagnoseLog open={diagnoseOpen} onClose={() => (diagnoseOpen = false)} />
+
+<!-- Problem melden (Issue #85): Rückmeldung aus der Laufzeit als Issue ins Produkt-Repository. -->
+<MeldeProblem open={meldeOpen} {productPath} onClose={() => (meldeOpen = false)} />
 
 <style>
   .app {

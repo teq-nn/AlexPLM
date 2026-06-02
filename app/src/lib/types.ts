@@ -656,3 +656,23 @@ export interface GateVerdict {
   /** The cross-person warning, if a colleague's frischer Stand is being co-tagged. */
   fremd_warnung: FremdWarnung | null;
 }
+
+/** Eine Referenz auf ein aus der Laufzeit gemeldetes Issue (Issue #85). Mirrors `IssueRef`
+ *  in src-tauri/src/feedback.rs — Nummer + Web-URL, nie ein Token. */
+export interface IssueRef {
+  /** Die Issue-Nummer im Produkt-Repo (`#<number>`). */
+  number: number;
+  /** Die Web-URL des Issues, zum Öffnen im Browser. */
+  html_url: string;
+}
+
+/** Ein Repo-Etikett für den Picker im Melde-Formular (Issue #85). Mirrors `Label`
+ *  in src-tauri/src/feedback.rs — Id + Name + Farbe (Hex ohne führendes `#`). */
+export interface RepoLabel {
+  /** Die Etikett-Id, wie sie beim Melden angehängt wird. */
+  id: number;
+  /** Der Anzeige-Name des Etiketts. */
+  name: string;
+  /** Die Farbe als Hex ohne führendes `#` (das Frontend setzt es zum Rendern davor). */
+  color: string;
+}
