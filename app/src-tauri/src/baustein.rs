@@ -133,6 +133,132 @@ impl Baustein {
     }
 }
 
+/// Das Ergebnis einer Baustein-Validierung (reiner Kern, Issue #108). Ein **harter** Fehler
+/// (`errors` nicht leer) verhindert das Speichern; **weiche** Warnungen (`warnings`) informieren
+/// nur (Haus-Stil „degradieren, nie krachen"): z.B. ein Partner-`id`, der (noch) nicht in der
+/// Bibliothek liegt, blockiert NICHT — der Vorschlag greift einfach erst, wenn der Partner existiert.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValidationReport {
+    /// Harte Feld-Fehler als (Feld-Schlüssel, deutsche Meldung). Leer ⇒ speicherbar.
+    pub errors: Vec<(String, String)>,
+    /// Weiche Warnungen (deutsche Meldungen); informieren nur, blockieren nie.
+    pub warnings: Vec<String>,
+}
+
+impl ValidationReport {
+    /// Ob der Baustein speicherbar ist (keine harten Fehler).
+    pub fn ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    fn err(&mut self, field: &str, msg: &str) {
+        self.errors.push((field.to_string(), msg.to_string()));
+    }
+}
+
+/// Prüft, ob `id` eine gültige Kebab-Kennung ist: `^[a-z0-9]+(-[a-z0-9]+)*$` — nichtleere Segmente
+/// aus Kleinbuchstaben/Ziffern, durch einzelne Bindestriche getrennt, kein führender/abschließender
+/// Bindestrich, keine Doppel-Bindestriche. Rein und total.
+pub fn is_kebab_id(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    let mut segments = id.split('-');
+    segments.all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+}
+
+/// Validiert einen Baustein vor dem Speichern (Issue #108, ADR 0003). **Reiner Kern**, kein I/O.
+///
+/// Regeln (Handoff §1.9):
+/// - `id`: nichtleer, Kebab-Format. **Beim Anlegen** (`is_create == true`) zusätzlich eindeutig — die
+///   Kennung darf noch nicht in der Bibliothek liegen. **Beim Bearbeiten** (`is_create == false`) ist
+///   die `id` unveränderlich und der Schreibpfad ein Upsert auf genau diese `id` — daher wird die
+///   Eindeutigkeit dort NICHT geprüft (sonst würde jedes Bearbeiten als Kollision durchfallen).
+/// - `name`, `heimat`: nichtleer (getrimmt).
+/// - `globs`: mindestens ein nichtleerer (getrimmter) Eintrag.
+/// - Sub-Record-Globs (Default-/Paar-Kanten) nichtleer; `paar_default_kanten.partner_id` nichtleer.
+/// - Selbst-Referenz (`partner_id == id`) verboten (harter Fehler).
+/// - Partner-Existenz: **weiche** Warnung, kein harter Fehler.
+///
+/// `existing_ids` = die Kennungen aller bereits in der Bibliothek liegenden Bausteine (Quelle für die
+/// Anlege-Eindeutigkeit und die Partner-Existenz-Warnung). Beim Bearbeiten darf der eigene Baustein
+/// darin enthalten sein (Upsert).
+pub fn validate_baustein(b: &Baustein, existing_ids: &[String], is_create: bool) -> ValidationReport {
+    let mut r = ValidationReport::default();
+
+    if b.id.is_empty() {
+        r.err("id", "Kennung darf nicht leer sein");
+    } else if !is_kebab_id(&b.id) {
+        r.err("id", "Nur Kleinbuchstaben, Ziffern, Bindestriche");
+    } else if is_create && existing_ids.iter().any(|x| x == &b.id) {
+        r.err("id", "Kennung schon vergeben");
+    }
+
+    if b.name.trim().is_empty() {
+        r.err("name", "Name darf nicht leer sein");
+    }
+    if b.heimat.trim().is_empty() {
+        r.err("heimat", "Heimat ist erforderlich");
+    }
+
+    let live_globs = b.globs.iter().filter(|g| !g.trim().is_empty()).count();
+    if live_globs == 0 {
+        r.err("globs", "Mindestens ein Artefakt-Muster");
+    }
+
+    for k in &b.default_kanten {
+        if k.derived_glob.trim().is_empty() || k.source_glob.trim().is_empty() {
+            r.err("default_kanten", "Default-Kanten brauchen Quelle und Ableitung");
+            break;
+        }
+    }
+
+    for k in &b.paar_default_kanten {
+        if k.derived_glob.trim().is_empty() || k.source_glob.trim().is_empty() {
+            r.err("paar_default_kanten", "Paar-Kanten brauchen Quelle und Ableitung");
+            break;
+        }
+    }
+    for k in &b.paar_default_kanten {
+        if k.partner_id.trim().is_empty() {
+            r.err("paar_default_kanten", "Paar-Kanten brauchen einen Partner-Baustein");
+            break;
+        }
+    }
+    for k in &b.paar_default_kanten {
+        if k.partner_id == b.id && !b.id.is_empty() {
+            r.err("paar_default_kanten", "Ein Baustein kann nicht sein eigener Partner sein");
+            break;
+        }
+    }
+    // Partner-Existenz: weiche Warnung (degradieren, nie krachen).
+    for k in &b.paar_default_kanten {
+        let pid = k.partner_id.trim();
+        if !pid.is_empty() && pid != b.id && !existing_ids.iter().any(|x| x == pid) {
+            r.warnings.push(format!(
+                "Partner „{pid}“ liegt nicht in der Bibliothek — der Vorschlag greift erst, wenn er existiert."
+            ));
+        }
+    }
+
+    r
+}
+
+/// Entfernt **exakte** Duplikat-Globs aus der geordneten Glob-Liste (Reihenfolge bleibt; das erste
+/// Vorkommen gewinnt — die Hauptdatei-Regel `[0]` bleibt also erhalten). Rein und total (Handoff §1.9).
+pub fn dedup_globs(globs: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    globs.iter().filter(|g| seen.insert((*g).clone())).cloned().collect()
+}
+
+/// Ob eine Kennung zu einem **gebündelten** Default gehört (Issue #108). Rein und total: ein einfacher
+/// Mitgliedschaftstest gegen die Kennungen der mitgelieferten Bausteine. Trägt die Boomerang-Schranke
+/// fürs Löschen — ein gebündelter Baustein würde beim nächsten Start ohnehin wieder eingesät, darum
+/// ist er nicht löschbar. Dieselbe Quelle speist auch das Herkunft-Etikett (mitgeliefert vs. eigen).
+pub fn is_bundled_id(id: &str, bundled_ids: &[String]) -> bool {
+    bundled_ids.iter().any(|x| x == id)
+}
+
 /// Ein **Toolstack**: eine benannte, geordnete Auswahl von Baustein-`id`s aus der Bibliothek
 /// (ADR 0003). Repräsentiert einen Standard-Toolstack, aus dem ein Produkt-Stack kopiert wird.
 #[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +362,171 @@ mod tests {
         let json = serde_json::to_string_pretty(&bs).unwrap();
         let back: Baustein = serde_json::from_str(&json).unwrap();
         assert_eq!(bs, back);
+    }
+
+    #[test]
+    fn is_kebab_id_table() {
+        // table: id -> valid?
+        let cases: &[(&str, bool)] = &[
+            ("", false),
+            ("kicad", true),
+            ("standard-hw", true),
+            ("a1-b2-c3", true),
+            ("Fusion", false),    // uppercase
+            ("ki cad", false),    // space
+            ("-kicad", false),    // leading dash
+            ("kicad-", false),    // trailing dash
+            ("ki--cad", false),   // double dash
+            ("ki_cad", false),    // underscore
+            ("käse", false),      // umlaut
+            ("1", true),
+            ("1-2", true),
+        ];
+        for (id, expected) in cases {
+            assert_eq!(is_kebab_id(id), *expected, "id = {id:?}");
+        }
+    }
+
+    fn full(mut b: Baustein, f: impl FnOnce(&mut Baustein)) -> Baustein {
+        f(&mut b);
+        b
+    }
+
+    #[test]
+    fn validate_baustein_field_rules() {
+        let base = b("kicad", &["*.kicad_pro"], Oeffnen::Auto);
+        let existing = vec!["kicad".to_string(), "fusion".to_string()];
+
+        // Happy path: clean Baustein has no errors (edit path — its own id may be in `existing`).
+        assert!(validate_baustein(&base, &existing, false).ok());
+
+        // table: (mutate, expected error field)
+        let cases: Vec<(Baustein, &str)> = vec![
+            (full(base.clone(), |b| b.id = String::new()), "id"),
+            (full(base.clone(), |b| b.id = "Bad ID".into()), "id"),
+            (full(base.clone(), |b| b.name = "   ".into()), "name"),
+            (full(base.clone(), |b| b.heimat = "".into()), "heimat"),
+            (full(base.clone(), |b| b.globs = vec![]), "globs"),
+            (full(base.clone(), |b| b.globs = vec!["   ".into()]), "globs"),
+            (
+                full(base.clone(), |b| {
+                    b.default_kanten = vec![DefaultKante { derived_glob: "*.stl".into(), source_glob: "".into() }]
+                }),
+                "default_kanten",
+            ),
+            (
+                full(base.clone(), |b| {
+                    b.paar_default_kanten = vec![PaarDefaultKante {
+                        partner_id: "".into(),
+                        derived_glob: "*.pos".into(),
+                        source_glob: "*.kicad_pcb".into(),
+                    }]
+                }),
+                "paar_default_kanten",
+            ),
+            (
+                full(base.clone(), |b| {
+                    b.paar_default_kanten = vec![PaarDefaultKante {
+                        partner_id: "fusion".into(),
+                        derived_glob: "".into(),
+                        source_glob: "*.kicad_pcb".into(),
+                    }]
+                }),
+                "paar_default_kanten",
+            ),
+            // self-reference forbidden
+            (
+                full(base.clone(), |b| {
+                    b.paar_default_kanten = vec![PaarDefaultKante {
+                        partner_id: "kicad".into(),
+                        derived_glob: "*.pos".into(),
+                        source_glob: "*.kicad_pcb".into(),
+                    }]
+                }),
+                "paar_default_kanten",
+            ),
+        ];
+        for (bs, field) in cases {
+            let r = validate_baustein(&bs, &existing, false);
+            assert!(!r.ok(), "expected error for field {field}, baustein = {bs:?}");
+            assert!(
+                r.errors.iter().any(|(f, _)| f == field),
+                "expected an error on field {field}, got {:?}",
+                r.errors
+            );
+        }
+    }
+
+    #[test]
+    fn create_time_uniqueness_blocks_a_colliding_id_but_edit_does_not() {
+        let existing = vec!["kicad".to_string(), "fusion".to_string()];
+
+        // CREATE with an id already in the Bibliothek ⇒ hard error on `id`.
+        let collide = b("kicad", &["*.kicad_pro"], Oeffnen::Auto);
+        let r = validate_baustein(&collide, &existing, true);
+        assert!(!r.ok(), "create with a colliding id must be blocked");
+        assert!(
+            r.errors.iter().any(|(f, m)| f == "id" && m == "Kennung schon vergeben"),
+            "expected the dedup id error, got {:?}",
+            r.errors
+        );
+
+        // CREATE with a fresh id ⇒ fine.
+        let fresh = b("freecad", &["*.fcstd"], Oeffnen::Auto);
+        assert!(
+            validate_baustein(&fresh, &existing, true).ok(),
+            "create with a fresh id must pass"
+        );
+
+        // EDIT of an existing record (its own id is in `existing`) ⇒ NOT a collision (upsert).
+        assert!(
+            validate_baustein(&collide, &existing, false).ok(),
+            "edit-save of an existing baustein must not trip the uniqueness rule"
+        );
+    }
+
+    #[test]
+    fn dangling_partner_is_a_soft_warning_not_an_error() {
+        let existing = vec!["kicad".to_string()];
+        let bs = full(b("kicad", &["*.kicad_pro"], Oeffnen::Auto), |b| {
+            b.paar_default_kanten = vec![PaarDefaultKante {
+                partner_id: "ghost".into(), // not in existing
+                derived_glob: "*.pos".into(),
+                source_glob: "*.kicad_pcb".into(),
+            }];
+        });
+        let r = validate_baustein(&bs, &existing, false);
+        assert!(r.ok(), "dangling partner must NOT be a hard error: {:?}", r.errors);
+        assert_eq!(r.warnings.len(), 1, "dangling partner should warn once");
+        assert!(r.warnings[0].contains("ghost"));
+    }
+
+    #[test]
+    fn dedup_globs_keeps_order_and_first_occurrence() {
+        let cases: &[(&[&str], &[&str])] = &[
+            (&[], &[]),
+            (&["*.a"], &["*.a"]),
+            (&["*.a", "*.b", "*.a"], &["*.a", "*.b"]),
+            (&["*.a", "*.a", "*.a"], &["*.a"]),
+            (&["*.pro", "*.sch", "*.pcb"], &["*.pro", "*.sch", "*.pcb"]),
+        ];
+        for (input, expected) in cases {
+            let got = dedup_globs(&input.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            let want: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(got, want, "input = {input:?}");
+        }
+    }
+
+    #[test]
+    fn is_bundled_id_table() {
+        let bundled: Vec<String> = ["kicad", "fusion"].iter().map(|s| s.to_string()).collect();
+        // gebündelte Kennung → erkannt (löschen geblockt, Etikett „mitgeliefert")
+        assert!(is_bundled_id("kicad", &bundled));
+        assert!(is_bundled_id("fusion", &bundled));
+        // nutzer-eigene Kennung → nicht gebündelt (löschbar, Etikett „eigen")
+        assert!(!is_bundled_id("meine-cnc", &bundled));
+        // leere Quelle → nichts ist gebündelt
+        assert!(!is_bundled_id("kicad", &[]));
     }
 
     #[test]

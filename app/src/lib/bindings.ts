@@ -246,6 +246,39 @@ export const commands = {
 	 */
 	listBibliothek: () => typedError<BibliothekView, string>(__TAURI_INVOKE("list_bibliothek")),
 	/**
+	 *  Einen Bibliothek-Baustein **anlegen oder bearbeiten** (Issue #108, ADR 0003): ein Upsert auf der
+	 *  `id` (`write_baustein` überschreibt nach `id`; das Anlegen und das Bearbeiten teilen sich diesen
+	 *  Schreibpfad). `is_create` unterscheidet die Absicht: beim Anlegen prüft der reine Kern die
+	 *  **Eindeutigkeit** der Kennung gegen die vorhandenen Bausteine und blockiert eine Kollision
+	 *  (server-autoritativ); beim Bearbeiten ist die `id` unveränderlich, der Upsert überschreibt den
+	 *  gleichnamigen Datensatz, daher entfällt die Eindeutigkeitsprüfung (sonst würde jedes Bearbeiten
+	 *  als Kollision durchfallen). Validiert den Baustein im **reinen Kern**
+	 *  (`baustein::validate_baustein`) gegen die bereits vorhandenen Kennungen; harte Feld-Fehler werden
+	 *  als deutsche Fehlermeldung zurückgegeben,
+	 *  die die UI anzeigen kann (gleiche `Result<_, String>`-Form wie die Geschwister-Kommandos). Weiche
+	 *  Warnungen (z.B. ein noch fehlender Partner-Baustein) blockieren NICHT — sie erscheinen erst beim
+	 *  Lesen wieder, der Vorschlag greift einfach, sobald der Partner existiert. Exakte Duplikat-Globs
+	 *  werden vor dem Schreiben still entfernt. Gibt die frisch gelesene [`BibliothekView`] zurück, damit
+	 *  die UI aus der Wahrheit neu rendert (spiegelt `stilllegen_baustein_cmd` / `extend_product_stack_cmd`).
+	 * 
+	 *  Nur die **Bibliothek-Vorlage** wird berührt — niemals die produkt-lokale Anti-Drift-Kopie in
+	 *  `_plm/stack.json` (ADR 0003).
+	 */
+	saveBausteinCmd: (baustein: Baustein, isCreate: boolean) => typedError<BibliothekView, string>(__TAURI_INVOKE("save_baustein_cmd", { baustein, isCreate })),
+	/**
+	 *  Einen Bibliothek-Baustein **hart löschen** (Issue #108, ADR 0003). Server-autoritativ geschützt:
+	 *  ein **gebündelter** Default ist NICHT löschbar — seine Kennung würde beim nächsten Start ohnehin
+	 *  wieder eingesät („Boomerang"), darum wird ein solcher Löschwunsch mit einer deutschen Meldung
+	 *  abgelehnt (gleiche `Result<_, String>`-Form wie die Geschwister-Kommandos). Die Schranke sitzt
+	 *  hier im Backend, nicht nur in der UI — sie wird gegen die gebündelten Defaults
+	 *  (`bibliothek::load_bundled`) entschieden, nicht gegen eine hartcodierte Liste. Eine bereits
+	 *  fehlende Datei degradiert still (idempotent). Hängende Toolstack-/Produkt-Verweise nach dem
+	 *  Löschen werden toleriert (Handoff §1.7). Gibt die frisch gelesene [`BibliothekView`] zurück.
+	 * 
+	 *  Nur die **Bibliothek-Vorlage** wird berührt — niemals die produkt-lokale Anti-Drift-Kopie (ADR 0003).
+	 */
+	deleteBausteinCmd: (id: string) => typedError<BibliothekView, string>(__TAURI_INVOKE("delete_baustein_cmd", { id })),
+	/**
 	 *  List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
 	 *  the „Standard-Toolstack wählen"-Schritt der Produkt-Anlage (#50).
 	 */
@@ -576,10 +609,17 @@ export type Baustein = {
 	stillgelegt?: boolean,
 };
 
-/**  The Bibliothek as sent to the UI: the available Bausteine and Toolstacks. */
+/**
+ *  The Bibliothek as sent to the UI: the available Bausteine and Toolstacks. `bundled_ids` lists the
+ *  ids that ship as bundled defaults (server-authoritative herkunft signal, Issue #108): the frontend
+ *  renders the „mitgeliefert" vs „eigen" badge and gates the delete action off this — a bundled id is
+ *  not deletable (it would be re-seeded next launch). Derived from `bibliothek::load_bundled`, never
+ *  hardcoded in the frontend.
+ */
 export type BibliothekView = {
 	bausteine: Baustein[],
 	toolstacks: Toolstack[],
+	bundled_ids: string[],
 };
 
 /**

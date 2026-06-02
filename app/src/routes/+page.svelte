@@ -41,6 +41,7 @@
   import FreigabeGate from "$lib/FreigabeGate.svelte";
   import EinrichtungsZeremonie from "$lib/EinrichtungsZeremonie.svelte";
   import KontoPanel from "$lib/KontoPanel.svelte";
+  import BibliothekAnsicht from "$lib/BibliothekAnsicht.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
@@ -246,6 +247,12 @@
   // erreichbar über das Zahnrad im Header — auch ohne offenes Produkt. Lokales Arbeiten braucht kein
   // Konto; es wird erst im Teilen-Moment nötig, daher kein Login-Wall beim Start.
   let kontoOpen = $state(false);
+
+  // Das „Magazin" (Issue #108): die app-weiten Flächen oben rechts unter einem Dach. `magazinView`
+  // gated welche app-weite Bühne statt der Werkbank gezeigt wird — bisher nur „bibliothek" (die neue
+  // read-only Schau) oder null (normale Werkbank-Bühne). Liegt AUSSERHALB jedes Produkts (ADR 0003),
+  // also nicht im Produkt-Stack/StackEinrichtung. Spätere Slices verdrahten hieran Bearbeiten/Anlegen.
+  let magazinView = $state<"bibliothek" | null>(null);
 
   // The Produktliste / Verlauf switcher (Issue #73). The Produkt-Registry is app-level, so the
   // switcher lives in the app-level entry bar next to the Suche. A ref so opening/importing/
@@ -1143,12 +1150,17 @@
     {room}
     onSetRoom={(r) => (room = r)}
     onOpenSettings={() => (kontoOpen = true)}
+    onOpenBibliothek={() => (magazinView = "bibliothek")}
   />
 
   <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
        Bausteine pane — they aren't part of browsing Bausteine. The write-vs-read distinction
        stays legible: "Neues Produkt" is the solid primary key (schreibt), "Produkt öffnen" the
        quieter ghost key (liest nur). -->
+  <!-- Die Einstiegs-Leiste gehört zur Produkt-Bühne; während die app-weite Bibliothek-Schau die
+       Bühne übernimmt (Issue #108) wird sie ausgeblendet — die Schau hat ihren eigenen Kopf mit
+       „← zur Werkbank". -->
+  {#if magazinView === null}
   <div class="entrybar">
     <div class="entry-actions">
       <button
@@ -1197,9 +1209,15 @@
     </button>
 
   </div>
+  {/if}
 
   <div class="stage">
-    {#if product && room === "graph"}
+    {#if magazinView === "bibliothek"}
+      <!-- Magazin · Bibliothek (Issue #108, Slice 1): eine app-weite, produkt-unabhängige Schau,
+           die die ganze Bühne übernimmt (lebt AUSSERHALB jedes Produkts, ADR 0003). Read-only in
+           dieser Stufe; „← zur Werkbank" verlässt sie wieder. Spätere Slices verdrahten Editor. -->
+      <BibliothekAnsicht onClose={() => (magazinView = null)} />
+    {:else if product && room === "graph"}
       <!-- Graph-Raum (Issue #55): a SEPARATE, full-width room — the Verlauf the user sucht auf.
            It carries the filters + the three Knoten-Verben; a node click never moves the Werkbank. -->
       <GraphRaum
