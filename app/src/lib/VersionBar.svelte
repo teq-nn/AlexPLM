@@ -8,6 +8,7 @@
     room,
     onSetRoom,
     onOpenSettings,
+    onOpenBibliothek,
   }: {
     product: ProductView | null;
     activeRevision?: string | null;
@@ -16,9 +17,30 @@
     room: "werkbank" | "graph";
     /** Switch rooms from the „Ansicht"-Ecke (Werkbank ↔ Verlauf · Graph). */
     onSetRoom: (room: "werkbank" | "graph") => void;
-    /** Open the Einstellungen · Konto panel — the gear text lives in the „Ansicht"-Ecke. */
+    /** Open the Einstellungen · Konto panel — reached through the „Magazin"-Launcher. */
     onOpenSettings: () => void;
+    /** Swap the main stage to the read-only Bibliothek view (under „Magazin", Issue #108). */
+    onOpenBibliothek: () => void;
   } = $props();
+
+  // Das „Magazin" (Issue #108): der text-only LCD-Launcher oben rechts, der die app-weiten
+  // Flächen unter EINEM ruhigen Dach versammelt — „Bibliothek" (die neue Schau) und
+  // „Einstellungen · Konto" (das bestehende KontoPanel). Ein kleines Popover statt eines dritten
+  // Raums: am wenigsten invasiv, lässt die KontoPanel-Verdrahtung unangetastet. Bewusst ohne
+  // Icons — diese Ecke ist still und text-only.
+  let magazinOffen = $state(false);
+
+  function schliesseMagazin() {
+    magazinOffen = false;
+  }
+  function waehleBibliothek() {
+    schliesseMagazin();
+    onOpenBibliothek();
+  }
+  function waehleEinstellungen() {
+    schliesseMagazin();
+    onOpenSettings();
+  }
 
   // The version bar's largest, brightest element is the active Revision (E28/§24):
   // the durable human version. Until a Stand is promoted there is none — say so honestly
@@ -89,18 +111,37 @@
         </button>
         <span class="divider"></span>
       {/if}
-      <!-- Einstellungen · Konto (ADR 0004, Issue #90): moved out of the entry bar into the
-           „Ansicht"-Ecke des LCD. A quiet caps text in the same instrument language as „Ansicht",
-           always reachable (the right cluster shows even without an open product). Brightens to
-           the screen-fg on hover to signal it acts; deliberately no icon. -->
-      <button
-        type="button"
-        class="set view"
-        title="Einstellungen · Konto: Server-Identität einrichten & prüfen"
-        onclick={onOpenSettings}
-      >
-        Einstellungen
-      </button>
+      <!-- „Magazin" (Issue #108): das Werkzeugmagazin, aus dem die App ihre app-weiten Flächen
+           zieht. Ein text-only LCD-Launcher (kein Icon — die Ecke bleibt still) im selben
+           Instrument-Ton wie „Ansicht". Klick öffnet ein kleines Popover mit zwei Einträgen:
+           „Bibliothek" (neue Schau) und „Einstellungen · Konto" (bestehendes KontoPanel). -->
+      <div class="magazin">
+        <button
+          type="button"
+          class="set view"
+          class:open={magazinOffen}
+          aria-haspopup="menu"
+          aria-expanded={magazinOffen}
+          title="Magazin: Bibliothek & Einstellungen · Konto"
+          onclick={() => (magazinOffen = !magazinOffen)}
+        >
+          Magazin
+        </button>
+
+        {#if magazinOffen}
+          <!-- Klick außerhalb schließt das Popover (Haus-Muster wie die Modal-Scrims). -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div class="scrim" role="presentation" onclick={schliesseMagazin}></div>
+          <div class="popover" role="menu" aria-label="Magazin">
+            <button type="button" class="mitem" role="menuitem" onclick={waehleBibliothek}>
+              Bibliothek
+            </button>
+            <button type="button" class="mitem" role="menuitem" onclick={waehleEinstellungen}>
+              Einstellungen · Konto
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
 </header>
@@ -305,5 +346,75 @@
   .viewcycle:hover .vc-cap,
   .viewcycle:focus-visible .vc-cap {
     color: #b8b4ad;
+  }
+
+  /* „Magazin"-Launcher (Issue #108): the text trigger + its anchored popover. The trigger is the
+     same .set text-twin of „Ansicht"; while open it stays lit so the corner shows where the menu
+     hangs from. The popover is a small recessed instrument card dropping from the LCD — text-only,
+     no icons, matching the quiet right corner. */
+  .magazin {
+    position: relative;
+    display: inline-flex;
+  }
+  .set.open {
+    color: var(--screen-fg);
+    text-shadow: 0 0 8px rgba(232, 230, 225, 0.22);
+  }
+  /* A transparent full-viewport scrim so a click anywhere outside closes the popover. */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+  }
+  .popover {
+    position: absolute;
+    z-index: 31;
+    top: calc(100% + 10px);
+    right: 0;
+    min-width: 184px;
+    display: flex;
+    flex-direction: column;
+    padding: 5px;
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, #1a1817, #121110);
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 10px 28px -10px rgba(0, 0, 0, 0.7);
+    animation: pop-in 120ms var(--ease) backwards;
+  }
+  /* Each entry: a quiet LCD row, dim at rest, brightening to the screen-fg on hover/focus — the
+     LCD's „this one acts" idiom, the same language as the trigger. No icons. */
+  .mitem {
+    appearance: none;
+    cursor: pointer;
+    border: 0;
+    background: none;
+    text-align: left;
+    padding: 8px 11px;
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: 13px;
+    letter-spacing: 0.01em;
+    color: #b8b4ad;
+    white-space: nowrap;
+    transition:
+      color var(--dur) var(--ease),
+      background var(--dur) var(--ease);
+  }
+  .mitem:hover,
+  .mitem:focus-visible {
+    color: var(--screen-fg);
+    background: rgba(255, 255, 255, 0.05);
+    outline: none;
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 </style>
