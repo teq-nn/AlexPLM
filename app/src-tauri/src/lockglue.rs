@@ -233,6 +233,52 @@ fn set_read_only_bit(root: &Path, rel_path: &str, read_only: bool) -> std::io::R
     std::fs::set_permissions(&abs, perms)
 }
 
+/// Whether a file currently rests **writable** on disk — the on-disk "this is mine" bit. A missing
+/// file (e.g. a deletion) reads as not-writable. Pure plumbing over `std::fs`.
+fn is_writable_on_disk(root: &Path, rel: &str) -> bool {
+    std::fs::metadata(root.join(rel))
+        .map(|m| !m.permissions().readonly())
+        .unwrap_or(false)
+}
+
+/// Of the given product-relative paths, those that are lockable and currently rest **writable** on
+/// disk — the pre-publish "this is mine" signal the Status Reader greys (Issue #104).
+///
+/// Before a product is published there is no server to hold a `git lfs lock` against, so a lockable
+/// file the sole local author is editing is invisible to `git lfs locks`; its writable bit is then
+/// the only truth that it is in progress. **Empty once published:** there the real `git lfs locks`
+/// state drives the LED and a free binary legitimately rests read-only, so the on-disk bit is never
+/// consulted. Empty on any git hiccup (degrades to "nothing in progress", never an error).
+pub fn writable_lockable_paths(root: &Path, paths: &[String]) -> std::io::Result<Vec<String>> {
+    if crate::setup::is_published(root) {
+        return Ok(Vec::new());
+    }
+    Ok(paths
+        .iter()
+        .filter(|p| is_lockable(p) && is_writable_on_disk(root, p))
+        .cloned()
+        .collect())
+}
+
+/// Pre-publish, give the sole local author back the write bit on every lockable file (Issue #104).
+///
+/// git-lfs marks a `lockable` file **read-only** on checkout until a lock is held — but before the
+/// product is published there is no server to hold a lock against, so the author is left with files
+/// KiCad/CAD can only open read-only and no lock to explain why ("read-only = free" only means
+/// something once the product is shared). Until publish there is no one to coordinate with, so every
+/// lockable file rests **writable** ("all mine"); the read-only rhythm begins at publish, driven
+/// then by the real server lock. **No-op once published** — there the server lock owns the bit.
+/// Best-effort per file (a permission flip that fails must never break opening a product).
+pub fn ensure_local_writable(root: &Path) -> std::io::Result<()> {
+    if crate::setup::is_published(root) {
+        return Ok(());
+    }
+    for rel in crate::werkbank::list_tracked_files(root)? {
+        let _ = set_writable(root, &rel); // set_writable no-ops on non-lockable / missing paths
+    }
+    Ok(())
+}
+
 /// At a checkpoint, **auto-unlock every held-by-me lock whose path is locally clean** (E31/E35
 /// self-healing, Issue #42). Reuses the pure [`crate::warden::decide`] for each held lock — the
 /// lock policy is decided in exactly one place, never duplicated here. For each of *our* locks

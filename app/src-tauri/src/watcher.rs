@@ -181,6 +181,14 @@ fn run_loop<S, L>(
         if let Decision::Settle { path } = deb.poll(SystemTime::now()) {
             // One settled burst -> at most one local commit -> at most one new Stand.
             if let Ok(Some(stand)) = commit_all(root, &path, SystemTime::now()) {
+                // The commit just turned freshly-saved lockable files into LFS objects; git-lfs then
+                // rests any lockable-but-unlocked file read-only. Pre-publish we hold no *server*
+                // lock, so re-assert the write bit for every path we auto-locked this session — the
+                // sole local author must keep editing the file they just saved (Issue #104). A no-op
+                // once a real server lock already keeps the file writable for us.
+                for p in &locked {
+                    let _ = crate::lockglue::set_writable(root, p);
+                }
                 on_stand(stand);
             }
         }
