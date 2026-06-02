@@ -10,11 +10,10 @@
 
 use crate::baustein::Baustein;
 use crate::bibliothek::Bibliothek;
+use crate::plmstore::PlmDocument;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// `_plm`-Verzeichnis (committet, geteilt — ADR 0002). `projection.rs` überspringt es.
-pub const PLM_DIR: &str = "_plm";
 /// Datei für den Produkt-Stack innerhalb von `_plm/`.
 pub const STACK_FILE: &str = "stack.json";
 
@@ -59,25 +58,18 @@ pub struct ProduktStack {
     pub bausteine: Vec<StackBaustein>,
 }
 
-/// Pfad von `_plm/stack.json` für ein Produkt `root`.
-fn stack_path(root: &Path) -> PathBuf {
-    root.join(PLM_DIR).join(STACK_FILE)
-}
+/// Das `_plm/stack.json`-Dokument — Pfad, Degradation und pretty/atomares Schreiben liegen in der
+/// tiefen [`PlmDocument`]-Schicht; hier liegt nur die Stack-Domänenlogik darüber.
+const STACK: PlmDocument<ProduktStack> = PlmDocument::new(STACK_FILE);
 
 /// Den Produkt-Stack lesen. Fehlende/leere/korrupte Datei ⇒ **leerer Stack**, nie Fehler.
 pub fn read_stack(root: &Path) -> ProduktStack {
-    let raw = std::fs::read_to_string(stack_path(root)).unwrap_or_default();
-    if raw.trim().is_empty() {
-        return ProduktStack::default();
-    }
-    serde_json::from_str(&raw).unwrap_or_default()
+    STACK.read(root)
 }
 
-/// Den Produkt-Stack pretty-printed nach `_plm/stack.json` schreiben (legt `_plm/` an).
+/// Den Produkt-Stack pretty-printed nach `_plm/stack.json` schreiben (legt `_plm/` an, atomar).
 pub fn write_stack(root: &Path, stack: &ProduktStack) -> std::io::Result<()> {
-    std::fs::create_dir_all(root.join(PLM_DIR))?;
-    let json = serde_json::to_string_pretty(stack).map_err(std::io::Error::other)?;
-    std::fs::write(stack_path(root), json)
+    STACK.write(root, stack)
 }
 
 /// Einen Produkt-Stack aus gewählten Bibliotheks-Bausteinen als **Vollkopie** in das Produkt
@@ -155,6 +147,7 @@ pub fn stilllegen_baustein(root: &Path, id: &str, stillgelegt: bool) -> std::io:
 mod tests {
     use super::*;
     use crate::baustein::{Baustein, Oeffnen, Toolstack};
+    use std::path::PathBuf;
 
     fn baustein(id: &str, version: u32, heimat: &str) -> Baustein {
         Baustein {
@@ -197,8 +190,8 @@ mod tests {
     #[test]
     fn corrupt_stack_degrades_to_empty() {
         let dir = tmp();
-        std::fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
-        std::fs::write(stack_path(&dir), "{ not json ]").unwrap();
+        std::fs::create_dir_all(STACK.path(&dir).parent().unwrap()).unwrap();
+        std::fs::write(STACK.path(&dir), "{ not json ]").unwrap();
         assert!(read_stack(&dir).bausteine.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

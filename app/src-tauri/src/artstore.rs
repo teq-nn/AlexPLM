@@ -11,35 +11,27 @@
 //! tag with no recorded Art is simply the default **Prototyp** (lax — E42), never an error.
 
 use crate::graph::RevisionArt;
+use crate::plmstore::PlmDocument;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// The tool's committed, shared store directory (ADR 0002). `projection.rs` skips it by name.
-pub const PLM_DIR: &str = "_plm";
 /// File that holds the per-tag Revision-Art map, inside `_plm/` (ADR 0002).
 pub const ART_FILE: &str = "revisionen.json";
 
-/// Absolute path of the `_plm/revisionen.json` Art store for a product `root`.
-fn art_path(root: &Path) -> PathBuf {
-    root.join(PLM_DIR).join(ART_FILE)
-}
+/// The `_plm/revisionen.json` document: a version-label → Art-token map. A `BTreeMap` keeps the
+/// keys ordered so the file stays stable and diffable. Path, degradation and pretty/atomic write
+/// live in the deep [`PlmDocument`] layer; this store is the per-tag Art domain over it.
+const ART: PlmDocument<BTreeMap<String, String>> = PlmDocument::new(ART_FILE);
 
 /// Read the whole version-label -> Art-token map. A missing/empty/corrupt file means an
 /// empty map (every tag then reads as the default Prototyp) — never an error.
 fn read_map(root: &Path) -> BTreeMap<String, String> {
-    let raw = std::fs::read_to_string(art_path(root)).unwrap_or_default();
-    if raw.trim().is_empty() {
-        return BTreeMap::new();
-    }
-    serde_json::from_str(&raw).unwrap_or_default()
+    ART.read(root)
 }
 
-/// Persist the map, pretty-printed for an honest, diffable on-disk record (BTreeMap keeps the
-/// keys ordered so the file stays stable across writes).
+/// Persist the map (pretty + atomic, creating `_plm/` as needed).
 fn write_map(root: &Path, map: &BTreeMap<String, String>) -> std::io::Result<()> {
-    std::fs::create_dir_all(root.join(PLM_DIR))?;
-    let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-    std::fs::write(art_path(root), json)
+    ART.write(root, map)
 }
 
 /// The recorded [`RevisionArt`] for a version label. A tag with no recorded Art is the
@@ -63,6 +55,7 @@ pub fn set_art(root: &Path, version: &str, art: RevisionArt) -> std::io::Result<
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
 
     fn tmp() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -105,8 +98,8 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_prototyp() {
         let dir = tmp();
-        fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
-        fs::write(art_path(&dir), "{ not json ]").unwrap();
+        fs::create_dir_all(ART.path(&dir).parent().unwrap()).unwrap();
+        fs::write(ART.path(&dir), "{ not json ]").unwrap();
         assert_eq!(read_art(&dir, "v1.0"), RevisionArt::Prototyp);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -116,7 +109,7 @@ mod tests {
         let dir = tmp();
         set_art(&dir, "v1.0", RevisionArt::Freigabe).unwrap();
         assert!(
-            dir.join(PLM_DIR).join(ART_FILE).is_file(),
+            ART.path(&dir).is_file(),
             "revision art lives in _plm/revisionen.json"
         );
         let _ = fs::remove_dir_all(&dir);
