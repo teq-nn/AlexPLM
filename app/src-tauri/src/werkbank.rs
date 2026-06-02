@@ -352,8 +352,23 @@ pub fn read_git_states(
     Ok(states)
 }
 
-/// Die erfassten Dateien des Produkts, produkt-relativ mit Vorwärts-Slashes. Das committete
-/// `_plm/`-Werkzeugverzeichnis (ADR 0002) wird ausgeklammert — es ist Tool-Buchhaltung, kein
+/// Werkbank-**eigene** Werkzeug-Dateien, die nie ein Produkt-Artefakt sind und darum gar nicht
+/// erst auf der Werkbank erscheinen (Issue #107 — sonst landen sie als Waisen im
+/// „Unzugeordnet"-Fach der Produktwurzel, wo sie nur Lärm sind und sich nicht zuordnen lassen):
+/// das committete `_plm/`-Werkzeugverzeichnis (ADR 0002), die vom Import/Onboarding gepflegte
+/// `.gitattributes` (LFS-Lockable-Marker, #48/#63) und die **Alt**-Kantendatei `.plm-kanten.json`.
+/// Produkt-relativ, Vorwärts-Slashes. Rein und total — als Tabelle getestet.
+fn ist_werkzeug_datei(rel: &str) -> bool {
+    let plm = crate::stackstore::PLM_DIR;
+    rel == plm
+        || rel.starts_with(&format!("{plm}/"))
+        || rel == ".gitattributes"
+        || rel.ends_with("/.gitattributes")
+        || rel == crate::edgestore::LEGACY_EDGES_FILE
+}
+
+/// Die erfassten Dateien des Produkts, produkt-relativ mit Vorwärts-Slashes. Werkbank-eigene
+/// Werkzeug-Dateien ([`ist_werkzeug_datei`]) werden ausgeklammert — Tool-Buchhaltung, kein
 /// Artefakt. Ein Ordner ohne git oder ohne erfasste Dateien liefert eine leere Liste (nie Fehler).
 pub fn list_tracked_files(root: &Path) -> std::io::Result<Vec<String>> {
     let out = crate::gitrunner::command(root)
@@ -369,7 +384,7 @@ pub fn list_tracked_files(root: &Path) -> std::io::Result<Vec<String>> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.replace('\\', "/"))
-        .filter(|s| s.as_str() != crate::stackstore::PLM_DIR && !s.starts_with(&format!("{}/", crate::stackstore::PLM_DIR)))
+        .filter(|s| !ist_werkzeug_datei(s))
         .collect();
     files.sort();
     files.dedup();
@@ -404,6 +419,35 @@ mod tests {
 
     fn root() -> &'static Path {
         Path::new("/produkt")
+    }
+
+    #[test]
+    fn werkzeug_dateien_werden_als_eigene_erkannt() {
+        // Werkbank-eigene Buchhaltung (Issue #107): nie ein Artefakt, also ausgeklammert.
+        for eigen in [
+            "_plm",
+            "_plm/stack.json",
+            "_plm/kanten.json",
+            ".gitattributes",
+            "unterordner/.gitattributes",
+            ".plm-kanten.json",
+        ] {
+            assert!(ist_werkzeug_datei(eigen), "{eigen} sollte Werkzeug-Datei sein");
+        }
+    }
+
+    #[test]
+    fn echte_dateien_sind_keine_werkzeug_dateien() {
+        // Produkt-Dateien (auch andere Dotfiles wie .gitignore) bleiben erhalten.
+        for echt in [
+            "README.md",
+            "elektronik/regler/regler.kicad_pro",
+            ".gitignore",
+            "_plminfo.txt", // kein _plm/-Verzeichnis, nur Präfix-Ähnlichkeit
+            "doku/.gitattributes.bak",
+        ] {
+            assert!(!ist_werkzeug_datei(echt), "{echt} sollte keine Werkzeug-Datei sein");
+        }
     }
 
     #[test]
