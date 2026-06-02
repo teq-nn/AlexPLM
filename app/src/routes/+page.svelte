@@ -3,7 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import type {
     Baustein,
     EdgeView,
@@ -811,6 +811,15 @@
     unlisten?.();
     unlistenLock?.();
     void invoke("stop_watching").catch(() => {});
+  });
+
+  // Dismiss the boot splash (Issue #114): the static #boot overlay in app.html covered the
+  // otherwise-black WebView while the bundle + hydration arrived. Now that the app is mounted,
+  // mark the body so the splash fades out over its surface — no hard color jump, since both it
+  // and the chassis sit on --surface-base. The node is left in the DOM (faded, pointer-events
+  // none); removing it isn't worth a layout pass on a one-time boot frame.
+  onMount(() => {
+    document.body.classList.add("booted");
   });
 
   async function openProduct() {

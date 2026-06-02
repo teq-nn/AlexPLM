@@ -57,7 +57,10 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: var(--screen-bg);
+  /* Warm chassis, not the dark LCD: the body is the backdrop the .app chassis sits on, and it
+     must match the boot splash (app.html) so the first paint → mounted UI has no color jump
+     (Issue #114). --screen-bg stays reserved for the recessed instrument LCD zones. */
+  background: var(--surface-base);
 }
 
 body {
