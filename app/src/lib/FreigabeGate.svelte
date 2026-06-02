@@ -496,10 +496,13 @@
     background: var(--surface-sunken);
   }
   /* The calm „Taggen" key — the clean path. A dark seated key, never orange. */
+  /* „Taggen" collapses to … while busy; reserve width so the calm key holds steady. */
   .key.solid {
     background: var(--key-dark);
     color: var(--screen-fg);
     border-color: #000;
+    min-width: 92px;
+    text-align: center;
   }
   .key.solid:hover:not(:disabled) {
     background: #2a2724;

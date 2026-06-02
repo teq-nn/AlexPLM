@@ -1140,6 +1140,9 @@
     {product}
     activeRevision={graph?.active_revision ?? null}
     activeRevisionArt={graph?.active_revision_art ?? null}
+    {room}
+    onSetRoom={(r) => (room = r)}
+    onOpenSettings={() => (kontoOpen = true)}
   />
 
   <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
@@ -1179,31 +1182,9 @@
       disabled={loading !== null}
     />
 
-    {#if product}
-      <!-- Raum-Schalter (Issue #55, E45): Werkbank (Jetzt) und Graph-Raum (Verlauf) sind zwei
-           gleichwertige, getrennte Räume. Ein seated „Instrument-Schalter": die aktive Seite ist
-           eingedrückt + lit. Der Graph ist kein Startbildschirm — man sucht ihn hier auf. -->
-      <div class="roomswitch" role="group" aria-label="Raum">
-        <button
-          type="button"
-          class="rs-key"
-          class:on={room === "werkbank"}
-          aria-pressed={room === "werkbank"}
-          onclick={() => (room = "werkbank")}
-        >
-          <span class="label">Werkbank</span>
-        </button>
-        <button
-          type="button"
-          class="rs-key"
-          class:on={room === "graph"}
-          aria-pressed={room === "graph"}
-          onclick={() => (room = "graph")}
-        >
-          <span class="label">Verlauf · Graph</span>
-        </button>
-      </div>
-    {/if}
+    <!-- Raum-Schalter (Issue #55, E45): Werkbank (Jetzt) und Verlauf · Graph sind zwei
+         gleichwertige Räume. Der Umschalter lebt jetzt als „Ansicht:"-Text-Toggle im LCD oben
+         rechts (siehe VersionBar) — dieselbe text-only Instrument-Sprache wie der Bildschirm. -->
 
     <!-- Produktübergreifende Suche: an app-level instrument, reachable independent of an open
          product (the registry spans products). Quiet ghost key — it only reads. -->
@@ -1215,67 +1196,6 @@
       <span class="label">Suche über Produkte</span>
     </button>
 
-    <!-- Problem melden (Issue #85): ein Issue aus der laufenden App ins Repo des offenen Produkts.
-         Nur sichtbar mit offenem Produkt — der Bericht braucht ein Ziel-Repository. Teilt die
-         ruhige Geste der Zahnrad-/Suche-Knöpfe; kein orange-gerahmter lauter Moment. -->
-    {#if productPath}
-      <button
-        class="gear"
-        class:on={meldeOpen}
-        aria-pressed={meldeOpen}
-        title="Problem melden: Rückmeldung als Issue ins Produkt-Repository"
-        onclick={() => (meldeOpen = true)}
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
-          <path
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linejoin="round"
-            stroke-linecap="round"
-            d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H9.5L5.5 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5Z"
-          />
-        </svg>
-        <span class="label gr-text">Problem melden</span>
-      </button>
-    {/if}
-
-    <!-- Einstellungen · Konto (ADR 0004, Issue #90): a gear in the app-level entry bar, always
-         reachable — even with no product open. Opens the global Konto panel (one app-wide server
-         identity). It does not gate daily work; the Konto is only needed in the Teilen-Moment. -->
-    <button
-      class="gear"
-      class:on={kontoOpen}
-      aria-pressed={kontoOpen}
-      title="Einstellungen · Konto: Server-Identität einrichten & prüfen"
-      onclick={() => (kontoOpen = true)}
-    >
-      <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
-        <path
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.6"
-          stroke-linejoin="round"
-          d="M12 8.4a3.6 3.6 0 1 0 0 7.2 3.6 3.6 0 0 0 0-7.2Zm8.2 3.6a8 8 0 0 0-.07-1.05l1.86-1.45-1.8-3.12-2.2.88a8 8 0 0 0-1.82-1.05l-.33-2.34h-3.6l-.33 2.34a8 8 0 0 0-1.82 1.05l-2.2-.88-1.8 3.12 1.86 1.45A8 8 0 0 0 3.8 12c0 .35.03.7.07 1.05L2 14.5l1.8 3.12 2.2-.88a8 8 0 0 0 1.82 1.05l.33 2.34h3.6l.33-2.34a8 8 0 0 0 1.82-1.05l2.2.88 1.8-3.12-1.86-1.45c.04-.35.07-.7.07-1.05Z"
-        />
-      </svg>
-      <span class="label gr-text">Einstellungen</span>
-    </button>
-
-    <!-- Diagnose toggle (Issue #71, ex-#54-Folge): moved OUT of the productive work toolbar to
-         this unobtrusive corner of the app-level entry bar. A tiny recessed instrument lamp —
-         no text, just an LED — that opens the git/sync log so a silent push can be inspected.
-         Stays out of the daily rhythm; the work actions are reserved for real features. -->
-    <button
-      class="diagnose-lamp"
-      class:on={diagnoseOpen}
-      aria-pressed={diagnoseOpen}
-      title="Diagnose: Sync- & Sicherungs-Protokoll ein-/ausblenden"
-      onclick={() => (diagnoseOpen = !diagnoseOpen)}
-    >
-      <span class="dot" class:fresh={diagnoseOpen}></span>
-      <span class="label dl-text">Diagnose</span>
-    </button>
   </div>
 
   <div class="stage">
@@ -1620,9 +1540,50 @@
   </div>
 
   <!-- Fussleiste (Issue #105): a thin app-level footer, seated under the work chassis. Home for
-       quiet app-wide meta — currently the Werkbank-Version, right-aligned. Takes its own row, so
-       nothing overlaps the work area. New small status/meta items belong here. -->
+       quiet app-wide meta + utility controls. Takes its own row, so nothing overlaps the work
+       area. Left: the unobtrusive utility lamps (Diagnose, Problem melden). Right: the Werkbank-
+       Version. New small status/meta items belong here. -->
   <footer class="appfoot">
+    <div class="foot-tools">
+      <!-- Diagnose toggle (Issue #71, ex-#54-Folge): a tiny recessed instrument lamp — an LED
+           whose mono caption reveals on hover — that opens the git/sync log so a silent push can
+           be inspected. Now seated in the Fussleiste, out of the daily work rhythm. -->
+      <button
+        class="diagnose-lamp"
+        class:on={diagnoseOpen}
+        aria-pressed={diagnoseOpen}
+        title="Diagnose: Sync- & Sicherungs-Protokoll ein-/ausblenden"
+        onclick={() => (diagnoseOpen = !diagnoseOpen)}
+      >
+        <span class="dot" class:fresh={diagnoseOpen}></span>
+        <span class="label dl-text">Diagnose</span>
+      </button>
+
+      <!-- Problem melden (Issue #85): ein Issue aus der laufenden App ins Repo des offenen
+           Produkts. Nur mit offenem Produkt — der Bericht braucht ein Ziel-Repository. Now in the
+           Fussleiste alongside Diagnose; teilt die ruhige Geste, kein lauter Moment. -->
+      {#if productPath}
+        <button
+          class="gear"
+          class:on={meldeOpen}
+          aria-pressed={meldeOpen}
+          title="Problem melden: Rückmeldung als Issue ins Produkt-Repository"
+          onclick={() => (meldeOpen = true)}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linejoin="round"
+              stroke-linecap="round"
+              d="M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H9.5L5.5 20v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5Z"
+            />
+          </svg>
+          <span class="label gr-text">Problem melden</span>
+        </button>
+      {/if}
+    </div>
     <Versionsschild />
   </footer>
 </div>
@@ -1718,11 +1679,18 @@
     flex: none;
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: 12px;
     padding: 4px 16px;
     background: var(--surface-raised);
     border-top: 1px solid var(--hairline);
+  }
+  /* Left cluster of the Fussleiste: the quiet utility lamps (Diagnose, Problem melden), held
+     together so the Werkbank-Version can sit alone at the right edge. */
+  .foot-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   /* The app-level entry bar: product entry points sit here, above the work chassis, so the
@@ -1867,50 +1835,6 @@
     color: var(--ink-strong);
   }
 
-  /* Raum-Schalter (Issue #55): a seated two-position instrument switch. The two rooms are equal;
-     the active one is pressed-in (sunken) and lit, the other a calm raised key. Strictly grey —
-     routine navigation, never the orange exception. Centred between the entry keys and search. */
-  .roomswitch {
-    display: inline-flex;
-    flex: none;
-    margin: 0 auto;
-    padding: 3px;
-    gap: 3px;
-    border-radius: var(--radius);
-    background: var(--surface-sunken);
-    box-shadow: inset 0 1px 2px rgba(28, 26, 25, 0.14);
-  }
-  .rs-key {
-    appearance: none;
-    cursor: pointer;
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--ink-muted);
-    padding: 6px 14px;
-    transition:
-      background var(--dur) var(--ease),
-      color var(--dur) var(--ease),
-      box-shadow var(--dur) var(--ease);
-  }
-  .rs-key .label {
-    color: inherit;
-  }
-  .rs-key:hover:not(.on) {
-    color: var(--ink-default);
-  }
-  .rs-key.on {
-    background: var(--surface-raised);
-    color: var(--ink-strong);
-    border-color: var(--hairline);
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.6) inset,
-      0 1px 2px rgba(28, 26, 25, 0.12);
-  }
-  .rs-key:focus-visible {
-    outline: none;
-    border-color: var(--ink-muted);
-  }
   .entry-actions {
     display: flex;
     align-items: center;

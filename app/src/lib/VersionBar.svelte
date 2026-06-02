@@ -5,10 +5,19 @@
     product,
     activeRevision = null,
     activeRevisionArt = null,
+    room,
+    onSetRoom,
+    onOpenSettings,
   }: {
     product: ProductView | null;
     activeRevision?: string | null;
     activeRevisionArt?: RevisionArt | null;
+    /** Which room is shown — drives the lit state of the „Ansicht"-Umschalter. */
+    room: "werkbank" | "graph";
+    /** Switch rooms from the „Ansicht"-Ecke (Werkbank ↔ Verlauf · Graph). */
+    onSetRoom: (room: "werkbank" | "graph") => void;
+    /** Open the Einstellungen · Konto panel — the gear text lives in the „Ansicht"-Ecke. */
+    onOpenSettings: () => void;
   } = $props();
 
   // The version bar's largest, brightest element is the active Revision (E28/§24):
@@ -61,8 +70,37 @@
         >
         <span class="count-label">Bausteine</span>
         <span class="divider"></span>
+        <!-- „Ansicht"-Umschalter (Issue #55, E45): the dead „Ansicht" caption is now a single live
+             toggle. „Ansicht:" labels it; the lit word is the room you are in (Werkbank · Jetzt,
+             oder Verlauf · Graph — the history one sucht auf). One click flips to the other room —
+             with only two rooms a toggle, not a list. Text-only, the same instrument language as
+             the screen. Only with a product open — without one there is no room to switch. -->
+        <button
+          type="button"
+          class="set viewcycle"
+          aria-label="Ansicht wechseln"
+          title={room === "werkbank"
+            ? "Ansicht: Werkbank · Jetzt — klicken für Verlauf · Graph"
+            : "Ansicht: Verlauf · Graph — klicken für Werkbank · Jetzt"}
+          onclick={() => onSetRoom(room === "werkbank" ? "graph" : "werkbank")}
+        >
+          <span class="vc-cap">Ansicht:</span>
+          <span class="vc-cur">{room === "werkbank" ? "Werkbank" : "Verlauf"}</span>
+        </button>
+        <span class="divider"></span>
       {/if}
-      <span class="view">Ansicht</span>
+      <!-- Einstellungen · Konto (ADR 0004, Issue #90): moved out of the entry bar into the
+           „Ansicht"-Ecke des LCD. A quiet caps text in the same instrument language as „Ansicht",
+           always reachable (the right cluster shows even without an open product). Brightens to
+           the screen-fg on hover to signal it acts; deliberately no icon. -->
+      <button
+        type="button"
+        class="set view"
+        title="Einstellungen · Konto: Server-Identität einrichten & prüfen"
+        onclick={onOpenSettings}
+      >
+        Einstellungen
+      </button>
     </div>
   </div>
 </header>
@@ -221,5 +259,51 @@
   }
   .view {
     color: #6b6660;
+  }
+  /* Einstellungen lives as a text twin of „Ansicht": same caps label (inherited from the
+     parent .right.label), same resting colour. It is a button, so reset the chrome and let it
+     brighten + glow on hover/focus — the LCD's way of saying „this one acts". No icon. */
+  .set {
+    appearance: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: none;
+    font: inherit;
+    text-transform: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+    transition:
+      color var(--dur) var(--ease),
+      text-shadow var(--dur) var(--ease);
+  }
+  .set:hover,
+  .set:focus-visible {
+    color: var(--screen-fg);
+    text-shadow: 0 0 8px rgba(232, 230, 225, 0.22);
+    outline: none;
+  }
+
+  /* „Ansicht"-Umschalter: one .set button holding the dim „Ansicht:" caption and, lit, the room
+     you are in. Tighter inner gap so the two read as one labelled control; clicking flips rooms. */
+  .viewcycle {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  /* „Ansicht:" — the dim caption, like the old static label. */
+  .vc-cap {
+    color: #6b6660;
+  }
+  /* The current room — lit with the LCD glow, the screen showing which view you are in. */
+  .vc-cur {
+    color: var(--screen-fg);
+    text-shadow: 0 0 8px rgba(232, 230, 225, 0.22);
+  }
+  /* On hover the whole control warms so it reads as one clickable unit (the .set:hover colour
+     only reaches the caption otherwise, since .vc-cur sets its own colour). */
+  .viewcycle:hover .vc-cap,
+  .viewcycle:focus-visible .vc-cap {
+    color: #b8b4ad;
   }
 </style>

@@ -9,7 +9,16 @@
          hydration arrive, so the first frame is the warm chassis surface instead of a black
          void. No JS bundle, no spinner — just a quiet "die Werkbank fährt hoch". Tokens are
          inlined here (verbatim from tokens.css) because this paints before tokens.css loads.
-         #page.svelte fades it out on mount via the .booted class. -->
+         #page.svelte fades it out on mount via the .booted class.
+
+         IMPLEMENTED AS body::before, NOT a DOM node: a real #boot element placed as a sibling
+         inside the body ahead of the SvelteKit mount point breaks Svelte 5's hydration — its
+         root walker steps onto the unexpected sibling and throws next_sibling_getter.call(undefined),
+         the app never mounts, and the splash hangs forever. A pseudo-element is not in the hydration
+         tree, so it paints just as early but the walker never sees it.
+         NB: never write the sveltekit body/head placeholder tokens in this comment — the template
+         engine substitutes the first match anywhere in the file, so a token here would hijack the
+         real bootstrap script and bury it inside this comment (browser never runs it). -->
     <style>
       html,
       body {
@@ -17,7 +26,8 @@
         height: 100%;
         background: #e4e2dc; /* --surface-base */
       }
-      #boot {
+      body::before {
+        content: "Werkbank fährt hoch";
         position: fixed;
         inset: 0;
         z-index: 9999;
@@ -25,15 +35,6 @@
         align-items: center;
         justify-content: center;
         background: #e4e2dc; /* --surface-base */
-        /* faded out by the mounted app; until then it covers the blank WebView */
-        opacity: 1;
-        transition: opacity 240ms cubic-bezier(0.32, 0.72, 0.3, 1);
-      }
-      body.booted #boot {
-        opacity: 0;
-        pointer-events: none;
-      }
-      #boot .hint {
         font-family: "Archivo", system-ui, sans-serif;
         text-transform: uppercase;
         letter-spacing: 0.04em;
@@ -41,9 +42,16 @@
         font-weight: 600;
         line-height: 1.2;
         color: #6b6864; /* --ink-muted */
+        /* faded out by the mounted app; until then it covers the blank WebView */
+        opacity: 1;
+        transition: opacity 240ms cubic-bezier(0.32, 0.72, 0.3, 1);
+      }
+      body.booted::before {
+        opacity: 0;
+        pointer-events: none;
       }
       @media (prefers-reduced-motion: reduce) {
-        #boot {
+        body::before {
           transition: none;
         }
       }
@@ -51,9 +59,6 @@
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
-    <!-- Sibling of the SvelteKit body — Svelte never owns or rehydrates this node, so it stays
-         on screen through hydration and is removed once the app has mounted. -->
-    <div id="boot" aria-hidden="true"><span class="hint">Werkbank fährt hoch</span></div>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>
