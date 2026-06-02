@@ -37,6 +37,25 @@ export function emptyBaustein(): BausteinVoll {
   };
 }
 
+/** Ein Anlege-Entwurf aus einem bestehenden Baustein (Duplizieren, Slice 4 / Handoff §1.6). Läuft über
+ *  DENSELBEN Anlege-Pfad wie „Neuer Baustein": `name` bekommt „ (Kopie)", die `id` wird aus dem neuen
+ *  Namen neu abgeleitet (Kebab) — im Anlege-Modus prüft der Editor sie ohnehin auf Eindeutigkeit —,
+ *  `version`=1 und `stillgelegt`=false; ALLES ANDERE wird wortwörtlich übernommen, inkl. der
+ *  strukturierten Felder (startaufgaben, default_kanten, paar_default_kanten, globs …).
+ *  Der $state-Proxy wird via $state.snapshot tief geklont, bevor structuredClone greift. */
+export function duplicateDraft(b: Baustein): BausteinVoll {
+  const copy = structuredClone($state.snapshot(b)) as Baustein;
+  const name = `${b.name} (Kopie)`;
+  return {
+    ...emptyBaustein(),
+    ...copy,
+    name,
+    id: toKebab(name),
+    version: 1,
+    stillgelegt: false,
+  };
+}
+
 export type FieldErrors = Partial<
   Record<"name" | "id" | "heimat" | "globs" | "default_kanten" | "paar_default_kanten", string>
 >;

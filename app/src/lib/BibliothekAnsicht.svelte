@@ -10,7 +10,7 @@
   import { cmd } from "$lib/commands";
   import type { Baustein } from "$lib/types";
   import BausteinEditor from "$lib/bibliothek/BausteinEditor.svelte";
-  import { emptyBaustein } from "$lib/bibliothek/validate";
+  import { emptyBaustein, duplicateDraft } from "$lib/bibliothek/validate";
 
   let {
     onClose,
@@ -58,6 +58,15 @@
   function createBaustein() {
     creating = true;
     editing = emptyBaustein();
+  }
+
+  // Slice 4 (Duplizieren): eine Karten-Aktion öffnet DENSELBEN Anlege-Pfad, aber vorgefüllt aus dem
+  // bestehenden Baustein — `name` + „ (Kopie)", `id` neu abgeleitet, `version`=1, `stillgelegt`=false,
+  // alles andere wortwörtlich kopiert (duplicateDraft). Es ist exakt der Anlege-Schreibpfad
+  // (creating=true ⇒ isCreate=true), KEIN neues Kommando.
+  function duplicateBaustein(b: Baustein) {
+    creating = true;
+    editing = duplicateDraft(b);
   }
 
   // Speichern (Slice 2 + 3): Upsert über cmd.saveBausteinCmd. `isCreate` trägt die Absicht zum
@@ -118,43 +127,50 @@
         </button>
 
         {#each bausteine as b (b.id)}
-          <!-- Karte spiegelt den Werkbank-Karten-Look. Klickbar (Slice 2 verdrahtet Bearbeiten). -->
-          <button
-            class="card"
-            class:retired={b.stillgelegt}
-            onclick={() => openBaustein(b)}
-          >
-            <div class="ctop">
-              <span class="cname">{b.name}</span>
-            </div>
-            <span class="cid mono"
-              >{b.id}{#if b.stillgelegt} · stillgelegt{/if}</span
+          <!-- Karte spiegelt den Werkbank-Karten-Look. Primärklick öffnet Bearbeiten (Slice 2); die
+               „Duplizieren"-Aktion in der Ecke öffnet den Anlege-Pfad vorgefüllt (Slice 4). Beide als
+               eigene Buttons in einem Wrapper — verschachtelte Buttons sind ungültiges HTML. -->
+          <div class="cardwrap" class:retired={b.stillgelegt}>
+            <button class="card" onclick={() => openBaustein(b)}>
+              <div class="ctop">
+                <span class="cname">{b.name}</span>
+              </div>
+              <span class="cid mono"
+                >{b.id}{#if b.stillgelegt} · stillgelegt{/if}</span
+              >
+
+              <div class="cstats">
+                <span class="stat"
+                  ><span class="sval mono">{b.heimat}</span
+                  ><span class="slab label">Heimat</span></span
+                >
+                <span class="stat"
+                  ><span class="sval mono">{b.globs.length}</span
+                  ><span class="slab label">Muster</span></span
+                >
+                <span class="stat"
+                  ><span class="sval mono">{(b.startaufgaben ?? []).length}</span
+                  ><span class="slab label">Aufgaben</span></span
+                >
+              </div>
+
+              <div class="globpeek">
+                {#each b.globs.slice(0, 4) as g (g)}
+                  <span class="gp mono">{g}</span>
+                {/each}
+                {#if b.globs.length > 4}
+                  <span class="gp more mono">+{b.globs.length - 4}</span>
+                {/if}
+              </div>
+            </button>
+            <button
+              class="dup"
+              onclick={() => duplicateBaustein(b)}
+              title="Diesen Baustein als Vorlage für einen neuen kopieren"
             >
-
-            <div class="cstats">
-              <span class="stat"
-                ><span class="sval mono">{b.heimat}</span
-                ><span class="slab label">Heimat</span></span
-              >
-              <span class="stat"
-                ><span class="sval mono">{b.globs.length}</span
-                ><span class="slab label">Muster</span></span
-              >
-              <span class="stat"
-                ><span class="sval mono">{(b.startaufgaben ?? []).length}</span
-                ><span class="slab label">Aufgaben</span></span
-              >
-            </div>
-
-            <div class="globpeek">
-              {#each b.globs.slice(0, 4) as g (g)}
-                <span class="gp mono">{g}</span>
-              {/each}
-              {#if b.globs.length > 4}
-                <span class="gp more mono">+{b.globs.length - 4}</span>
-              {/if}
-            </div>
-          </button>
+              <span class="label">Duplizieren</span>
+            </button>
+          </div>
         {/each}
       </div>
     {/if}
@@ -251,12 +267,25 @@
     gap: 12px;
   }
 
+  /* Wrapper trägt die Karte plus die unaufdringliche „Duplizieren"-Aktion in der Ecke. Verschachtelte
+     Buttons sind ungültiges HTML, daher liegen beide nebeneinander im Wrapper (Aktion absolut gesetzt). */
+  .cardwrap {
+    position: relative;
+    display: flex;
+    min-width: 0;
+  }
+  .cardwrap.retired {
+    opacity: 0.6;
+  }
+
   /* Card mirrors the Werkbank artifact card: raised surface, hairline, seated highlight. As a
-     button it lifts subtly on hover so it reads as clickable, even though Slice 1 is read-only. */
+     button it lifts subtly on hover so it reads as clickable. */
   .card {
     appearance: none;
     cursor: pointer;
     text-align: left;
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -280,8 +309,34 @@
   .card:active {
     transform: translateY(0);
   }
-  .card.retired {
-    opacity: 0.6;
+
+  /* Unaufdringliche Text-Aktion in der oberen Ecke — ruhige Werkstatt-Instrument-Sprache, kein Orange.
+     Erst beim Überfahren der Karte sichtbar, damit der Primärklick (Bearbeiten) die Karte dominiert. */
+  .dup {
+    appearance: none;
+    cursor: pointer;
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    background: transparent;
+    border: 0;
+    padding: 2px 4px;
+    color: var(--ink-muted);
+    opacity: 0;
+    transition:
+      opacity var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+  .cardwrap:hover .dup,
+  .dup:focus-visible {
+    opacity: 1;
+  }
+  .dup:hover {
+    color: var(--ink-strong);
+  }
+  .dup .label {
+    color: inherit;
+    font-size: 9.5px;
   }
 
   .ghostcard {
