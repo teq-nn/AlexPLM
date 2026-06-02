@@ -14,8 +14,9 @@
 //! Plattform-neutral: `std::path` + Vorwärts-Schrägstrich-Anzeige; keine Shell, keine `cd`.
 
 use crate::autocommit::{format_timestamp, machine_message};
-use crate::graph::VersionGraph;
-use crate::graphread::read_graph;
+use crate::graph::{RepoSnapshot, VersionGraph};
+use crate::graphread::{read_graph, read_snapshot};
+use crate::knotenverben::{verb_allowed, KnotenFakten, KnotenVerb};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -35,6 +36,58 @@ pub struct GeoeffneterOrdner {
     pub neu: bool,
 }
 
+/// Die für die Verb-Legalität relevanten Fakten *eines* Knotens, rein aus einem [`RepoSnapshot`]
+/// abgeleitet (kein I/O hier — die Glue liest den Snapshot, diese Funktion entscheidet pure):
+///
+/// - `is_active_tip` = `commit_id` ist die **Spitze der aktiven Linie** (HEAD): der Tip des aktiven
+///   Zweigs (`active_branch`). Bei losgelöstem HEAD oder fehlendem Zweig gibt es keine Spitze → der
+///   Knoten gilt nicht als Spitze (die Verben dürfen dann nicht fälschlich gesperrt werden).
+/// - `offloaded` = sein Inhalt ist ausgelagert (E36) — er steht in der Offload-Liste des Snapshots.
+///
+/// Spiegelbild der JS-Ableitung in `GraphRaum.svelte` (die das Menü filtert); hier ist sie der
+/// *durchgesetzte* Wächter vor der git-Mutation, nicht nur Anzeige.
+fn knoten_fakten(snapshot: &RepoSnapshot, commit_id: &str) -> KnotenFakten {
+    let active_tip = snapshot
+        .active_branch
+        .as_deref()
+        .and_then(|name| snapshot.branches.iter().find(|b| b.name == name))
+        .map(|b| b.tip.as_str());
+    KnotenFakten {
+        is_active_tip: active_tip == Some(commit_id),
+        offloaded: snapshot.offloaded.iter().any(|o| o == commit_id),
+    }
+}
+
+/// **Der Wächter** (E27): bevor ein Verb die Werkbank anfasst, fragt die Glue den reinen Kern
+/// [`crate::knotenverben::verb_allowed`], ob dieses Verb auf diesem Knoten überhaupt erlaubt ist —
+/// genau einmal, an einer Stelle, für alle Aufrufer. Liest den Snapshot (I/O), leitet die
+/// [`KnotenFakten`] rein ab und verweigert mit einer Domänen-Begründung, falls das Verb illegal ist.
+/// So ist die getestete Legalitäts-Regel nicht nur Anzeige, sondern schützt die (teils
+/// unumkehrbare) git-Mutation selbst.
+fn gate(root: &Path, commit_id: &str, verb: KnotenVerb) -> std::io::Result<()> {
+    let fakten = knoten_fakten(&read_snapshot(root)?, commit_id);
+    if verb_allowed(fakten, verb) {
+        return Ok(());
+    }
+    Err(std::io::Error::other(verb_refusal(fakten, verb)))
+}
+
+/// Die Domänen-Begründung, warum ein Verb auf diesem Knoten **nicht** erlaubt ist — pure über die
+/// Fakten, damit sie mit dem Kern zusammenpasst und table-testbar bleibt. Reicht den Grund in der
+/// Sprache des Hauses zurück (kein „git", E43).
+fn verb_refusal(fakten: KnotenFakten, verb: KnotenVerb) -> &'static str {
+    if fakten.offloaded {
+        // E36: nichts zu materialisieren/abzweigen/wiederherstellen.
+        "Der Inhalt dieses Stands ist ausgelagert — es gibt nichts zu öffnen."
+    } else if verb == KnotenVerb::Zurueckwerfen && fakten.is_active_tip {
+        // Man steht schon dort; der destruktive Sprung wäre sinnlos.
+        "Die Werkbank steht bereits auf diesem Stand — es gibt nichts zurückzuwerfen."
+    } else {
+        // Sollte nach der Kern-Regel nicht auftreten; ehrlicher Fallback statt einer Lüge.
+        "Dieses Verb ist auf diesem Stand nicht möglich."
+    }
+}
+
 /// **Als Ordner öffnen** (Default, E27/E3): materialisiert den Stand `commit_id` als *separaten,
 /// schreibgeschützten* Ordner neben dem Produkt — ein `git worktree add --detach`. Die laufende
 /// Arbeit (die Werkbank) bleibt vollständig unberührt: ein Worktree ist ein zweiter Checkout, kein
@@ -51,6 +104,8 @@ pub fn als_ordner_oeffnen(
     if commit_id.is_empty() {
         return Err(std::io::Error::other("Kein Stand gewählt"));
     }
+    // Wächter: nur ein nicht-ausgelagerter Stand lässt sich als Ordner materialisieren (E36).
+    gate(root, commit_id, KnotenVerb::AlsOrdnerOeffnen)?;
 
     let dir_name = ordner_name(label, commit_id);
     let target = worktree_root(root).join(&dir_name);
@@ -109,6 +164,9 @@ pub fn von_hier_abzweigen(
             "Ungültiger Zweig-Name (keine Leerzeichen, ~^:?*[ oder /-Ränder)",
         ));
     }
+    // Wächter: von einem ausgelagerten Stand lässt sich nicht abzweigen — der Zweig bräuchte dessen
+    // Inhalt (E36). Von der aktiven Spitze abzweigen ist dagegen legitim (der Kern erlaubt es).
+    gate(root, commit_id, KnotenVerb::VonHierAbzweigen)?;
 
     // 1) Laufende Arbeit sichern, bevor irgendetwas die Werkbank bewegt (E8): jede offene Änderung
     //    wird als gewöhnlicher Stand committet. Kein `stash`, kein Verstecken — nichts geht verloren.
@@ -138,6 +196,11 @@ pub fn zurueckwerfen(
     if commit_id.is_empty() {
         return Err(std::io::Error::other("Kein Stand gewählt"));
     }
+    // Wächter VOR jeder Mutation: zurückwerfen ist nie auf der aktiven Spitze erlaubt (man steht
+    // schon dort) und nie auf einem ausgelagerten Stand (kein Inhalt) — der destruktive Sprung
+    // bleibt damit auf das beschränkt, was der getestete Kern zulässt. Ohne diesen Wächter liefe
+    // sonst eine sinnlose „Sicherung" der offenen Arbeit, obwohl es nichts zurückzuwerfen gibt.
+    gate(root, commit_id, KnotenVerb::Zurueckwerfen)?;
 
     let timestamp = format_timestamp(now);
 
@@ -309,6 +372,66 @@ mod tests {
 
     // ── Reine Helfer ───────────────────────────────────────────────────────────
 
+    use crate::graph::{BranchFact, RepoSnapshot};
+
+    /// Ein Snapshot mit einer aktiven Linie `main` (Spitze `tip`) und einem ausgelagerten Stand
+    /// `cold`. Nur die Felder, die [`knoten_fakten`] liest, sind belegt; der Rest ist leer.
+    fn snap_with(active_branch: Option<&str>, offloaded: &[&str]) -> RepoSnapshot {
+        RepoSnapshot {
+            commits: vec![],
+            revisions: vec![],
+            offloaded: offloaded.iter().map(|s| s.to_string()).collect(),
+            offloaded_archive: None,
+            published: vec![],
+            branches: vec![BranchFact { name: "main".into(), tip: "tip".into() }],
+            active_branch: active_branch.map(String::from),
+        }
+    }
+
+    #[test]
+    fn knoten_fakten_reads_active_tip_and_offloaded_from_the_snapshot() {
+        let snap = snap_with(Some("main"), &["cold"]);
+        // Der Tip des aktiven Zweigs IST die aktive Spitze.
+        assert_eq!(
+            knoten_fakten(&snap, "tip"),
+            KnotenFakten { is_active_tip: true, offloaded: false }
+        );
+        // Ein ausgelagerter Stand: offloaded, nicht die Spitze.
+        assert_eq!(
+            knoten_fakten(&snap, "cold"),
+            KnotenFakten { is_active_tip: false, offloaded: true }
+        );
+        // Ein gewöhnlicher alter Stand: weder Spitze noch ausgelagert.
+        assert_eq!(
+            knoten_fakten(&snap, "alt"),
+            KnotenFakten { is_active_tip: false, offloaded: false }
+        );
+    }
+
+    #[test]
+    fn knoten_fakten_has_no_active_tip_on_detached_head() {
+        // Losgelöster HEAD / kein passender Zweig => keine Spitze; die Verben werden dann nicht
+        // fälschlich als „du stehst schon dort" gesperrt.
+        assert!(!knoten_fakten(&snap_with(None, &[]), "tip").is_active_tip);
+        assert!(!knoten_fakten(&snap_with(Some("fehlt"), &[]), "tip").is_active_tip);
+    }
+
+    #[test]
+    fn verb_refusal_explains_the_reason_in_house_language() {
+        // Ausgelagert schlägt jeden Verb-Grund — und nennt nie „git" (E43).
+        let off = KnotenFakten { is_active_tip: false, offloaded: true };
+        assert!(verb_refusal(off, KnotenVerb::AlsOrdnerOeffnen).contains("ausgelagert"));
+        // Zurückwerfen auf der Spitze: man steht schon dort.
+        let tip = KnotenFakten { is_active_tip: true, offloaded: false };
+        assert!(verb_refusal(tip, KnotenVerb::Zurueckwerfen).contains("steht bereits"));
+        for msg in [
+            verb_refusal(off, KnotenVerb::AlsOrdnerOeffnen),
+            verb_refusal(tip, KnotenVerb::Zurueckwerfen),
+        ] {
+            assert!(!msg.to_lowercase().contains("git"), "kein git-Jargon: {msg:?}");
+        }
+    }
+
     #[test]
     fn ordner_name_is_filesystem_safe_and_collision_resistant() {
         // table: (label, commit_id) -> erwarteter Ordnername (sicher + Kurz-Id-Suffix).
@@ -463,6 +586,27 @@ mod tests {
         assert!(reach.status.success(), "old Stand still in history");
         // Der frische Graph trägt mehr Knoten als die zwei Ausgangsstände.
         assert!(graph.nodes.len() >= before, "projection reflects the grown history");
+    }
+
+    #[test]
+    fn zurueckwerfen_is_refused_on_the_active_tip_before_any_git_mutation() {
+        // Der Wächter (knotenverben::verb_allowed) ist jetzt verdrahtet: auf der aktiven Spitze
+        // steht man schon — der destruktive Sprung wird verweigert, BEVOR irgendetwas committet
+        // wird (keine sinnlose „Sicherung", kein Zurückwurf-Stand). Genau die Lücke, die der
+        // getestete Kern bisher offen ließ (Regel verifiziert, aber ungenutzt).
+        let (tmp, _old) = two_stand_repo();
+        let root = tmp.path();
+        let tip = head(root); // die aktive Spitze (v2)
+        let before = commit_count(root);
+
+        // Sogar mit offener Arbeit: der Wächter feuert zuerst.
+        write(root, "f.txt", "offen\n");
+        let err = zurueckwerfen(root, &tip, at(1_800_000_000)).unwrap_err();
+
+        assert!(err.to_string().contains("steht bereits"), "Domänen-Begründung: {err}");
+        assert_eq!(commit_count(root), before, "keine Mutation — der Wächter fing es vor git ab");
+        // Die offene Arbeit ist unangetastet liegengeblieben (nicht gesichert, nicht versteckt).
+        assert_eq!(std::fs::read_to_string(root.join("f.txt")).unwrap(), "offen\n");
     }
 
     #[test]
