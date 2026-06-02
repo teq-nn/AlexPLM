@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cmd } from "$lib/commands";
+  import { createStatusPulse } from "$lib/statusPulse.svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -11,7 +12,6 @@
     ImportResult,
     ProductView,
     ArtifactSignal,
-    ForeignLock,
     SetupReport,
     Stand,
     StandEvent,
@@ -19,7 +19,6 @@
     VersionGraph,
     GateVerdict,
     GeoeffneterOrdner,
-    WardenAction,
     SyncOutcome,
     PublishOutcome,
     LoudQuestion,
@@ -100,48 +99,19 @@
   // A plain refusal note when the folder is shared (E38: never poison others' clones).
   let refusal = $state<string | null>(null);
 
-  // Auto-Lock & Status-Signale (Issue #6, E37). Both are *derived purely* by reading git back
-  // (`git lfs locks` + worktree status); nothing is mirrored or cached as a second truth.
-  let signals = $state<Record<string, ArtifactSignal>>({});
-  let foreignLocks = $state<ForeignLock[]>([]);
-  let statusTimer: ReturnType<typeof setInterval> | null = null;
-
-  // The Lock Warden's last decided action (Issue #9, E35), surfaced in the tool's own
-  // vocabulary by the Sicherungsstatus readout — "gesichert" (Sicherungs-Push) / "freigegeben"
-  // (Freigabe-Push) / "Sperre gelöst" (auto-unlock). The safety-critical decision (and the
-  // Binär-Invariante) lives entirely in the Rust core; the UI only reflects what it returns.
-  // `refuse` surfaces as nothing — the daily rhythm stays silent.
-  let wardenAction = $state<WardenAction | null>(null);
-
-  /** Run a Lock Warden checkpoint for one artifact and reflect the action it decided.
-   *  Best-effort: a push failure (e.g. no server yet) must never break the silent rhythm. */
-  async function runCheckpoint(path: string, revision: boolean) {
-    if (!productPath) return;
-    try {
-      const action = await cmd.runCheckpoint(productPath, path, revision);
-      // Only a real action lights the readout; Refuse leaves the rhythm silent.
-      if (action !== "refuse") wardenAction = action;
-      // At every checkpoint, self-heal: auto-unlock every held lock whose path is now locally
-      // clean (committed, no open edit). The Lock Warden decides per path (Issue #42, E31/E35);
-      // the freed binaries rest read-only (frei) again. Best-effort — never breaks the rhythm.
-      await sweepCleanLocks();
-      await refreshStatus();
-    } catch (e) {
-      // The two push types are background safety nets; surfacing the raw error would break the
-      // silent vocabulary, so we swallow it (a louder, in-tool sync error is a later slice).
-    }
-  }
-
-  /** Auto-unlock every held lock whose path is locally clean (Issue #42). Best-effort: an
-   *  offline/unpublished repo simply frees nothing — never breaks the silent rhythm. */
-  async function sweepCleanLocks() {
-    if (!productPath) return;
-    try {
-      await cmd.sweepCleanLocks(productPath);
-    } catch (e) {
-      // Self-healing is a quiet safety net; a hiccup must never surface as a loud error.
-    }
-  }
+  // The live-status pulse (Candidate 04): the 4-second Auto-Lock / foreign-lock polling loop, its
+  // derived state (signals · foreignLocks · wardenAction), and the checkpoint/sweep/edit gestures
+  // now live behind one start()/stop() interface in `statusPulse.svelte.ts`. The page consumes its
+  // reactive readout; the timer lifecycle is owned there, not hand-managed here (Issue #6/#9, E37).
+  // All of it stays derived purely by reading git back — nothing mirrored as a second truth.
+  const pulse = createStatusPulse({
+    productPath: () => productPath,
+    product: () => product,
+    // The Artefakt-Karten (#47) carry their LED on the Hauptdatei too; the Werkbank shape lives here.
+    extraPaths: () =>
+      werkbank?.karten.map((k) => k.hauptdatei).filter((f): f is string => f != null) ?? [],
+    onError: (m) => (error = m),
+  });
 
   // The stiller Sync + Sync Decider (Issue #11, E41). The daily net-sync runs SILENTLY in the
   // background: it just keeps the local stand "aktuell". The user never sees push/pull/merge.
@@ -170,7 +140,7 @@
     if (loud) return;
     syncInFlight = true;
     try {
-      const outcome = await cmd.syncProduct(productPath, foreignLocks[0]?.owner ?? null);
+      const outcome = await cmd.syncProduct(productPath, pulse.foreignLocks[0]?.owner ?? null);
       const s = outcome.status;
       if (s === "aktuell") {
         syncQuiet = "aktuell";
@@ -179,7 +149,7 @@
         // a silent merge may have changed artifacts/timestamps — refresh the quiet views
         await refreshGraph();
         await refreshEdges();
-        await refreshStatus();
+        await pulse.refreshStatus();
       } else if (typeof s === "object" && "laute-ausnahme" in s) {
         // The one moment the tool raises its voice: stop and ask whose stand applies.
         loud = s["laute-ausnahme"];
@@ -228,7 +198,7 @@
           : "gesichert";
       await refreshGraph();
       await refreshEdges();
-      await refreshStatus();
+      await pulse.refreshStatus();
       // Issue #44: if the exception was raised mid-publish, the server's Stand is now integrated
       // locally — finish the act by re-publishing (a clean fast-forward) so the ceremony advances.
       if (wasPublish) await republishAfterResolve();
@@ -315,62 +285,8 @@
     }
   }
 
-  // Guard so a slow status read (a networked `git lfs locks` can take up to the backend bound)
-  // never overlaps the next 4-second tick. Without it, ticks pile up faster than they drain.
-  let statusInFlight = false;
-
-  /** Re-read the world from git: per-artifact LED status + the foreign-locks panel. */
-  async function refreshStatus() {
-    if (!productPath || !product || statusInFlight) return;
-    statusInFlight = true;
-    const paths = Array.from(
-      new Set(
-        [
-          ...product.bausteine.map((b) => b.main_file),
-          // The convention Artefakt-Karten (#47) carry the LED on their Hauptdatei too.
-          ...(werkbank?.karten.map((k) => k.hauptdatei) ?? []),
-        ].filter((f): f is string => f !== null && f !== undefined),
-      ),
-    );
-    try {
-      const [sigs, foreign] = await Promise.all([
-        cmd.readStatus(productPath, paths),
-        cmd.readForeignLocks(productPath),
-      ]);
-      signals = Object.fromEntries(sigs.map((s) => [s.path, s]));
-      foreignLocks = foreign;
-    } catch (e) {
-      // Read-only status is best-effort; never blocks the shell (e.g. no LFS remote).
-      error = String(e);
-    } finally {
-      statusInFlight = false;
-    }
-  }
-
-  /** Start polling git for live status; replaces any previous loop. */
-  function startStatusLoop() {
-    stopStatusLoop();
-    void refreshStatus();
-    statusTimer = setInterval(() => void refreshStatus(), 4000);
-  }
-  function stopStatusLoop() {
-    if (statusTimer !== null) {
-      clearInterval(statusTimer);
-      statusTimer = null;
-    }
-  }
-  onDestroy(stopStatusLoop);
-
-  /** Editing/opening a lockable artifact auto-acquires a `git lfs lock` (E31), then re-reads. */
-  async function editBaustein(mainFile: string | null) {
-    if (!productPath || !mainFile) return;
-    try {
-      await cmd.lockArtifact(productPath, mainFile);
-    } catch (e) {
-      error = String(e); // a foreign-held lock is real, loud coordination — surface it
-    }
-    await refreshStatus();
-  }
+  // The status loop's lifecycle is owned by the pulse; tear it down with the page.
+  onDestroy(() => pulse.stop());
 
   /** Re-read the Werkbank (Issue #47): tracked files → Artefakt-Karten + Unzugeordnet-Fächer.
    *  Pure read; best-effort — a product with no Produkt-Stack simply shows everything as Waisen. */
@@ -386,7 +302,7 @@
 
   /** Signal lookup for a card, keyed on its Hauptdatei (the Auto-Lock LED, E37). */
   function signalFor(k: ArtefaktKarteT): ArtifactSignal | null {
-    return k.hauptdatei ? (signals[k.hauptdatei] ?? null) : null;
+    return k.hauptdatei ? (pulse.signals[k.hauptdatei] ?? null) : null;
   }
 
   /** THE one-click primary action of an Artefakt-Karte (Issue #47, PRD §14): open the dominant
@@ -397,7 +313,7 @@
     try {
       if (k.primaer === "datei" && k.hauptdatei) {
         // Opening/editing a lockable artifact auto-acquires its lock first (E31).
-        await editBaustein(k.hauptdatei);
+        await pulse.editBaustein(k.hauptdatei);
       }
       await openPath(k.ziel);
     } catch (e) {
@@ -439,9 +355,7 @@
     }
     imported = null;
     refusal = null;
-    signals = {};
-    foreignLocks = [];
-    wardenAction = null;
+    pulse.reset();
     setup = null;
     ceremonyOpen = false;
     syncQuiet = null;
@@ -456,7 +370,6 @@
     stack = null;
     stackOpen = false;
     room = "werkbank";
-    stopStatusLoop();
     stopSyncLoop();
   }
 
@@ -526,7 +439,7 @@
     }
     await refreshWerkbank();
     await refreshTasks();
-    await refreshStatus();
+    await pulse.refreshStatus();
   }
 
   /** A live, in-place stack change (Baustein stilllegen/reaktivieren, Issue #51) — adopt the new
@@ -678,7 +591,7 @@
     graph = await cmd.knotenAbzweigen(productPath, node.id, branch);
     await refreshGraph();
     await refreshWerkbank();
-    await refreshStatus();
+    await pulse.refreshStatus();
     await refreshEdges();
   }
 
@@ -689,7 +602,7 @@
     graph = await cmd.knotenZurueckwerfen(productPath, node.id);
     await refreshGraph();
     await refreshWerkbank();
-    await refreshStatus();
+    await pulse.refreshStatus();
     await refreshEdges();
   }
 
@@ -766,7 +679,7 @@
     void refreshWerkbank();
     // A settled save is a laufender Checkpoint: the Lock Warden runs and, for open work,
     // mirrors it to the private backup (Sicherungs-Push) — never the shared stand (E35).
-    void runCheckpoint(e.payload.path, false);
+    void pulse.runCheckpoint(e.payload.path, false);
   }).then((u) => (unlisten = u));
 
   // The watcher auto-locked the first dirty lockable path (Issue #42): the lock now exists before
@@ -774,7 +687,7 @@
   // (mine → grey/in Arbeit; a colleague would now see „gesperrt von X seit …"). No git vocabulary.
   let unlistenLock: UnlistenFn | null = null;
   listen<string>("lock-acquired", () => {
-    void refreshStatus();
+    void pulse.refreshStatus();
   }).then((u) => (unlistenLock = u));
 
   onDestroy(() => {
@@ -829,7 +742,7 @@
       await refreshWerkbank();
       await refreshStack();
       await refreshSetup();
-      startStatusLoop();
+      pulse.start();
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
       startSyncLoop();
       // Opened products fill the Verlauf even without the search (Issue #73): register + stamp.
@@ -917,7 +830,7 @@
       // A freshly created product has no server yet — open the one-time ceremony once so the
       // user is guided to share it. Reopening/daily use never re-triggers this.
       if (setup && setup.stage === "not-configured") ceremonyOpen = true;
-      startStatusLoop();
+      pulse.start();
       startSyncLoop();
       // A freshly created product joins the Verlauf too (Issue #73): register + stamp.
       void rememberProduct(path);
@@ -1078,9 +991,9 @@
     if (!productPath) return;
     try {
       const action = await cmd.freigeben(productPath);
-      if (action !== "refuse") wardenAction = action;
-      await sweepCleanLocks();
-      await refreshStatus();
+      pulse.noteAction(action);
+      await pulse.sweepCleanLocks();
+      await pulse.refreshStatus();
     } catch (e) {
       // Stays out of the silent vocabulary; the Diagnose-Log now records why a publish failed.
     }
@@ -1105,7 +1018,7 @@
     securing = true;
     try {
       const action = await cmd.sichern(productPath);
-      if (action !== "refuse") wardenAction = action;
+      pulse.noteAction(action);
     } catch (e) {
       // Stays out of the silent vocabulary; the Diagnose-Log records why a backup failed.
     } finally {
@@ -1335,16 +1248,16 @@
              takes precedence: it is the live coordination fact the user most needs. Otherwise the
              stiller-Sync state shows „aktuell" / „gesichert". The loud exception is NOT shown here;
              it takes the whole screen. -->
-        {#if foreignLocks.length > 0}
+        {#if pulse.foreignLocks.length > 0}
           <span class="readout mono syncline busy" role="status" aria-live="polite">
             <span class="dot working"></span>
             <span class="readout-text"
-              >{foreignLocks[0].owner} arbeitet an {foreignLocks[0].path}</span
+              >{pulse.foreignLocks[0].owner} arbeitet an {pulse.foreignLocks[0].path}</span
             >
-            {#if foreignLocks.length > 1}
+            {#if pulse.foreignLocks.length > 1}
               <span class="readout-sep">·</span>
               <span class="readout-locks"
-                >+{(foreignLocks.length - 1).toString()} weitere</span
+                >+{(pulse.foreignLocks.length - 1).toString()} weitere</span
               >
             {/if}
           </span>
@@ -1358,7 +1271,7 @@
         {/if}
 
         <!-- The Lock Warden's two push types in the tool's own vocabulary (Issue #9). -->
-        <Sicherungsstatus action={wardenAction} />
+        <Sicherungsstatus action={pulse.wardenAction} />
 
         {#if setup}
           <!-- One-time ceremony trigger / settled readout. Git-near wording lives ONLY here. -->
@@ -1522,8 +1435,8 @@
                 stale={staleSet.has(b.path)}
                 onDeriveFrom={(s) => deriveFrom(b.path, s)}
                 onClearEdge={() => clearEdge(b.path)}
-                signal={b.main_file ? (signals[b.main_file] ?? null) : null}
-                onedit={() => editBaustein(b.main_file)}
+                signal={b.main_file ? (pulse.signals[b.main_file] ?? null) : null}
+                onedit={() => pulse.editBaustein(b.main_file)}
               />
             {/each}
           </div>
@@ -1619,7 +1532,7 @@
       ></div>
 
       <aside class="rail" style="width: {railWidth}px;">
-        <ForeignLocksPanel locks={foreignLocks} />
+        <ForeignLocksPanel locks={pulse.foreignLocks} />
         <StandList {stands} />
       </aside>
     {/if}
