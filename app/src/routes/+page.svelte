@@ -52,6 +52,7 @@
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
   import DiagnoseLog from "$lib/DiagnoseLog.svelte";
   import MeldeProblem from "$lib/MeldeProblem.svelte";
+  import Versionsschild from "$lib/Versionsschild.svelte";
 
   // self-hosted fonts (offline WebView) + design tokens
   import "@fontsource/archivo/400.css";
@@ -1737,6 +1738,13 @@
     {/if}
     {/if}
   </div>
+
+  <!-- Fussleiste (Issue #105): a thin app-level footer, seated under the work chassis. Home for
+       quiet app-wide meta — currently the Werkbank-Version, right-aligned. Takes its own row, so
+       nothing overlaps the work area. New small status/meta items belong here. -->
+  <footer class="appfoot">
+    <Versionsschild />
+  </footer>
 </div>
 
 {#if gate}
@@ -1821,6 +1829,20 @@
     flex-direction: column;
     height: 100vh;
     background: var(--surface-base);
+  }
+
+  /* Fussleiste (Issue #105): the app-level footer shelf, mirror of the .entrybar at the top.
+     A thin seated bar with a top hairline; its contents sit at the right edge. flex: none so it
+     keeps its height and the .stage above it absorbs the rest — never an overlap. */
+  .appfoot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 4px 16px;
+    background: var(--surface-raised);
+    border-top: 1px solid var(--hairline);
   }
 
   /* The app-level entry bar: product entry points sit here, above the work chassis, so the

@@ -7,6 +7,19 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
 
+  // Pre-bundle the Tauri API submodules we use so Vite never discovers one lazily at
+  // runtime. A first-time discovery (e.g. `@tauri-apps/api/app` for the Versionsschild,
+  // Issue #105) triggers a re-optimization + full page reload, which races the Tauri
+  // WebView init and leaves it black. Listing them here bundles them before the window
+  // connects, so the reload never happens.
+  optimizeDeps: {
+    include: [
+      "@tauri-apps/api/app",
+      "@tauri-apps/api/core",
+      "@tauri-apps/api/event",
+    ],
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
