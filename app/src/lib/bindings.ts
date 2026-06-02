@@ -246,6 +246,21 @@ export const commands = {
 	 */
 	listBibliothek: () => typedError<BibliothekView, string>(__TAURI_INVOKE("list_bibliothek")),
 	/**
+	 *  Einen Bibliothek-Baustein **anlegen oder bearbeiten** (Issue #108, ADR 0003): ein Upsert auf der
+	 *  `id` (`write_baustein` überschreibt nach `id`; das Anlegen und das Bearbeiten teilen sich diesen
+	 *  Schreibpfad). Validiert den Baustein im **reinen Kern** (`baustein::validate_baustein`) gegen die
+	 *  bereits vorhandenen Kennungen; harte Feld-Fehler werden als deutsche Fehlermeldung zurückgegeben,
+	 *  die die UI anzeigen kann (gleiche `Result<_, String>`-Form wie die Geschwister-Kommandos). Weiche
+	 *  Warnungen (z.B. ein noch fehlender Partner-Baustein) blockieren NICHT — sie erscheinen erst beim
+	 *  Lesen wieder, der Vorschlag greift einfach, sobald der Partner existiert. Exakte Duplikat-Globs
+	 *  werden vor dem Schreiben still entfernt. Gibt die frisch gelesene [`BibliothekView`] zurück, damit
+	 *  die UI aus der Wahrheit neu rendert (spiegelt `stilllegen_baustein_cmd` / `extend_product_stack_cmd`).
+	 * 
+	 *  Nur die **Bibliothek-Vorlage** wird berührt — niemals die produkt-lokale Anti-Drift-Kopie in
+	 *  `_plm/stack.json` (ADR 0003).
+	 */
+	saveBausteinCmd: (baustein: Baustein) => typedError<BibliothekView, string>(__TAURI_INVOKE("save_baustein_cmd", { baustein })),
+	/**
 	 *  List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
 	 *  the „Standard-Toolstack wählen"-Schritt der Produkt-Anlage (#50).
 	 */

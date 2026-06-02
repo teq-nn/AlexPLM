@@ -9,6 +9,7 @@
   import { onMount } from "svelte";
   import { cmd } from "$lib/commands";
   import type { Baustein } from "$lib/types";
+  import BausteinEditor from "$lib/bibliothek/BausteinEditor.svelte";
 
   let {
     onClose,
@@ -20,6 +21,8 @@
   let bausteine = $state<Baustein[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // Der gerade bearbeitete Baustein (Slice 2). Gesetzt ⇒ der Voll-Editor übernimmt die Bühne.
+  let editing = $state<Baustein | null>(null);
 
   onMount(load);
 
@@ -38,17 +41,39 @@
     }
   }
 
-  // TODO (Slice 2+): Karte/„+ Neuer Baustein" öffnen den Voll-Editor (cmd.saveBausteinCmd).
-  // In dieser Stufe sind beide bewusst no-ops, damit die Karten schon klickbar wirken.
-  function openBaustein(_b: Baustein) {
-    // no-op bis Slice 2 die Bearbeitung verdrahtet.
+  // Slice 2 (Bearbeiten): eine Karte öffnet den Voll-Editor, vorgefüllt mit dem gewählten Baustein.
+  function openBaustein(b: Baustein) {
+    editing = b;
   }
+
+  // Speichern (Slice 2): Upsert über cmd.saveBausteinCmd; bei Erfolg die Galerie aus der
+  // zurückgegebenen Wahrheit neu rendern und zurück zur Galerie. Fehler wirft das Kommando — der
+  // Editor fängt sie und zeigt sie in seiner Fußleiste an (kein eigenes Try/Catch hier nötig).
+  async function saveBaustein(b: Baustein) {
+    const view = await cmd.saveBausteinCmd(b);
+    bausteine = view.bausteine;
+    editing = null;
+  }
+
+  // TODO (Slice 3): Die Ghost-Kachel „+ Neuer Baustein" verdrahtet das Anlegen (createBaustein +
+  // cloneBaustein, Anlege-Eindeutigkeitsprüfung der Kennung). Bewusst noch no-op.
   function createBaustein() {
-    // no-op bis Slice 2 das Anlegen verdrahtet.
+    // no-op bis Slice 3 das Anlegen verdrahtet.
   }
 </script>
 
 <section class="bibliothek">
+  {#if editing}
+    <!-- Voll-Flächen-Editor (Slice 2): der Editor trägt eigene Kopf-/Fußleiste samt „‹ Bibliothek". -->
+    <div class="bbody editing">
+      <BausteinEditor
+        baustein={editing}
+        {bausteine}
+        onSave={saveBaustein}
+        onCancel={() => (editing = null)}
+      />
+    </div>
+  {:else}
   <header class="bhead">
     <div class="btitle">
       <span class="label sk">Magazin</span>
@@ -120,6 +145,7 @@
       </div>
     {/if}
   </div>
+  {/if}
 </section>
 
 <style>
@@ -184,6 +210,13 @@
     min-height: 0;
     overflow: auto;
     padding: 18px 16px 28px;
+  }
+  /* Im Editor füllt die Voll-Flächen-Komponente die Bühne (eigene Kopf-/Fußleiste, eigenes Scroll). */
+  .bbody.editing {
+    overflow: hidden;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
   }
 
   .toolbar {

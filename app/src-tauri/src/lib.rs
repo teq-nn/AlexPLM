@@ -49,7 +49,7 @@ pub mod zuordnungstore;
 
 use aufgabenblock::BlockDecision;
 use aufgabenblockglue::block_for_art;
-use baustein::{Baustein, Toolstack};
+use baustein::{validate_baustein, dedup_globs, Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{
     add_persisted_edge, confirm_pair_edge, onboard_default_edges, read_edge_view,
@@ -754,6 +754,49 @@ fn list_bibliothek(app: tauri::AppHandle) -> Result<BibliothekView, String> {
 struct BibliothekView {
     bausteine: Vec<Baustein>,
     toolstacks: Vec<Toolstack>,
+}
+
+/// Einen Bibliothek-Baustein **anlegen oder bearbeiten** (Issue #108, ADR 0003): ein Upsert auf der
+/// `id` (`write_baustein` überschreibt nach `id`; das Anlegen und das Bearbeiten teilen sich diesen
+/// Schreibpfad). Validiert den Baustein im **reinen Kern** (`baustein::validate_baustein`) gegen die
+/// bereits vorhandenen Kennungen; harte Feld-Fehler werden als deutsche Fehlermeldung zurückgegeben,
+/// die die UI anzeigen kann (gleiche `Result<_, String>`-Form wie die Geschwister-Kommandos). Weiche
+/// Warnungen (z.B. ein noch fehlender Partner-Baustein) blockieren NICHT — sie erscheinen erst beim
+/// Lesen wieder, der Vorschlag greift einfach, sobald der Partner existiert. Exakte Duplikat-Globs
+/// werden vor dem Schreiben still entfernt. Gibt die frisch gelesene [`BibliothekView`] zurück, damit
+/// die UI aus der Wahrheit neu rendert (spiegelt `stilllegen_baustein_cmd` / `extend_product_stack_cmd`).
+///
+/// Nur die **Bibliothek-Vorlage** wird berührt — niemals die produkt-lokale Anti-Drift-Kopie in
+/// `_plm/stack.json` (ADR 0003).
+#[tauri::command]
+#[specta::specta]
+fn save_baustein_cmd(app: tauri::AppHandle, baustein: Baustein) -> Result<BibliothekView, String> {
+    let lib = Bibliothek::new(bibliothek_root(&app)?);
+    let existing: Vec<String> = lib.list_bausteine().into_iter().map(|b| b.id).collect();
+
+    let report = validate_baustein(&baustein, &existing);
+    if !report.ok() {
+        // Die erste harte Feld-Meldung genügt der UI als Fehlertext; die Frontend-Validierung
+        // spiegelt ohnehin alle Felder live. Form bleibt `Result<_, String>` wie bei den Geschwistern.
+        let msg = report
+            .errors
+            .first()
+            .map(|(_, m)| m.clone())
+            .unwrap_or_else(|| "Baustein ungültig".to_string());
+        return Err(msg);
+    }
+
+    // Exakte Duplikat-Globs still entfernen (Handoff §1.9); Reihenfolge + Hauptdatei-Regel bleiben.
+    let mut to_write = baustein;
+    to_write.globs = dedup_globs(&to_write.globs);
+
+    lib.write_baustein(&to_write)
+        .map_err(|e| format!("Baustein konnte nicht gespeichert werden: {e}"))?;
+
+    Ok(BibliothekView {
+        bausteine: lib.list_bausteine(),
+        toolstacks: lib.list_toolstacks(),
+    })
 }
 
 /// List the available standard Toolstacks from the Bibliothek (Issue #39). Convenience read for
@@ -1511,6 +1554,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         sweep_clean_locks,
         sync_product,
         list_bibliothek,
+        save_baustein_cmd,
         list_toolstacks,
         toolstack_baustein_ids,
         create_product_stack_cmd,
