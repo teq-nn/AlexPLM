@@ -193,6 +193,9 @@
     color: var(--ink-muted);
     font-size: 9px;
     padding: 0 2px;
+    /* Toggles zuordnen … ⇄ abbrechen; hold width so the row end doesn't shift on click. */
+    min-width: 64px;
+    text-align: right;
     transition: color var(--dur) var(--ease);
   }
   .assign:hover {

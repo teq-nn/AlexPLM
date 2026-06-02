@@ -480,6 +480,9 @@
     border: 1px solid var(--screen-fg);
     border-radius: var(--radius-sm);
     padding: 6px 12px;
+    /* „abzweigen" collapses to … while busy; hold the width so the key doesn't shrink mid-action. */
+    min-width: 84px;
+    text-align: center;
     font-family: var(--font-label);
     font-size: 11px;
     font-weight: 600;

@@ -1080,6 +1080,10 @@
   .art-toggle {
     flex: none;
     padding: 7px 13px;
+    /* Label swaps Freigeben ⇄ Zurückschalten ⇄ … (busy); pin to the widest so the key
+       never resizes as its state changes. */
+    min-width: 130px;
+    text-align: center;
   }
 
   .field {
@@ -1127,6 +1131,11 @@
     justify-content: flex-end;
     gap: 8px;
     padding-top: 2px;
+  }
+  /* Festschreiben collapses to … while busy; reserve its width so the footer doesn't twitch. */
+  .dialog-actions .key {
+    min-width: 116px;
+    text-align: center;
   }
   .key {
     appearance: none;
