@@ -110,21 +110,13 @@ pub fn relink_path(
 /// Read the registry from `file`. A missing/empty/corrupt file means an **empty registry** —
 /// never an error (a fresh install has no file yet; a hand-mangled file must not brick search).
 pub fn read_registry(file: &Path) -> Vec<RegisteredProduct> {
-    let raw = std::fs::read_to_string(file).unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Vec::new();
-    }
-    serde_json::from_str(&raw).unwrap_or_default()
+    crate::plmstore::read_or_default(file)
 }
 
 /// Persist the registry, pretty-printed (it is only paths — keep it diffable and readable).
-/// Creates the parent app-config directory if it does not exist yet.
+/// Creates the parent app-config directory if it does not exist yet (pretty + atomic).
 fn write_registry(file: &Path, set: &[RegisteredProduct]) -> std::io::Result<()> {
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(set).map_err(std::io::Error::other)?;
-    std::fs::write(file, json)
+    crate::plmstore::write_pretty(file, &set.to_vec())
 }
 
 /// Register a product path and persist the result. Returns the refreshed, sorted set.

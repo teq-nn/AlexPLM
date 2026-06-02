@@ -13,21 +13,20 @@
 //! Eine Override gewinnt über die Glob/Heimat-Konvention und ignoriert die Heimat-Grenze: der
 //! Nutzer darf **jede** Datei **jedem** Baustein zuordnen ([`crate::werkbank::build_werkbank_with_overrides`]).
 
-use crate::stackstore::PLM_DIR;
+use crate::plmstore::PlmDocument;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Datei für die manuellen Zuordnungen innerhalb von `_plm/`.
 pub const ZUORDNUNG_FILE: &str = "zuordnung.json";
 
-/// Pfad von `_plm/zuordnung.json` für ein Produkt `root`.
-fn store_path(root: &Path) -> PathBuf {
-    root.join(PLM_DIR).join(ZUORDNUNG_FILE)
-}
-
 /// Eine Override-Karte: produkt-relativer Pfad → Baustein-id. `BTreeMap`, damit das JSON stabil
 /// (alphabetisch) und diffbar bleibt.
 pub type Zuordnungen = BTreeMap<String, String>;
+
+/// Das `_plm/zuordnung.json`-Dokument — Pfad, Degradation und pretty/atomares Schreiben liegen in
+/// der tiefen [`PlmDocument`]-Schicht; hier liegt nur die Zuordnungs-Domänenlogik darüber.
+const ZUORDNUNG: PlmDocument<Zuordnungen> = PlmDocument::new(ZUORDNUNG_FILE);
 
 /// Pfad in Vorwärts-Slash-Normalform (Backslashes → `/`, getrimmt), passend zu den von
 /// `git ls-files` gelieferten Pfaden. So trifft eine gespeicherte Override ihre Datei sicher.
@@ -37,18 +36,12 @@ fn normalize(path: &str) -> String {
 
 /// Die manuellen Zuordnungen lesen. Fehlende/leere/korrupte Datei ⇒ **leere Karte**, nie Fehler.
 pub fn read_overrides(root: &Path) -> Zuordnungen {
-    let raw = std::fs::read_to_string(store_path(root)).unwrap_or_default();
-    if raw.trim().is_empty() {
-        return Zuordnungen::new();
-    }
-    serde_json::from_str(&raw).unwrap_or_default()
+    ZUORDNUNG.read(root)
 }
 
-/// Die manuellen Zuordnungen pretty-printed zurückschreiben (legt `_plm/` an).
+/// Die manuellen Zuordnungen pretty-printed zurückschreiben (legt `_plm/` an, atomar).
 fn write_overrides(root: &Path, map: &Zuordnungen) -> std::io::Result<()> {
-    std::fs::create_dir_all(root.join(PLM_DIR))?;
-    let json = serde_json::to_string_pretty(map).map_err(std::io::Error::other)?;
-    std::fs::write(store_path(root), json)
+    ZUORDNUNG.write(root, map)
 }
 
 /// Eine Datei einem Baustein zuordnen (Etikett setzen) und persistieren. Überschreibt eine frühere
@@ -98,8 +91,8 @@ mod tests {
     #[test]
     fn corrupt_store_degrades_to_empty() {
         let dir = tmp();
-        std::fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
-        std::fs::write(store_path(&dir), "{ not json ]").unwrap();
+        std::fs::create_dir_all(ZUORDNUNG.path(&dir).parent().unwrap()).unwrap();
+        std::fs::write(ZUORDNUNG.path(&dir), "{ not json ]").unwrap();
         assert!(read_overrides(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

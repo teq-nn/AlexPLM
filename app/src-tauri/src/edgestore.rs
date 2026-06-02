@@ -14,22 +14,20 @@ use crate::defaultkanten::{
     KantenVorschlag,
 };
 use crate::edges::{add_edge, remove_edge, stale_warnings, ArtifactStamp, Edge, Herkunft, StaleWarning};
+use crate::plmstore::{self, PlmDocument};
 use crate::projection::project_product;
 use crate::stackstore::read_stack;
 use crate::werkbank::list_tracked_files;
 use std::path::{Path, PathBuf};
 
-/// The tool's committed, shared store directory (ADR 0002). `projection.rs` skips it by name.
-pub const PLM_DIR: &str = "_plm";
 /// File that holds the manual edge set, inside `_plm/` (ADR 0002).
 pub const EDGES_FILE: &str = "kanten.json";
 /// Legacy location of the edge set (pre-ADR-0002 dotfile). Still read for migration.
 pub const LEGACY_EDGES_FILE: &str = ".plm-kanten.json";
 
-/// Absolute path of the `_plm/kanten.json` edge file for a product `root`.
-fn edges_path(root: &Path) -> PathBuf {
-    root.join(PLM_DIR).join(EDGES_FILE)
-}
+/// The `_plm/kanten.json` document — path, degradation and pretty/atomic write live in the deep
+/// [`PlmDocument`] layer; this store is the edge domain over it.
+const EDGES: PlmDocument<Vec<Edge>> = PlmDocument::new(EDGES_FILE);
 
 /// Absolute path of the legacy `.plm-kanten.json` dotfile for a product `root`.
 fn legacy_edges_path(root: &Path) -> PathBuf {
@@ -43,24 +41,18 @@ fn legacy_edges_path(root: &Path) -> PathBuf {
 /// `.plm-kanten.json` dotfile is read so existing products are not silently emptied. The next
 /// write lands in the new location.
 pub fn read_edges(root: &Path) -> Vec<Edge> {
-    let raw = match std::fs::read_to_string(edges_path(root)) {
-        Ok(s) => s,
-        // New file absent -> fall back to the legacy dotfile for migration.
-        Err(_) => std::fs::read_to_string(legacy_edges_path(root)).unwrap_or_default(),
-    };
-    if raw.trim().is_empty() {
-        return Vec::new();
+    // New _plm/kanten.json wins; only when it is absent do we read the legacy dotfile.
+    if EDGES.path(root).is_file() {
+        EDGES.read(root)
+    } else {
+        plmstore::read_or_default(&legacy_edges_path(root))
     }
-    serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// Persist the manual edge set, pretty-printed for an honest, diffable on-disk record. Always
-/// writes the new `_plm/kanten.json` (creating `_plm/` as needed); the legacy dotfile is left
-/// untouched as harmless sediment.
+/// Persist the manual edge set. Always writes the new `_plm/kanten.json` (creating `_plm/` as
+/// needed); the legacy dotfile is left untouched as harmless sediment.
 fn write_edges(root: &Path, edges: &[Edge]) -> std::io::Result<()> {
-    std::fs::create_dir_all(root.join(PLM_DIR))?;
-    let json = serde_json::to_string_pretty(edges).map_err(std::io::Error::other)?;
-    std::fs::write(edges_path(root), json)
+    EDGES.write(root, &edges.to_vec())
 }
 
 /// Draw a manual „abgeleitet von" edge (`derived` „stammt aus" `source`) and persist it.
@@ -258,8 +250,8 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_zero_edges() {
         let dir = tmp();
-        fs::create_dir_all(dir.join(PLM_DIR)).unwrap();
-        fs::write(edges_path(&dir), "{ not json ]").unwrap();
+        fs::create_dir_all(EDGES.path(&dir).parent().unwrap()).unwrap();
+        fs::write(EDGES.path(&dir), "{ not json ]").unwrap();
         assert!(read_edges(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -268,7 +260,7 @@ mod tests {
     fn writes_to_the_new_plm_location() {
         let dir = tmp();
         add_persisted_edge(&dir, "a", "b").unwrap();
-        assert!(dir.join(PLM_DIR).join(EDGES_FILE).is_file(), "edges live in _plm/kanten.json");
+        assert!(EDGES.path(&dir).is_file(), "edges live in _plm/kanten.json");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -285,7 +277,7 @@ mod tests {
 
         // the next write lands in the new location, leaving the legacy file as sediment.
         add_persisted_edge(&dir, "x/y", "p/q").unwrap();
-        assert!(dir.join(PLM_DIR).join(EDGES_FILE).is_file());
+        assert!(EDGES.path(&dir).is_file());
         let _ = fs::remove_dir_all(&dir);
     }
 }

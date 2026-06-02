@@ -97,12 +97,12 @@ impl Bibliothek {
 
     /// Einen lokalen Baustein lesen; fehlende/korrupte Datei ⇒ `None` (nie Fehler).
     pub fn read_baustein(&self, id: &str) -> Option<Baustein> {
-        read_json(&self.baustein_path(id))
+        crate::plmstore::read_optional(&self.baustein_path(id))
     }
 
     /// Einen lokalen Toolstack lesen; fehlende/korrupte Datei ⇒ `None`.
     pub fn read_toolstack(&self, id: &str) -> Option<Toolstack> {
-        read_json(&self.toolstack_path(id))
+        crate::plmstore::read_optional(&self.toolstack_path(id))
     }
 
     /// Alle lokal vorhandenen Bausteine, alphabetisch nach `id`. Korrupte Dateien werden
@@ -120,16 +120,14 @@ impl Bibliothek {
         out
     }
 
-    /// Einen Baustein pretty-printed schreiben (legt das Verzeichnis bei Bedarf an).
+    /// Einen Baustein pretty-printed schreiben (legt das Verzeichnis bei Bedarf an, atomar).
     pub fn write_baustein(&self, b: &Baustein) -> std::io::Result<()> {
-        std::fs::create_dir_all(self.bausteine_dir())?;
-        write_json(&self.baustein_path(&b.id), b)
+        crate::plmstore::write_pretty(&self.baustein_path(&b.id), b)
     }
 
-    /// Einen Toolstack pretty-printed schreiben (legt das Verzeichnis bei Bedarf an).
+    /// Einen Toolstack pretty-printed schreiben (legt das Verzeichnis bei Bedarf an, atomar).
     pub fn write_toolstack(&self, t: &Toolstack) -> std::io::Result<()> {
-        std::fs::create_dir_all(self.toolstacks_dir())?;
-        write_json(&self.toolstack_path(&t.id), t)
+        crate::plmstore::write_pretty(&self.toolstack_path(&t.id), t)
     }
 
     /// Idempotentes, version-gegates Seeding aus den gebündelten Defaults (ADR 0003).
@@ -161,16 +159,9 @@ impl Bibliothek {
     }
 }
 
-/// Read+parse a JSON file; missing/empty/corrupt ⇒ `None` (degrade, never error).
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    if raw.trim().is_empty() {
-        return None;
-    }
-    serde_json::from_str(&raw).ok()
-}
-
 /// Read every `*.json` in `dir` that parses as `T`; missing dir ⇒ empty, corrupt files skipped.
+/// The single-file degradation (`missing/empty/corrupt ⇒ None`) is the shared
+/// [`crate::plmstore::read_optional`]; this only adds the directory walk.
 fn read_dir_json<T: serde::de::DeserializeOwned>(dir: &Path) -> Vec<T> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(dir) {
@@ -182,17 +173,11 @@ fn read_dir_json<T: serde::de::DeserializeOwned>(dir: &Path) -> Vec<T> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        if let Some(parsed) = read_json::<T>(&path) {
+        if let Some(parsed) = crate::plmstore::read_optional::<T>(&path) {
             out.push(parsed);
         }
     }
     out
-}
-
-/// Pretty-print a value to `path` for an honest, diffable on-disk record.
-fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    std::fs::write(path, json)
 }
 
 /// Load the bundled default Bausteine + Toolstacks from a Tauri resource directory

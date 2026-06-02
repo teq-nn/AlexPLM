@@ -28,6 +28,7 @@ pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
 pub mod onboardglue;
+pub mod plmstore;
 pub mod projection;
 pub mod pushglue;
 pub mod registry;

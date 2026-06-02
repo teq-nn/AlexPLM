@@ -135,8 +135,7 @@ pub fn merge_results(per_product: Vec<Vec<SearchHit>>) -> Vec<SearchHit> {
 /// never a product artifact (mirrors `projection.rs`). `.git` is skipped as a hidden dir.
 const DIR_DENYLIST: &[&str] = &["node_modules", "target", "__pycache__"];
 
-/// The product's metadata store directory (the only PLM facts Git cannot know).
-const PLM_DIR: &str = "_plm";
+use crate::plmstore::PLM_DIR;
 /// The one file where human revision text lives (E28).
 const VERSION_NOTES: &str = "VERSION_NOTES.md";
 

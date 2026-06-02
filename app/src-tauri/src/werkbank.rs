@@ -342,8 +342,8 @@ pub fn read_git_states(
         if code.starts_with('R') || code.starts_with('C') {
             records.next();
         }
-        if path == crate::stackstore::PLM_DIR
-            || path.starts_with(&format!("{}/", crate::stackstore::PLM_DIR))
+        if path == crate::plmstore::PLM_DIR
+            || path.starts_with(&format!("{}/", crate::plmstore::PLM_DIR))
         {
             continue;
         }
@@ -359,7 +359,7 @@ pub fn read_git_states(
 /// `.gitattributes` (LFS-Lockable-Marker, #48/#63) und die **Alt**-Kantendatei `.plm-kanten.json`.
 /// Produkt-relativ, Vorwärts-Slashes. Rein und total — als Tabelle getestet.
 fn ist_werkzeug_datei(rel: &str) -> bool {
-    let plm = crate::stackstore::PLM_DIR;
+    let plm = crate::plmstore::PLM_DIR;
     rel == plm
         || rel.starts_with(&format!("{plm}/"))
         || rel == ".gitattributes"
