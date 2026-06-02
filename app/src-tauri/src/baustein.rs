@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// Was die Öffnen-Aktion einer Artefakt-Karte tun soll, wenn der Nutzer sie anklickt.
 /// `Auto` heißt: dominante Einzeldatei → diese öffnen, sonst den Ordner öffnen (PRD §14).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Oeffnen {
     /// Hauptdatei wenn es eine dominante gibt, sonst Ordner (PRD §14). Default.
@@ -30,7 +30,7 @@ pub enum Oeffnen {
 
 /// Art einer Startaufgabe: eine **Aufgabe** kann blockieren (verpflichtend), ein **Hinweis**
 /// blockiert nie (PRD §27). Die Trennung läuft über die Blockier-Fähigkeit, nicht die Wichtigkeit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AufgabenTyp {
     /// Verpflichtend; *kann* blockieren (siehe `blockiert`).
@@ -40,7 +40,7 @@ pub enum AufgabenTyp {
 }
 
 /// Eine Startaufgabe, die beim Onboarding eines Bausteins in einem Produkt angelegt wird.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Startaufgabe {
     /// Menschlicher Titel der Aufgabe/des Hinweises.
     pub titel: String,
@@ -54,7 +54,7 @@ pub struct Startaufgabe {
 /// Eine interne Default-Kante des Bausteins: ein abgeleitetes Glob „stammt aus" einem Quell-Glob
 /// (z.B. Fertigungs-STL stammt aus der CAD-Quelle). Pattern-basiert, nicht pro-Datei (PRD §13).
 /// **Baustein-Default** (E20): kommt beim Onboarding automatisch, ganz **innerhalb** des Bausteins.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultKante {
     /// Glob des abgeleiteten Artefakts.
     pub derived_glob: String,
@@ -68,7 +68,7 @@ pub struct DefaultKante {
 /// Sinn der Paar-Stufe: die Kante überspannt zwei Bausteine und hat auf Baustein-Ebene keine
 /// Heimat). Rein deterministisch — **kein** ML, keine Daten, kein Parser (E21). Der Vorschlag wird
 /// **per Klick bestätigt**, nie automatisch angelegt (Onboarding bleibt ruhig).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaarDefaultKante {
     /// `id` des Partner-Bausteins, der zusätzlich im Stack liegen muss, damit der Vorschlag greift.
     pub partner_id: String,
@@ -79,7 +79,7 @@ pub struct PaarDefaultKante {
 }
 
 /// Ein **Baustein**: das wiederverwendbare Tool-Wissen für ein Tool (ADR 0003).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Baustein {
     /// Stabile Kebab-Identität, z.B. `"kicad"`. Eindeutig in der Bibliothek.
     pub id: String,
@@ -135,7 +135,7 @@ impl Baustein {
 
 /// Ein **Toolstack**: eine benannte, geordnete Auswahl von Baustein-`id`s aus der Bibliothek
 /// (ADR 0003). Repräsentiert einen Standard-Toolstack, aus dem ein Produkt-Stack kopiert wird.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toolstack {
     /// Stabile Kebab-Identität, z.B. `"standard-hw"`.
     pub id: String,

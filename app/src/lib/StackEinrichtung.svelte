@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import type {
     BibliothekView,
     Baustein,
@@ -70,7 +70,7 @@
   $effect(() => {
     void (async () => {
       try {
-        lib = await invoke<BibliothekView>("list_bibliothek");
+        lib = await cmd.listBibliothek();
       } catch (e) {
         error = String(e);
       }
@@ -120,16 +120,9 @@
     try {
       let result: ProduktStack;
       if (mode === "anlegen") {
-        result = await invoke<ProduktStack>("create_product_stack_cmd", {
-          product: productPath,
-          bausteinIds: [...chosen],
-          toolstack: basis,
-        });
+        result = await cmd.createProductStackCmd(productPath, [...chosen], basis);
       } else {
-        result = await invoke<ProduktStack>("extend_product_stack_cmd", {
-          product: productPath,
-          bausteinIds: [...chosen],
-        });
+        result = await cmd.extendProductStackCmd(productPath, [...chosen]);
       }
       onConfirmed(result);
     } catch (e) {
@@ -152,11 +145,7 @@
     error = null;
     busyId = b.id;
     try {
-      const res = await invoke<StilllegenResult>("stilllegen_baustein_cmd", {
-        product: productPath,
-        bausteinId: b.id,
-        stillgelegt,
-      });
+      const res = await cmd.stilllegenBausteinCmd(productPath, b.id, stillgelegt);
       // Reflect the new state locally so the row reads as retired/restored at once.
       present = res.stack.bausteine.slice();
       wirkungen = stillgelegt

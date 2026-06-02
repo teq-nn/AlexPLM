@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Eine **Artefakt-Karte** auf der Werkbank: per Konvention aus erfassten Dateien gebildet.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ArtefaktKarte {
     /// Stabiler Schlüssel `"<baustein-id>:<ordner>"` — die UI keyt Karten darauf.
     pub artefakt_id: String,
@@ -48,7 +48,7 @@ pub struct ArtefaktKarte {
 /// Ein **Unzugeordnet-Fach pro Arbeitsbereich**: die Waisen eines Arbeitsbereichs (oberster
 /// Ordner). Eine Waise ist eine erfasste Datei ohne Etikett — nichts geht verloren, der Ordner
 /// bleibt als Zuordnungs-Hinweis.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnzugeordnetFach {
     /// Der Arbeitsbereich (oberster Ordnername; `""` = Produktwurzel).
     pub arbeitsbereich: String,
@@ -57,7 +57,7 @@ pub struct UnzugeordnetFach {
 }
 
 /// Die ganze Werkbank-Sicht eines Produkts: Karten + Unzugeordnet-Fächer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct WerkbankView {
     /// Artefakt-Karten, sortiert nach `artefakt_id`.
     pub karten: Vec<ArtefaktKarte>,

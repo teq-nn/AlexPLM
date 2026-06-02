@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import { open } from "@tauri-apps/plugin-dialog";
   import type {
     RegisteredProduct,
@@ -26,7 +26,7 @@
 
   async function loadRegistry() {
     try {
-      products = await invoke<RegisteredProduct[]>("list_products");
+      products = await cmd.listProducts();
     } catch (e) {
       error = String(e);
     }
@@ -43,7 +43,7 @@
     searching = true;
     error = null;
     try {
-      result = await invoke<SearchResult>("search_products", { query: q });
+      result = await cmd.searchProducts(q);
     } catch (e) {
       error = String(e);
       result = null;
@@ -65,9 +65,7 @@
     });
     if (typeof selected !== "string") return;
     try {
-      products = await invoke<RegisteredProduct[]>("register_product", {
-        path: selected,
-      });
+      products = await cmd.registerProduct(selected);
       // A changed registry can change results — re-run any active query.
       if (query.trim()) void runSearch();
     } catch (e) {
@@ -87,10 +85,7 @@
     });
     if (typeof selected !== "string") return;
     try {
-      products = await invoke<RegisteredProduct[]>("relink_product", {
-        oldPath,
-        newPath: selected,
-      });
+      products = await cmd.relinkProduct(oldPath, selected);
       error = null;
       // A re-pointed entry can change results — re-run any active query so the freshly
       // reachable product drops out of the offline tally and into the hits.
@@ -103,9 +98,7 @@
 
   async function removeProduct(path: string) {
     try {
-      products = await invoke<RegisteredProduct[]>("unregister_product", {
-        path,
-      });
+      products = await cmd.unregisterProduct(path);
       if (query.trim()) void runSearch();
     } catch (e) {
       error = String(e);

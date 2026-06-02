@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import type { KontoView } from "./types";
 
   // Das globale Konto-Panel (ADR 0004, Issue #90). Genau EINE app-weite Server-Identität für das
@@ -36,7 +36,7 @@
   // Passwort — das bleibt write-only und muss neu eingetippt werden) und zeigt die Anmelde-Zeile.
   async function load() {
     try {
-      konto = await invoke<KontoView | null>("read_konto");
+      konto = await cmd.readKonto();
       if (konto) {
         server = konto.base_url;
         username = konto.account;
@@ -54,11 +54,7 @@
     error = null;
     busy = true;
     try {
-      const view = await invoke<KontoView>("save_konto", {
-        server,
-        username,
-        token,
-      });
+      const view = await cmd.saveKonto(server, username, token);
       // Das Geheimnis nicht behalten, sobald es an den Backend-Keystore übergeben ist.
       token = "";
       konto = view;
@@ -82,7 +78,7 @@
     error = null;
     busy = true;
     try {
-      await invoke("clear_konto");
+      await cmd.clearKonto();
       konto = null;
       server = "";
       username = "";
@@ -435,6 +431,9 @@
     background: var(--key-dark);
     color: var(--key-light);
     border-color: var(--key-dark);
+    /* Label swaps Prüfen & Speichern ⇄ Prüfen & Ändern ⇄ prüfe … — pin to the widest. */
+    min-width: 168px;
+    text-align: center;
   }
   .key.go:hover:not(:disabled) {
     background: #2a2724;

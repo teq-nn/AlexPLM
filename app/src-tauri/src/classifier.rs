@@ -18,7 +18,7 @@
 use serde::Serialize;
 
 /// One of the three mergeability buckets. A leaf file lands in exactly one.
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Bucket {
     /// Real text, git can merge: firmware, docs, BOM text.

@@ -37,7 +37,7 @@ pub struct RepoState {
 }
 
 /// Exactly one outcome of the Import Gate. Serialised kebab-case for the UI.
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum GateDecision {
     /// Safe: clean, non-destructive import (Issue #3 path). Delegated to `import_folder`.

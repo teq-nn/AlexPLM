@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// (US 27): an [`Aufgabe`](TaskKind::Aufgabe) is block-*capable*, a [`Hinweis`](TaskKind::Hinweis)
 /// never blocks. The block *decision* itself is out of scope here (Issue #49); this core only
 /// records the capability so the Freigabe-Gate can later read it.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskKind {
     /// Verpflichtend — *kann* blockieren (am Freigabe-Revision, abhängig vom Kontext, E42).
@@ -30,7 +30,7 @@ pub enum TaskKind {
 
 /// The lifecycle status of a task. Deliberately tiny (no Kanban columns, US 28): an item is
 /// open until it is either done or dropped. Only `Offen` items can ever block.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskStatus {
     /// Noch offen — the only status that can carry a block.
@@ -45,7 +45,7 @@ pub enum TaskStatus {
 /// Arbeitsbereich, or a single Artefakt — or off nothing at all (a free-floating item is
 /// valid; the list stays schlank). Tagged so the on-disk JSON and the frontend mirror stay
 /// honest and round-trip exactly.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", content = "ref", rename_all = "kebab-case")]
 pub enum TaskLink {
     /// The product as a whole.
@@ -61,7 +61,7 @@ pub enum TaskLink {
 /// One Aufgabe or Hinweis. The minimal model (US 28): `title` / `status` / `kind` / `link` /
 /// `due` + the `blocks_everywhere` opt-out (US 30). `id` is a stable opaque key the store
 /// assigns; `created_at` is an injected timestamp (the core never reads the clock).
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Task {
     /// Stable opaque id (the store assigns it; the UI keys rows on it).
     pub id: String,

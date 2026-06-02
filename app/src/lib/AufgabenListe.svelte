@@ -99,8 +99,8 @@
       title: t.title,
       kind: t.kind,
       due: t.due ?? "",
-      blocks_everywhere: t.blocks_everywhere,
-      ...linkToDraft(t.link),
+      blocks_everywhere: t.blocks_everywhere ?? false,
+      ...linkToDraft(t.link ?? null),
     };
   }
   function cancel() {
@@ -284,10 +284,10 @@
                       <span class="state label">{t.status}</span>
                     {/if}
                   </div>
-                  {#if linkLabel(t.link) || t.due}
+                  {#if linkLabel(t.link ?? null) || t.due}
                     <div class="task-meta mono">
-                      {#if linkLabel(t.link)}
-                        <span class="ml" title="Verknüpfung">{linkLabel(t.link)}</span>
+                      {#if linkLabel(t.link ?? null)}
+                        <span class="ml" title="Verknüpfung">{linkLabel(t.link ?? null)}</span>
                       {/if}
                       {#if t.due}
                         <span class="md" title="Fälligkeit">fällig {t.due}</span>

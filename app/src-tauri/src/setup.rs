@@ -29,7 +29,7 @@ pub const REMOTE_NAME: &str = "origin";
 /// by [`normalize_remote`]. Since ADR 0004 the ceremony is **credential-free** — the Konto is the
 /// sole writer of credentials (host-keyed in the OS keystore) — so this carries only the bare,
 /// shareable clone URL and the host origin; no `user:token@` URL is ever built here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RemoteConfig {
     /// The bare `https://host/owner/repo.git` URL with NO credentials — what `.git/config` gets
     /// (Issue #22: credentials live in the OS keystore, never in the URL) and what a colleague
@@ -153,7 +153,7 @@ pub fn locksverify_config(clone_url: &str) -> Vec<String> {
 /// Where a product stands in the ceremony. Serialised kebab-case for the UI, which shows the
 /// ceremony **only** in `NotConfigured` and a settled "eingerichtet" readout otherwise — so the
 /// one-time flow is clearly separated from daily use (E41).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SetupStage {
     /// No remote configured: offer the one-time ceremony.
@@ -191,7 +191,7 @@ pub fn decide_setup_state(facts: SetupFacts) -> SetupStage {
 
 /// What the UI renders for the ceremony: the stage, the facts behind it, and — once a remote is
 /// configured — the credential-free clone URL to hand a colleague (the invite).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SetupReport {
     /// The pure stage decision (drives whether the ceremony or the settled readout shows).
     pub stage: SetupStage,
@@ -207,7 +207,7 @@ pub struct SetupReport {
 /// the time the product publishes and the ceremony advances; but if the chosen Server-Repo already
 /// carries Stände that contradict the local product on an **unmergeable** artifact, publishing
 /// **stops** and raises the single domain-language exception instead of letting git reject the push.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PublishOutcome {
     /// The product was published; the refreshed ceremony state (now `eingerichtet`) rides along.

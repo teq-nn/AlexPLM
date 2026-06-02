@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { IssueRef, RepoLabel } from "./types";
 
@@ -73,7 +73,7 @@
   async function loadLabels() {
     if (!productPath) return;
     try {
-      labels = await invoke<RepoLabel[]>("produkt_etiketten", { path: productPath });
+      labels = await cmd.produktEtiketten(productPath);
     } catch {
       labels = [];
     }
@@ -98,13 +98,7 @@
     error = null;
     busy = true;
     try {
-      result = await invoke<IssueRef>("melde_problem", {
-        path: productPath,
-        titel,
-        beschreibung,
-        logAnhaengen,
-        labels: selectedIds,
-      });
+      result = await cmd.meldeProblem(productPath, titel, beschreibung, logAnhaengen, selectedIds);
     } catch (e) {
       error = asAppError(e).message;
     } finally {

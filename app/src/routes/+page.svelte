@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { cmd } from "$lib/commands";
   import { open } from "@tauri-apps/plugin-dialog";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onDestroy, onMount } from "svelte";
   import type {
-    Baustein,
+    ProduktBaustein,
     EdgeView,
     GateReport,
     ImportResult,
@@ -117,11 +117,7 @@
   async function runCheckpoint(path: string, revision: boolean) {
     if (!productPath) return;
     try {
-      const action = await invoke<WardenAction>("run_checkpoint", {
-        product: productPath,
-        path,
-        revision,
-      });
+      const action = await cmd.runCheckpoint(productPath, path, revision);
       // Only a real action lights the readout; Refuse leaves the rhythm silent.
       if (action !== "refuse") wardenAction = action;
       // At every checkpoint, self-heal: auto-unlock every held lock whose path is now locally
@@ -140,7 +136,7 @@
   async function sweepCleanLocks() {
     if (!productPath) return;
     try {
-      await invoke<string[]>("sweep_clean_locks", { product: productPath });
+      await cmd.sweepCleanLocks(productPath);
     } catch (e) {
       // Self-healing is a quiet safety net; a hiccup must never surface as a loud error.
     }
@@ -173,10 +169,7 @@
     if (loud) return;
     syncInFlight = true;
     try {
-      const outcome = await invoke<SyncOutcome>("sync_product", {
-        path: productPath,
-        other: foreignLocks[0]?.owner ?? null,
-      });
+      const outcome = await cmd.syncProduct(productPath, foreignLocks[0]?.owner ?? null);
       const s = outcome.status;
       if (s === "aktuell") {
         syncQuiet = "aktuell";
@@ -223,11 +216,7 @@
     if (!artifact) return;
     resolving = true;
     try {
-      const outcome = await invoke<SyncOutcome>("resolve_sync_cmd", {
-        path: productPath,
-        artifact,
-        choice,
-      });
+      const outcome = await cmd.resolveSyncCmd(productPath, artifact, choice);
       loud = null;
       const wasPublish = loudFromPublish;
       loudFromPublish = false;
@@ -257,9 +246,7 @@
   async function republishAfterResolve() {
     if (!productPath) return;
     try {
-      const outcome = await invoke<PublishOutcome>("publish_to_server", {
-        path: productPath,
-      });
+      const outcome = await cmd.publishToServer(productPath, null);
       if (outcome.kind === "laute-ausnahme") {
         loud = outcome;
         loudFromPublish = true;
@@ -301,7 +288,7 @@
   async function rememberProduct(path: string) {
     produktliste?.markOpened(path);
     try {
-      await invoke("register_product", { path });
+      await cmd.registerProduct(path);
     } catch (e) {
       // The Verlauf is a convenience over the read-only shell; a registry hiccup is not fatal.
     }
@@ -320,7 +307,7 @@
   async function refreshSetup() {
     if (!productPath) return;
     try {
-      setup = await invoke<SetupReport>("read_setup_state", { path: productPath });
+      setup = await cmd.readSetupState(productPath);
     } catch (e) {
       // The ceremony state is auxiliary; a read failure must not break the shell.
       setup = null;
@@ -346,11 +333,8 @@
     );
     try {
       const [sigs, foreign] = await Promise.all([
-        invoke<ArtifactSignal[]>("read_status", {
-          product: productPath,
-          paths,
-        }),
-        invoke<ForeignLock[]>("read_foreign_locks", { product: productPath }),
+        cmd.readStatus(productPath, paths),
+        cmd.readForeignLocks(productPath),
       ]);
       signals = Object.fromEntries(sigs.map((s) => [s.path, s]));
       foreignLocks = foreign;
@@ -380,10 +364,7 @@
   async function editBaustein(mainFile: string | null) {
     if (!productPath || !mainFile) return;
     try {
-      await invoke<boolean>("lock_artifact", {
-        product: productPath,
-        path: mainFile,
-      });
+      await cmd.lockArtifact(productPath, mainFile);
     } catch (e) {
       error = String(e); // a foreign-held lock is real, loud coordination — surface it
     }
@@ -395,9 +376,7 @@
   async function refreshWerkbank() {
     if (!productPath) return;
     try {
-      werkbank = await invoke<WerkbankView>("read_werkbank_cmd", {
-        product: productPath,
-      });
+      werkbank = await cmd.readWerkbankCmd(productPath);
     } catch (e) {
       // The Werkbank is the convention layer over the read view; a hiccup must not break the shell.
       werkbank = null;
@@ -444,11 +423,7 @@
   async function assignArtefakt(file: string, bausteinId: string) {
     if (!productPath) return;
     try {
-      werkbank = await invoke<WerkbankView>("assign_artefakt_cmd", {
-        product: productPath,
-        file,
-        bausteinId,
-      });
+      werkbank = await cmd.assignArtefaktCmd(productPath, file, bausteinId);
     } catch (e) {
       error = String(e);
     }
@@ -528,7 +503,7 @@
       return;
     }
     try {
-      stack = await invoke<ProduktStack>("read_product_stack", { product: productPath });
+      stack = await cmd.readProductStack(productPath);
     } catch {
       stack = null;
     }
@@ -546,7 +521,7 @@
     stack = s;
     stackOpen = false;
     if (productPath) {
-      product = await invoke<ProductView>("open_product", { path: productPath });
+      product = await cmd.openProduct(productPath);
     }
     await refreshWerkbank();
     await refreshTasks();
@@ -570,7 +545,7 @@
   async function refreshTasks() {
     if (!productPath) return;
     try {
-      tasks = await invoke<Task[]>("list_tasks", { path: productPath });
+      tasks = await cmd.listTasks(productPath);
     } catch (e) {
       // Tasks are opt-in extra; a read failure must not break the read-only shell.
       error = String(e);
@@ -585,14 +560,14 @@
     blocks_everywhere: boolean;
   }) {
     if (!productPath) return;
-    tasks = await invoke<Task[]>("create_task_cmd", {
-      path: productPath,
-      title: t.title,
-      kind: t.kind,
-      link: t.link,
-      due: t.due,
-      blocksEverywhere: t.blocks_everywhere,
-    });
+    tasks = await cmd.createTaskCmd(
+      productPath,
+      t.title,
+      t.kind,
+      t.link,
+      t.due,
+      t.blocks_everywhere,
+    );
   }
 
   async function editTask(
@@ -608,29 +583,25 @@
     if (!productPath) return;
     // The edit form carries the task's full state, so the command replaces title/kind/link/due/
     // flag wholesale (a null link/due clears it). Status has its own command (setTaskStatus).
-    tasks = await invoke<Task[]>("edit_task_cmd", {
-      path: productPath,
+    tasks = await cmd.editTaskCmd(
+      productPath,
       id,
-      title: t.title,
-      kind: t.kind,
-      link: t.link,
-      due: t.due,
-      blocksEverywhere: t.blocks_everywhere,
-    });
+      t.title,
+      t.kind,
+      t.link,
+      t.due,
+      t.blocks_everywhere,
+    );
   }
 
   async function setTaskStatus(id: string, status: TaskStatus) {
     if (!productPath) return;
-    tasks = await invoke<Task[]>("set_task_status_cmd", {
-      path: productPath,
-      id,
-      status,
-    });
+    tasks = await cmd.setTaskStatusCmd(productPath, id, status);
   }
 
   async function deleteTask(id: string) {
     if (!productPath) return;
-    tasks = await invoke<Task[]>("delete_task_cmd", { path: productPath, id });
+    tasks = await cmd.deleteTaskCmd(productPath, id);
   }
 
   // Per-artifact lookups derived from the edge view: which source a card is derived from,
@@ -643,9 +614,7 @@
   async function refreshGraph() {
     if (!productPath) return;
     try {
-      graph = await invoke<VersionGraph>("read_version_graph", {
-        path: productPath,
-      });
+      graph = await cmd.readVersionGraph(productPath);
     } catch (e) {
       // The tree is a read-only view; a transient read failure must not break the shell.
       error = String(e);
@@ -690,11 +659,7 @@
   async function openAsFolder(node: StandNode) {
     if (!productPath) return;
     const label = node.revision ?? node.id.slice(0, 8);
-    const result = await invoke<GeoeffneterOrdner>("knoten_als_ordner", {
-      path: productPath,
-      standId: node.id,
-      label,
-    });
+    const result = await cmd.knotenAlsOrdner(productPath, node.id, label);
     // Open the materialised folder via the OS default file browser.
     try {
       await openPath(result.pfad);
@@ -709,11 +674,7 @@
    *  moves the Werkbank, so afterwards we refresh the quiet views to reflect the new active line. */
   async function branchFrom(node: StandNode, branch: string) {
     if (!productPath) return;
-    graph = await invoke<VersionGraph>("knoten_abzweigen", {
-      path: productPath,
-      standId: node.id,
-      branch,
-    });
+    graph = await cmd.knotenAbzweigen(productPath, node.id, branch);
     await refreshGraph();
     await refreshWerkbank();
     await refreshStatus();
@@ -724,10 +685,7 @@
    *  old Stand on top as a new forward Stand (no reset/rebase/stash), then re-projects. */
   async function throwBack(node: StandNode) {
     if (!productPath) return;
-    graph = await invoke<VersionGraph>("knoten_zurueckwerfen", {
-      path: productPath,
-      standId: node.id,
-    });
+    graph = await cmd.knotenZurueckwerfen(productPath, node.id);
     await refreshGraph();
     await refreshWerkbank();
     await refreshStatus();
@@ -737,7 +695,7 @@
   async function refreshEdges() {
     if (!productPath) return;
     try {
-      edgeView = await invoke<EdgeView>("read_edges", { path: productPath });
+      edgeView = await cmd.readEdges(productPath);
     } catch (e) {
       // Edges are opt-in extra; a read failure must not break the read-only shell.
       error = String(e);
@@ -745,28 +703,20 @@
   }
 
   // Other Bausteine this card can be derived from (itself excluded; no self-edge).
-  function candidatesFor(self: Baustein): Baustein[] {
+  function candidatesFor(self: ProduktBaustein): ProduktBaustein[] {
     return product ? product.bausteine.filter((b) => b.path !== self.path) : [];
   }
 
   async function deriveFrom(derived: string, source: string) {
     if (!productPath) return;
-    edgeView = await invoke<EdgeView>("add_edge", {
-      path: productPath,
-      derived,
-      source,
-    });
+    edgeView = await cmd.addEdge(productPath, derived, source);
   }
 
   async function clearEdge(derived: string) {
     if (!productPath) return;
     const source = sourceOf.get(derived);
     if (!source) return;
-    edgeView = await invoke<EdgeView>("remove_edge", {
-      path: productPath,
-      derived,
-      source,
-    });
+    edgeView = await cmd.removeEdge(productPath, derived, source);
   }
 
   // ── Kanten auf der Werkbank (Issue #56) ──────────────────────────────────────
@@ -785,7 +735,7 @@
   /** Draw a Hand-Kante from a Werkbank card (`derived` „stammt aus" `source`). */
   async function deriveKarte(derived: string, source: string) {
     if (!productPath) return;
-    edgeView = await invoke<EdgeView>("add_edge", { path: productPath, derived, source });
+    edgeView = await cmd.addEdge(productPath, derived, source);
   }
 
   /** Clear the edge a Werkbank card carries (works for Hand- and Default-Kanten alike). */
@@ -793,17 +743,13 @@
     if (!productPath) return;
     const source = sourceOf.get(derived);
     if (!source) return;
-    edgeView = await invoke<EdgeView>("remove_edge", { path: productPath, derived, source });
+    edgeView = await cmd.removeEdge(productPath, derived, source);
   }
 
   /** Confirm a deterministic Baustein-Paar-Default suggestion → a PaarDefault edge (E20). */
   async function confirmSuggestion(derived: string, source: string) {
     if (!productPath) return;
-    edgeView = await invoke<EdgeView>("confirm_pair_edge_cmd", {
-      path: productPath,
-      derived,
-      source,
-    });
+    edgeView = await cmd.confirmPairEdgeCmd(productPath, derived, source);
   }
 
   // Single long-lived listener for settled saves. The watcher (Rust) does the
@@ -833,7 +779,7 @@
   onDestroy(() => {
     unlisten?.();
     unlistenLock?.();
-    void invoke("stop_watching").catch(() => {});
+    void cmd.stopWatching().catch(() => {});
   });
 
   // Dismiss the boot splash (Issue #114): the static #boot overlay in app.html covered the
@@ -864,15 +810,15 @@
     // THEN open the target. reset() stops both loops; the watcher is released explicitly below
     // before re-arming it for the new path (so a switch can never leak a watcher/loop).
     reset();
-    await invoke("stop_watching").catch(() => {});
+    await cmd.stopWatching().catch(() => {});
     loading = "open";
     try {
-      product = await invoke<ProductView>("open_product", { path });
+      product = await cmd.openProduct(path);
       productPath = path;
       loadWidths(path); // restore this product's saved column layout
       // A fresh product starts with a fresh ledger, then watching begins silently.
       stands = [];
-      await invoke("start_watching", { path });
+      await cmd.startWatching(path);
       await refreshGraph();
       // Rehydrate the Commits-Schiene from the version graph (Issue #115): the ledger now shows
       // the existing Stand history (incl. unpushed) on reopen, not just this session's saves.
@@ -922,7 +868,7 @@
     loading = "gate";
     let report: GateReport;
     try {
-      report = await invoke<GateReport>("evaluate_gate", { path: selected });
+      report = await cmd.evaluateGate(selected);
     } catch (e) {
       error = String(e);
       loading = null;
@@ -952,13 +898,13 @@
   async function runCleanImport(path: string) {
     loading = "import";
     try {
-      const result = await invoke<ImportResult>("import_product", { path });
+      const result = await cmd.importProduct(path);
       imported = result;
       product = result.product;
       productPath = path;
       loadWidths(path); // restore this product's saved column layout
       stands = [];
-      await invoke("start_watching", { path });
+      await cmd.startWatching(path);
       await refreshGraph();
       // An import may have adopted an existing repo with history (clean-init), so rehydrate the
       // Commits-Schiene from the graph too (Issue #115); a truly fresh init seeds nothing.
@@ -990,7 +936,7 @@
     const path = gate.path;
     loading = "migrate";
     try {
-      const result = await invoke<ImportResult>("migrate_history", { path });
+      const result = await cmd.migrateHistory(path);
       imported = result;
       product = result.product;
       productPath = path;
@@ -1116,12 +1062,7 @@
   // Rust persists it and labels the version durably, then returns the refreshed tree.
   async function promote(node: StandNode, version: string, notes: string) {
     if (!productPath) return;
-    graph = await invoke<VersionGraph>("promote_revision", {
-      path: productPath,
-      standId: node.id,
-      version,
-      notes,
-    });
+    graph = await cmd.promoteRevision(productPath, node.id, version, notes);
     // A Revision is the Freigabe ("ich bin fertig damit"): publish the whole branch to the
     // shared stand and self-heal locks (Issue #54-Folge). The earlier per-path checkpoint always
     // Refused here — at revision time the work is already committed (clean), so the per-path
@@ -1135,7 +1076,7 @@
   async function freigeben() {
     if (!productPath) return;
     try {
-      const action = await invoke<WardenAction>("freigeben", { product: productPath });
+      const action = await cmd.freigeben(productPath);
       if (action !== "refuse") wardenAction = action;
       await sweepCleanLocks();
       await refreshStatus();
@@ -1162,7 +1103,7 @@
     if (!productPath || securing) return;
     securing = true;
     try {
-      const action = await invoke<WardenAction>("sichern", { product: productPath });
+      const action = await cmd.sichern(productPath);
       if (action !== "refuse") wardenAction = action;
     } catch (e) {
       // Stays out of the silent vocabulary; the Diagnose-Log records why a backup failed.
@@ -1192,10 +1133,7 @@
       await applyToggleArt(node);
       return;
     }
-    const verdict = await invoke<GateVerdict>("evaluate_freigabe_gate", {
-      path: productPath,
-      art: "freigabe",
-    });
+    const verdict = await cmd.evaluateFreigabeGate(productPath, "freigabe");
     if (verdict.knopf === "taggen" && verdict.fremd_warnung === null) {
       // Alles sauber and nobody else co-tagged → no deliberate handle needed; raise it.
       await applyToggleArt(node);
@@ -1209,10 +1147,7 @@
   async function applyToggleArt(node: StandNode) {
     if (!productPath || node.revision === null) return;
     const raising = node.revision_art !== "freigabe";
-    graph = await invoke<VersionGraph>("toggle_revision_art", {
-      path: productPath,
-      version: node.revision,
-    });
+    graph = await cmd.toggleRevisionArt(productPath, node.revision);
     if (raising) void freigeben();
   }
 
@@ -1220,10 +1155,7 @@
   // clean, the gate closes; otherwise the staffed list updates in place.
   async function refreshFreigabeGate() {
     if (!productPath || !freigabeGate) return;
-    const verdict = await invoke<GateVerdict>("evaluate_freigabe_gate", {
-      path: productPath,
-      art: "freigabe",
-    });
+    const verdict = await cmd.evaluateFreigabeGate(productPath, "freigabe");
     freigabeGate = { node: freigabeGate.node, verdict };
   }
 
@@ -1235,10 +1167,7 @@
     freigabeBusy = true;
     try {
       if (begruendung && node.revision) {
-        await invoke("log_freigabe_begruendung", {
-          version: node.revision,
-          begruendung,
-        });
+        await cmd.logFreigabeBegruendung(node.revision, begruendung);
       }
       await applyToggleArt(node);
       freigabeGate = null;
@@ -1275,15 +1204,15 @@
       // Herabstufen zum Hinweis: a Hinweis is never block-capable, so it leaves the hard block.
       const t = tasks.find((x) => x.id === taskId);
       if (t) {
-        tasks = await invoke<Task[]>("edit_task_cmd", {
-          path: productPath,
-          id: taskId,
-          title: t.title,
-          kind: "hinweis",
-          link: t.link,
-          due: t.due,
-          blocksEverywhere: t.blocks_everywhere,
-        });
+        tasks = await cmd.editTaskCmd(
+          productPath,
+          taskId,
+          t.title,
+          "hinweis",
+          t.link ?? null,
+          t.due ?? null,
+          t.blocks_everywhere ?? false,
+        );
       }
       await refreshFreigabeGate();
     } finally {
@@ -1736,7 +1665,7 @@
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
-        class="splitter"
+        class="splitter tree-splitter"
         role="separator"
         aria-orientation="vertical"
         aria-label="Breite des Verlauf-/Graph-Bereichs"
@@ -1756,7 +1685,7 @@
       <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
-        class="splitter"
+        class="splitter rail-splitter"
         role="separator"
         aria-orientation="vertical"
         aria-label="Breite der Fremde-Sperren-Schiene"
@@ -1867,7 +1796,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
     padding: 10px 16px;
     background: var(--surface-raised);
     border-bottom: 1px solid var(--hairline);
@@ -2051,6 +1981,12 @@
     align-items: center;
     gap: 10px;
   }
+  /* Both keys swap their label for a busy state (Neues Produkt→prüfe …/lege an …,
+     Produkt öffnen→öffne …); pin each to its widest so they don't twitch mid-action. */
+  .entry-actions > .key {
+    min-width: 140px;
+    text-align: center;
+  }
   /* The read-only distinction, kept legible after the move (mirrors the empty-state sub-line). */
   .entry-hint {
     margin-left: 4px;
@@ -2064,6 +2000,27 @@
     flex: 1;
     min-height: 0;
     display: flex;
+    /* On a narrow window the fixed-width rails can't all fit; clip the stage and let the
+       breakpoints below fold the auxiliary rails away rather than push the work area off-screen. */
+    overflow: hidden;
+  }
+
+  /* Schmale Fenster (Issue: läuft auf unterschiedlich großen Schirmen). The drag-set rails are a
+     wide-desktop luxury; on smaller screens they would shove the work chassis off-edge and clip its
+     toolbar. So we fold them away in order of dispensability — first the status rail (its readouts
+     live in the work toolbar too), then the inline Versionsbaum (still reachable full-width via the
+     Verlauf-Raum). The work chassis always keeps the room. */
+  @media (max-width: 1080px) {
+    .rail,
+    .rail-splitter {
+      display: none;
+    }
+  }
+  @media (max-width: 840px) {
+    .tree-col,
+    .tree-splitter {
+      display: none;
+    }
   }
 
   /* The right-hand instrument rail stacks the foreign-locks panel over the Stände ledger.
@@ -2160,6 +2117,10 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    /* Wrap rather than clip: when the work column narrows, the action keys drop to a second row
+       instead of overflowing past the edge (which previously hid buttons on smaller screens). */
+    flex-wrap: wrap;
+    gap: 8px 12px;
     padding: 11px 16px;
     border-bottom: 1px solid var(--hairline);
   }
@@ -2170,6 +2131,8 @@
   .actions {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 10px;
   }
 

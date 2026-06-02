@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const DEFAULT_QUIET_WINDOW: Duration = Duration::from_secs(3);
 
 /// A settled save, surfaced to the UI as a new **Stand**. Carries no git vocabulary.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct Stand {
     /// Product-relative path that settled (forward slashes).
     pub path: String,

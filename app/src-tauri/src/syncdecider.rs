@@ -55,7 +55,7 @@ impl DivergedPath {
 }
 
 /// The single decision the Sync Decider returns for a divergence. Exactly one; total.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SyncDecision {
     /// **Silent merge** — every diverged path is free, mergeable text. git merges it with **no
@@ -83,7 +83,7 @@ impl SyncDecision {
 
 /// Which stand the user must choose between in a loud exception. The whole question is framed in
 /// domain language; this enum never leaks a git ref or marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StandChoice {
     /// Keep my local stand for the contested artifact.
@@ -95,7 +95,7 @@ pub enum StandChoice {
 /// The domain-language question shown in the single orange-frame loud exception. It names the
 /// contested artifact in the tool's own words and offers the two stands to choose from. It holds
 /// **no** git conflict marker by construction (see [`LoudQuestion::contains_git_marker`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LoudQuestion {
     /// The one-line question, e.g. „dein und Bens Gehäuse-Stand widersprechen sich — welcher
     /// gilt?". Domain language only.
@@ -108,7 +108,7 @@ pub struct LoudQuestion {
 }
 
 /// One choosable stand in the loud question, with a domain label. No git wording.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StandOption {
     pub choice: StandChoice,
     /// The label, e.g. "mein Stand" / "Bens Stand". Domain language.

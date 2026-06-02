@@ -46,7 +46,7 @@ pub struct CommitFact {
 /// **Freigabe** (streng), which write-protects the tag (E8). Toggling back is a deliberate
 /// reversible „Un-Release" (E22). Serialized to the UI in kebab-case (`"prototyp"` /
 /// `"freigabe"`).
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(specta::Type, Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum RevisionArt {
     /// Lax: the default for a new Revision. No write-protect, warnings only.
@@ -150,7 +150,7 @@ pub struct RepoSnapshot {
 
 /// A single node in the version tree: a Stand, possibly promoted to a Revision and/or
 /// with its binary content offloaded. Serialized straight to the UI.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct StandNode {
     /// Stable id (commit hash). The UI keys rows on this; never displayed as git.
     pub id: String,
@@ -191,7 +191,7 @@ pub struct StandNode {
 
 /// The dark "display" version tree the UI renders, plus the active revision version that
 /// the version bar shows in Mono.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct VersionGraph {
     /// Stände newest-first.
     pub nodes: Vec<StandNode>,

@@ -12,7 +12,10 @@ use serde::Serialize;
 use std::path::Path;
 
 /// A leaf folder understood as a building block of the product.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+// Distinct from the catalog `baustein::Baustein` — specta exports unique names, and the
+// hand-written types.ts silently declaration-merged the two. This is the product-view leaf.
+#[derive(specta::Type, Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename = "ProduktBaustein")]
 pub struct Baustein {
     /// Folder name; the UI renders this as a caps label.
     pub name: String,
@@ -23,7 +26,7 @@ pub struct Baustein {
 }
 
 /// Read-only projection of a product folder.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(specta::Type, Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct ProductView {
     pub name: String,
     pub branch: String,

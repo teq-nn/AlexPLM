@@ -22,7 +22,7 @@
 //! erfunden — sie kommt aus dem `zuordnung.rs`-Kern (`zuordnen`), damit es nur **eine** Wahrheit über
 //! Zuordnung gibt.
 
-use crate::edges::{Edge, Herkunft};
+use crate::edges::{Edge, KantenHerkunft};
 use crate::stackstore::ProduktStack;
 use crate::zuordnung::{zuordnen, BausteinRegel, Zuordnung};
 use serde::Serialize;
@@ -41,7 +41,7 @@ pub struct ArtefaktDatei {
 /// Ein **deterministischer Kanten-Vorschlag** aus einer Paar-Default-Regel (E20). Wird in der UI
 /// angezeigt und **per Klick** zu einer echten [`Edge`] (Herkunft `PaarDefault`) bestätigt — nie
 /// automatisch angelegt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KantenVorschlag {
     /// Das abgeleitete Artefakt (Ordner-Pfad).
     pub derived: String,
@@ -56,7 +56,7 @@ pub struct KantenVorschlag {
 impl KantenVorschlag {
     /// Die [`Edge`], die dieser Vorschlag bei Bestätigung anlegt (Herkunft `PaarDefault`).
     pub fn to_edge(&self) -> Edge {
-        Edge::with_herkunft(self.derived.clone(), self.source.clone(), Herkunft::PaarDefault)
+        Edge::with_herkunft(self.derived.clone(), self.source.clone(), KantenHerkunft::PaarDefault)
     }
 }
 
@@ -111,7 +111,7 @@ pub fn baustein_default_kanten(stack: &ProduktStack, dateien: &[ArtefaktDatei]) 
                     if d == s {
                         continue; // kein Self-Edge (Quelle und Ableitung im selben Artefakt)
                     }
-                    let edge = Edge::with_herkunft(d.clone(), s.clone(), Herkunft::BausteinDefault);
+                    let edge = Edge::with_herkunft(d.clone(), s.clone(), KantenHerkunft::BausteinDefault);
                     if !out.iter().any(|e| e.same_endpoints(&edge)) {
                         out.push(edge);
                     }
@@ -284,7 +284,7 @@ mod tests {
 
         // Jede abgeleitete Kante trägt Herkunft BausteinDefault, ist kein Self-Edge und liegt ganz
         // innerhalb der Heimat mechanik (das *.stl aus elektronik wird nie zur Quelle/Ableitung).
-        assert!(edges.iter().all(|e| e.herkunft == Herkunft::BausteinDefault));
+        assert!(edges.iter().all(|e| e.herkunft == KantenHerkunft::BausteinDefault));
         assert!(edges.iter().all(|e| e.derived != e.source), "kein Self-Edge");
         assert!(edges
             .iter()
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(v[0].source, "elektronik/board");
         assert_eq!(v[0].baustein_id, "jlcpcb");
         assert_eq!(v[0].partner_id, "kicad");
-        assert_eq!(v[0].to_edge().herkunft, Herkunft::PaarDefault);
+        assert_eq!(v[0].to_edge().herkunft, KantenHerkunft::PaarDefault);
 
         // Partner fehlt -> kein Vorschlag
         let nur_jlc = paar_default_vorschlaege(&stack_of(&[jlc.clone()]), &dateien, &[]);
@@ -372,15 +372,15 @@ mod tests {
     fn mit_default_kanten_preserves_existing_hand_edge() {
         let hand = Edge::new("a", "b"); // Hand-Kante a<-b
         let defaults = vec![
-            Edge::with_herkunft("a", "b", Herkunft::BausteinDefault), // gleiche Endpunkte -> No-op
-            Edge::with_herkunft("c", "d", Herkunft::BausteinDefault), // neu
-            Edge::with_herkunft("x", "x", Herkunft::BausteinDefault), // Self-Edge -> weggelassen
+            Edge::with_herkunft("a", "b", KantenHerkunft::BausteinDefault), // gleiche Endpunkte -> No-op
+            Edge::with_herkunft("c", "d", KantenHerkunft::BausteinDefault), // neu
+            Edge::with_herkunft("x", "x", KantenHerkunft::BausteinDefault), // Self-Edge -> weggelassen
         ];
         let merged = mit_default_kanten(vec![hand], &defaults);
         assert_eq!(merged.len(), 2);
         // a<-b bleibt die Hand-Kante
         let ab = merged.iter().find(|e| e.derived == "a" && e.source == "b").unwrap();
-        assert_eq!(ab.herkunft, Herkunft::Hand, "Hand-Kante nicht überschrieben");
+        assert_eq!(ab.herkunft, KantenHerkunft::Hand, "Hand-Kante nicht überschrieben");
         assert!(merged.iter().any(|e| e.derived == "c" && e.source == "d"));
         assert!(!merged.iter().any(|e| e.derived == "x"));
     }

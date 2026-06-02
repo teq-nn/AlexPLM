@@ -23,7 +23,7 @@ pub const REGISTRY_FILE: &str = "produkt-registry.json";
 /// One registered product: **only its path** (forward-or-native as the OS gave it) plus the
 /// folder name as a convenience label the UI can show without re-reading the disk. The label is
 /// derived from the path, never an independent fact — so it cannot drift from the real folder.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisteredProduct {
     /// Absolute path to the product folder. The single source of truth for this entry.
     pub path: String,

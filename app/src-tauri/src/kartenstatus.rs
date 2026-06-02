@@ -94,7 +94,7 @@ impl GitFileState {
 /// UI (`"vorhanden"`/`"geaendert"`/`"fehlt"`/`"uebernommen"`/`"ignoriert"`). Das orthogonale
 /// **Stale**-Flag ([`KartenProjektion::stale`]) reitet daneben, nicht hier hinein — eine Karte
 /// kann „vorhanden" **und** „stale" sein (Quelle neuer als Ableitung, E26/E40).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum KartenStatus {
     /// Alle Dateien erfasst und ruhig — der Normalfall. Auch die Antwort für eine leere Karte.
@@ -125,7 +125,7 @@ impl From<GitFileState> for KartenStatus {
 /// Die **abgeleitete Karten-Projektion** (#53): der gefaltete Git-Status **plus** das
 /// orthogonale Stale-Flag. Das ist die Form, die #55 (Filter) und #56 (Kanten) konsumieren —
 /// stabil und vollständig getrennt: `status` aus Git, `stale` aus Kanten.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[derive(specta::Type, Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub struct KartenProjektion {
     /// Der live aus Git abgeleitete Karten-Status (E26).
     pub status: KartenStatus,
