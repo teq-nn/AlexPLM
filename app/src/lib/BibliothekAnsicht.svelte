@@ -175,7 +175,11 @@
           <!-- Karte spiegelt den Werkbank-Karten-Look. Primärklick öffnet Bearbeiten (Slice 2); die
                „Duplizieren"-Aktion in der Ecke öffnet den Anlege-Pfad vorgefüllt (Slice 4). Beide als
                eigene Buttons in einem Wrapper — verschachtelte Buttons sind ungültiges HTML. -->
-          <div class="cardwrap" class:retired={b.stillgelegt}>
+          <div
+            class="cardwrap"
+            class:retired={b.stillgelegt}
+            class:confirming={confirmingDelete === b.id}
+          >
             <button class="card" onclick={() => openBaustein(b)}>
               <div class="ctop">
                 <span class="cname">{b.name}</span>
@@ -403,10 +407,12 @@
     transform: translateY(0);
   }
 
-  /* Hover-Aktionsleiste (Duplizieren · Löschen): ein eigener, deckender Streifen am unteren Karten-
-     rand — spiegelt die Lösch-Bestätigung, deckt also den Glob-Auszug sauber ab, statt sich mit den
-     Mustern zu überlagern. Erst beim Überfahren sichtbar, damit der Primärklick (Bearbeiten) dominiert;
-     die obere Ecke bleibt dem Herkunft-Etikett. */
+  /* Hover-Aktionsleiste (Duplizieren · Löschen): ein eigener Streifen am unteren Kartenrand. Statt
+     sich auf seinen deckenden Grund zu verlassen (der Glob-Auszug lugte je nach Umbruch darüber
+     hervor — Text über Text), blendet beim Überfahren der Glob-Auszug aus (siehe .globpeek) und die
+     Leiste tritt in den dann freien Streifen. Die Zeilenhöhe bleibt reserviert (min-height), daher
+     springt die Karte nicht. Erst beim Überfahren sichtbar, damit der Primärklick (Bearbeiten)
+     dominiert; die obere Ecke bleibt dem Herkunft-Etikett. */
   .cardactions {
     position: absolute;
     bottom: 8px;
@@ -591,6 +597,14 @@
     flex-wrap: wrap;
     gap: 4px;
     min-height: 20px;
+    transition: opacity var(--dur) var(--ease);
+  }
+  /* Beim Überfahren (Aktionsleiste tritt auf) oder während der Lösch-Bestätigung weicht der Glob-
+     Auszug, damit die Leiste nie mit den Mustern kollidiert. Die reservierte Höhe bleibt, also
+     bleibt das Karten-Layout ruhig. */
+  .cardwrap:hover .globpeek,
+  .cardwrap.confirming .globpeek {
+    opacity: 0;
   }
   .gp {
     font-size: 10px;
