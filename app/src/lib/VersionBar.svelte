@@ -6,7 +6,11 @@
     activeRevision = null,
     activeRevisionArt = null,
     room,
+    loading = null,
     onSetRoom,
+    onNewProduct,
+    onOpenProduct,
+    onOpenSuche,
     onOpenSettings,
     onOpenBibliothek,
   }: {
@@ -15,8 +19,18 @@
     activeRevisionArt?: RevisionArt | null;
     /** Which room is shown — drives the lit state of the „Ansicht"-Umschalter. */
     room: "werkbank" | "graph";
+    /** The product-entry machine's state — disables the entry rows and shows their progress
+        labels while a dialog/import is in flight (mirrors the old Einstiegs-Leiste keys). */
+    loading?: "open" | "import" | "gate" | "migrate" | null;
     /** Switch rooms from the „Ansicht"-Ecke (Werkbank ↔ Verlauf · Graph). */
     onSetRoom: (room: "werkbank" | "graph") => void;
+    /** „Neues Produkt" — write entry, now in the „Magazin" (war in der Einstiegs-Leiste). */
+    onNewProduct: () => void;
+    /** „Produkt öffnen" — read-only entry, now in the „Magazin". */
+    onOpenProduct: () => void;
+    /** Open the „Suche über Produkte" panel — the app-level switcher + cross-product search, now
+        launched from the LCD bar (war die Einstiegs-Leiste). */
+    onOpenSuche: () => void;
     /** Open the Einstellungen · Konto panel — reached through the „Magazin"-Launcher. */
     onOpenSettings: () => void;
     /** Swap the main stage to the read-only Bibliothek view (under „Magazin", Issue #108). */
@@ -33,6 +47,14 @@
   function schliesseMagazin() {
     magazinOffen = false;
   }
+  function waehleNeuesProdukt() {
+    schliesseMagazin();
+    onNewProduct();
+  }
+  function waehleProduktOeffnen() {
+    schliesseMagazin();
+    onOpenProduct();
+  }
   function waehleBibliothek() {
     schliesseMagazin();
     onOpenBibliothek();
@@ -41,6 +63,18 @@
     schliesseMagazin();
     onOpenSettings();
   }
+
+  // Progress labels for the two product-entry rows — the same wording the old Einstiegs-Leiste
+  // keys carried, so a folder dialog/import in flight stays legible inside the Magazin.
+  let neuLabel = $derived(
+    loading === "gate"
+      ? "prüfe …"
+      : loading === "import" || loading === "migrate"
+        ? "lege an …"
+        : "Neues Produkt",
+  );
+  let oeffnenLabel = $derived(loading === "open" ? "öffne …" : "Produkt öffnen");
+  let entryBusy = $derived(loading !== null);
 
   // The version bar's largest, brightest element is the active Revision (E28/§24):
   // the durable human version. Until a Stand is promoted there is none — say so honestly
@@ -54,38 +88,7 @@
 
 <header class="bar">
   <div class="screen">
-    <div class="crumbs mono">
-      {#if product}
-        <span class="product">{product.name}</span>
-        <span class="sep">·</span>
-        <span class="branch">{product.branch}</span>
-        <span class="sep">·</span>
-        {#if version}
-          <span class="version">{version}</span>
-          {#if activeRevisionArt}
-            <span
-              class="art label"
-              class:freigabe={isFreigabe}
-              title={isFreigabe
-                ? "Freigabe — schreibgeschützt"
-                : "Prototyp — lax"}
-            >
-              {#if isFreigabe}
-                <span class="lock" aria-hidden="true"></span>Freigabe
-              {:else}
-                Prototyp
-              {/if}
-            </span>
-          {/if}
-        {:else}
-          <span class="version none">— keine Revision —</span>
-        {/if}
-      {:else}
-        <span class="idle">kein Produkt geöffnet</span>
-      {/if}
-    </div>
-
-    <div class="right label">
+    <div class="left label">
       {#if product}
         <span class="count mono"
           >{product.bausteine.length.toString().padStart(2, "0")}</span
@@ -133,6 +136,28 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div class="scrim" role="presentation" onclick={schliesseMagazin}></div>
           <div class="popover" role="menu" aria-label="Magazin">
+            <!-- Produkt-Einstieg (war die Einstiegs-Leiste): „Neues Produkt" schreibt, „Produkt
+                 öffnen" liest nur. Seltene Handgriffe — sie liegen jetzt hier im Magazin statt
+                 dauerhaft Platz in der Leiste zu belegen; gewechselt wird über „Suche". -->
+            <button
+              type="button"
+              class="mitem"
+              role="menuitem"
+              onclick={waehleNeuesProdukt}
+              disabled={entryBusy}
+            >
+              {neuLabel}
+            </button>
+            <button
+              type="button"
+              class="mitem"
+              role="menuitem"
+              onclick={waehleProduktOeffnen}
+              disabled={entryBusy}
+            >
+              {oeffnenLabel}
+            </button>
+            <div class="msep" role="separator"></div>
             <button type="button" class="mitem" role="menuitem" onclick={waehleBibliothek}>
               Bibliothek
             </button>
@@ -142,6 +167,50 @@
           </div>
         {/if}
       </div>
+      <span class="divider"></span>
+      <!-- „Suche"-Launcher: das app-weite Produkt-Instrument — Produkte wechseln UND
+           produktübergreifend suchen, in einem warmen Panel. Früher ein Key in der Einstiegs-Leiste;
+           jetzt ein text-only LCD-Launcher neben „Magazin", immer erreichbar (auch ohne offenes
+           Produkt — von hier öffnet/wechselt man eines). -->
+      <button
+        type="button"
+        class="set view"
+        title="Suche über Produkte — wechseln & produktübergreifend suchen"
+        onclick={onOpenSuche}
+      >
+        Suche
+      </button>
+    </div>
+
+    <div class="crumbs mono">
+      {#if product}
+        <span class="product">{product.name}</span>
+        <span class="sep">·</span>
+        <span class="branch">{product.branch}</span>
+        <span class="sep">·</span>
+        {#if version}
+          <span class="version">{version}</span>
+          {#if activeRevisionArt}
+            <span
+              class="art label"
+              class:freigabe={isFreigabe}
+              title={isFreigabe
+                ? "Freigabe — schreibgeschützt"
+                : "Prototyp — lax"}
+            >
+              {#if isFreigabe}
+                <span class="lock" aria-hidden="true"></span>Freigabe
+              {:else}
+                Prototyp
+              {/if}
+            </span>
+          {/if}
+        {:else}
+          <span class="version none">— keine Revision —</span>
+        {/if}
+      {:else}
+        <span class="idle">kein Produkt geöffnet</span>
+      {/if}
     </div>
   </div>
 </header>
@@ -283,7 +352,7 @@
     font-size: 13px;
   }
 
-  .right {
+  .left {
     display: flex;
     align-items: center;
     gap: 9px;
@@ -308,7 +377,7 @@
     color: #6b6660;
   }
   /* Einstellungen lives as a text twin of „Ansicht": same caps label (inherited from the
-     parent .right.label), same resting colour. It is a button, so reset the chrome and let it
+     parent .left.label), same resting colour. It is a button, so reset the chrome and let it
      brighten + glow on hover/focus — the LCD's way of saying „this one acts". No icon. */
   .set {
     appearance: none;
@@ -372,15 +441,17 @@
     inset: 0;
     z-index: 40;
   }
-  /* Absolut am Trigger verankert (rechtsbündig darunter) — die Seite stimmt damit immer. Der LCD-Screen
-     ist nicht länger `overflow: hidden` (siehe .screen), daher wird hier nichts mehr abgeschnitten; die
-     ganze Leiste liegt in einem eigenen Stapelkontext über dem Bühneninhalt (.bar z-index), sodass das
-     Popover sowohl darüber gezeichnet wird als auch Klicks empfängt. */
+  /* Absolut am Trigger verankert (linksbündig darunter, in die offene Mitte hinein) — seit der
+     „Magazin"-Launcher links sitzt, klappt das Popover nach rechts in den freien Raum auf, statt sich
+     über die Ansicht/Bausteine-Anzeige zurückzufalten. Der LCD-Screen ist nicht länger
+     `overflow: hidden` (siehe .screen), daher wird hier nichts mehr abgeschnitten; die ganze Leiste
+     liegt in einem eigenen Stapelkontext über dem Bühneninhalt (.bar z-index), sodass das Popover
+     sowohl darüber gezeichnet wird als auch Klicks empfängt. */
   .popover {
     position: absolute;
     z-index: 41;
     top: calc(100% + 10px);
-    right: 0;
+    left: 0;
     min-width: 184px;
     display: flex;
     flex-direction: column;
@@ -416,6 +487,20 @@
     color: var(--screen-fg);
     background: rgba(255, 255, 255, 0.05);
     outline: none;
+  }
+  /* While a folder dialog/import is in flight the entry rows dim and stop reacting — the row
+     still shows its „prüfe …/lege an …/öffne …" progress text, just no longer clickable. */
+  .mitem:disabled {
+    color: #5a564f;
+    cursor: default;
+    pointer-events: none;
+  }
+  /* A hairline groove parting the rare product-entry handles from the everyday Bibliothek/
+     Einstellungen rows — recessed, the same etched line as the bar's .divider. */
+  .msep {
+    height: 1px;
+    margin: 4px 7px;
+    background: #2a2724;
   }
   @keyframes pop-in {
     from {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cmd } from "$lib/commands";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { readHistory, forget, seit } from "$lib/verlauf";
   import type {
     RegisteredProduct,
     SearchResult,
@@ -8,15 +9,31 @@
     HitField,
   } from "./types";
 
-  // The produktübergreifende Live-Suche (Issue #45, E45). A full-screen instrument surface — the
-  // registry is APP-LEVEL (it spans products), so the search lives in its own screen, not in any
-  // product's chassis. The dark "screen" world (same LCD language as the VersionBar / fremde
-  // Sperren) carries it: cross-product reach is a query against the instrument, not the warm
-  // work chassis. Orange stays rationed — used ONLY for the honest offline notice (an
-  // "Achtung: nicht alles durchsucht" attention state).
-  let { onClose }: { onClose: () => void } = $props();
+  // The produktübergreifende Live-Suche (Issue #45, E45). An app-level surface — the registry is
+  // APP-LEVEL (it spans products), so the search lives in its own panel, not in any product's
+  // chassis. It wears the WARM chassis idiom (same instrument language as the Produktliste popover
+  // and the cards/keys) rather than the dark LCD screen, so it sits with the rest of the app
+  // instead of breaking from it. Orange stays rationed — used ONLY for the honest offline notice
+  // (an "Achtung: nicht alles durchsucht" attention state).
+  let {
+    onClose,
+    onSwitch,
+    currentPath = null,
+  }: {
+    onClose: () => void;
+    /** Switch the open product by path — the registry rail doubles as the Produktliste switcher
+        (Issue #108-Folge): the parent tears the old product down and opens this one, then the
+        search surface closes so you land on the product. */
+    onSwitch: (path: string) => void;
+    /** Path of the currently open product, so the rail can mark it „offen" and skip a no-op switch. */
+    currentPath?: string | null;
+  } = $props();
 
   let products = $state<RegisteredProduct[]>([]);
+  // The local „zuletzt geöffnet"-Reihenfolge (Verlauf, Issue #73): stamped from +page.svelte on
+  // every open/import/switch, read here to sort the rail newest-first. Held reactively so removing
+  // a product (which forgets its stamp) re-sorts at once.
+  let history = $state(readHistory());
   let query = $state("");
   let result = $state<SearchResult | null>(null);
   let searching = $state(false);
@@ -33,6 +50,17 @@
   }
   // Load the registry as soon as the surface mounts.
   void loadRegistry();
+
+  // Newest-opened first; entries never opened from here (no stamp) fall to the bottom, then
+  // alphabetical by name so the order is stable. The open product is NOT pinned to the top — it is
+  // marked instead (lit LED + „offen"), so its place in the Verlauf stays honest.
+  const sorted = $derived.by(() => {
+    const ts = (p: RegisteredProduct) => history[p.path] ?? 0;
+    return [...products].sort((a, b) => {
+      const d = ts(b) - ts(a);
+      return d !== 0 ? d : a.name.localeCompare(b.name);
+    });
+  });
 
   async function runSearch() {
     const q = query.trim();
@@ -96,9 +124,19 @@
     }
   }
 
+  // Pick a registry product → switch the open product to it (the rail is now the switcher, Issue
+  // #108-Folge). Switching to the already-open product would needlessly tear it down and reopen it,
+  // so only the close happens then. Either way the search surface steps aside so you land on the work.
+  function pickProduct(p: RegisteredProduct) {
+    if (p.path !== currentPath) onSwitch(p.path);
+    onClose();
+  }
+
   async function removeProduct(path: string) {
     try {
       products = await cmd.unregisterProduct(path);
+      // Drop the local Verlauf stamp too, so a removed product cannot resurface ranked if re-added.
+      history = forget(path);
       if (query.trim()) void runSearch();
     } catch (e) {
       error = String(e);
@@ -248,29 +286,60 @@
         {/if}
       </section>
 
-      <!-- Registry rail: register/unregister the path-only product list. -->
-      <aside class="registry" aria-label="Produkt-Registry">
+      <!-- Registry rail: the path-only product list, doubling as the Produktliste switcher — click a
+           product to wechseln, register/unregister with + / ✕. The open one is marked, never switched. -->
+      <aside class="registry" aria-label="Produkte — wechseln & Registry">
         <div class="reg-head">
-          <span class="label title">Registry</span>
+          <span class="label title">Produkte</span>
           <button class="key add" onclick={addProduct}>
             <span class="label">+ Produkt</span>
           </button>
         </div>
-        <div class="reg-list">
+        <div class="reg-list" role="menu" aria-label="Zu Produkt wechseln">
           {#if products.length === 0}
             <p class="idle mono">
               noch keine Produkte registriert — nur Pfade, kein Inhalt
             </p>
           {:else}
-            {#each products as p (p.path)}
-              <div class="reg-item" title={p.path}>
+            {#each sorted as p (p.path)}
+              {@const isCurrent = p.path === currentPath}
+              {@const opened = seit(history[p.path])}
+              <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+              <div
+                class="reg-item"
+                class:current={isCurrent}
+                role="menuitem"
+                tabindex="0"
+                title={isCurrent
+                  ? `${p.path} — offen`
+                  : `Zu „${p.name}" wechseln (${p.path})`}
+                onclick={() => pickProduct(p)}
+                onkeydown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    pickProduct(p);
+                  }
+                }}
+              >
+                <span class="reg-dot" class:open={isCurrent} aria-hidden="true"></span>
                 <div class="reg-body">
                   <div class="reg-name mono">{p.name}</div>
                   <div class="reg-path mono">{p.path}</div>
                 </div>
+                {#if isCurrent}
+                  <span class="reg-badge label">offen</span>
+                {:else if opened}
+                  <!-- The local „zuletzt geöffnet"-Stempel that drives the sort, made legible —
+                       a quiet relative time, never an absolute one (those belong on the dark
+                       instrument displays). The open product shows „offen" instead. -->
+                  <span class="reg-when mono" title="zuletzt geöffnet">{opened}</span>
+                {/if}
                 <button
                   class="iconbtn small"
-                  onclick={() => removeProduct(p.path)}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    removeProduct(p.path);
+                  }}
                   aria-label={`${p.name} aus der Registry entfernen`}
                   title="Aus der Registry entfernen (Ordner bleibt unberührt)">✕</button
                 >
@@ -284,7 +353,8 @@
 </div>
 
 <style>
-  /* A dimmed backdrop; the surface itself is the dark instrument "screen" world. */
+  /* A softly dimmed warm backdrop; the surface is the warm chassis shelf (same instrument language
+     as the Produktliste popover and the cards/keys), no longer the dark LCD screen. */
   .scrim {
     position: fixed;
     inset: 0;
@@ -292,21 +362,23 @@
     display: grid;
     place-items: center;
     padding: 28px;
-    background: rgba(8, 7, 6, 0.62);
+    background: rgba(28, 26, 25, 0.42);
     animation: scrim-in 180ms var(--ease);
   }
   .screen {
-    width: min(1040px, 100%);
+    /* A modal, kept as-is — just smaller: ~70% of the window width (it used to open near-full).
+       Capped at 1040px so it stays sane on very wide monitors, floored so it never gets cramped. */
+    width: clamp(560px, 70vw, 1040px);
     height: min(740px, 100%);
     display: flex;
     flex-direction: column;
-    background: var(--screen-bg);
-    color: var(--screen-fg);
-    border: 1px solid #000;
+    background: var(--surface-raised);
+    color: var(--ink-default);
+    border: 1px solid var(--hairline);
     border-radius: var(--radius);
     box-shadow:
-      0 30px 80px rgba(0, 0, 0, 0.55),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+      0 1px 0 rgba(255, 255, 255, 0.6) inset,
+      0 24px 60px rgba(28, 26, 25, 0.28);
     overflow: hidden;
     animation: screen-in 220ms var(--ease) backwards;
   }
@@ -316,7 +388,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px 16px;
-    border-bottom: 1px solid #1c1a18;
+    border-bottom: 1px solid var(--hairline);
+    background: var(--surface-base);
   }
   .title-group {
     display: flex;
@@ -324,14 +397,14 @@
     gap: 12px;
   }
   .title {
-    color: #8a857d;
+    color: var(--ink-muted);
   }
   .sub {
     font-size: 11px;
-    color: #5f5b55;
+    color: var(--ink-muted);
   }
 
-  /* Recessed LCD input row. */
+  /* Recessed warm input row — a sunken chassis trough, hairline + soft inner shadow. */
   .searchrow {
     display: flex;
     align-items: center;
@@ -339,13 +412,12 @@
     margin: 14px 16px 0;
     padding: 12px 14px;
     border-radius: var(--radius);
-    background: linear-gradient(180deg, #0b0a09, #131110);
-    box-shadow:
-      inset 0 2px 4px rgba(0, 0, 0, 0.9),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+    background: var(--surface-sunken);
+    border: 1px solid var(--hairline);
+    box-shadow: inset 0 1px 2px rgba(28, 26, 25, 0.12);
   }
   .prompt {
-    color: var(--led-free);
+    color: var(--ink-muted);
     font-weight: 600;
     font-size: 15px;
   }
@@ -355,17 +427,17 @@
     background: transparent;
     border: none;
     outline: none;
-    color: var(--screen-fg);
+    color: var(--ink-strong);
     font-size: 15px;
     letter-spacing: 0.01em;
     caret-color: var(--led-free);
   }
   .query::placeholder {
-    color: #57534d;
+    color: var(--ink-muted);
   }
   .working {
     font-size: 11px;
-    color: #8a857d;
+    color: var(--ink-muted);
   }
 
   .body {
@@ -383,23 +455,23 @@
     gap: 10px;
   }
   .idle {
-    color: #6b6660;
+    color: var(--ink-muted);
     font-size: 12px;
     line-height: 1.55;
     padding: 6px 2px;
   }
   .idle .src {
-    color: #8a857d;
+    color: var(--ink-default);
   }
   .notice {
-    color: var(--led-attention);
+    color: var(--accent);
     font-size: 12px;
   }
   .count {
-    color: #6b6660;
+    color: var(--ink-muted);
     font-size: 11px;
     padding: 2px 2px 4px;
-    border-bottom: 1px solid #1c1a18;
+    border-bottom: 1px solid var(--hairline);
   }
 
   /* Honest offline notice — the rationed orange "attention" state. */
@@ -408,8 +480,8 @@
     gap: 10px;
     padding: 11px 12px;
     border-radius: var(--radius);
-    background: linear-gradient(180deg, #1a1311, #0e0b0a);
-    box-shadow: inset 0 0 0 1px rgba(240, 66, 28, 0.18);
+    background: var(--surface-base);
+    box-shadow: inset 0 0 0 1px rgba(240, 66, 28, 0.32);
   }
   .offline .dot {
     flex: none;
@@ -426,7 +498,7 @@
   .offline-head {
     font-size: 12px;
     font-weight: 600;
-    color: #f0a48f;
+    color: var(--accent);
   }
   .offline-list {
     margin-top: 5px;
@@ -444,7 +516,7 @@
     flex: 1;
     min-width: 0;
     font-size: 10px;
-    color: #8a857d;
+    color: var(--ink-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -460,9 +532,9 @@
     line-height: 1;
     padding: 5px 9px;
     border-radius: var(--radius-sm);
-    color: #f0a48f;
+    color: var(--accent);
     background: rgba(240, 66, 28, 0.08);
-    border: 1px solid rgba(240, 66, 28, 0.28);
+    border: 1px solid rgba(240, 66, 28, 0.32);
     transition:
       background var(--dur) var(--ease),
       color var(--dur) var(--ease),
@@ -502,11 +574,11 @@
   .group-name {
     font-size: 13px;
     font-weight: 600;
-    color: var(--screen-fg);
+    color: var(--ink-strong);
   }
   .group-path {
     font-size: 10px;
-    color: #57534d;
+    color: var(--ink-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -518,8 +590,8 @@
     margin-left: 16px;
     padding: 8px 11px;
     border-radius: var(--radius-sm);
-    background: linear-gradient(180deg, #151312, #0c0b0a);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+    background: var(--surface-base);
+    box-shadow: inset 0 0 0 1px var(--hairline);
   }
   /* Source tag — small recessed chip; colour-codes the three searched sources. */
   .field {
@@ -529,14 +601,14 @@
     padding: 3px 7px;
     border-radius: var(--radius-sm);
     font-size: 9px;
-    background: #211f1d;
-    color: #8a857d;
+    background: var(--surface-sunken);
+    color: var(--ink-muted);
   }
   .field[data-field="dateiname"] {
-    color: #cdc9c1;
+    color: var(--ink-strong);
   }
   .field[data-field="plm"] {
-    color: #7fb0e0;
+    color: var(--data-foreign);
   }
   .hit-body {
     min-width: 0;
@@ -544,13 +616,13 @@
   }
   .hit-text {
     font-size: 12px;
-    color: var(--screen-fg);
+    color: var(--ink-strong);
     word-break: break-word;
   }
   .hit-file {
     margin-top: 2px;
     font-size: 10px;
-    color: #57534d;
+    color: var(--ink-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -563,17 +635,18 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-left: 1px solid #1c1a18;
+    border-left: 1px solid var(--hairline);
   }
   .reg-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 13px 14px;
-    border-bottom: 1px solid #1c1a18;
+    border-bottom: 1px solid var(--hairline);
+    background: var(--surface-base);
   }
   .reg-head .title {
-    color: #8a857d;
+    color: var(--ink-muted);
   }
   .reg-list {
     flex: 1;
@@ -584,14 +657,64 @@
     flex-direction: column;
     gap: 7px;
   }
+  /* One product row — a recessive warm card doubling as a switch target. Hover/focus lifts it
+     (background + hairline), exactly the Produktliste „.row" idiom; the open one is marked, not loud. */
   .reg-item {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 9px 10px;
+    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    background: linear-gradient(180deg, #151312, #0c0b0a);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+    cursor: pointer;
+    transition:
+      background var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
+  }
+  .reg-item:hover,
+  .reg-item:focus-visible {
+    outline: none;
+    background: var(--surface-base);
+    border-color: var(--hairline);
+  }
+  /* The currently-open product: a calm seated state with a lit green LED + „offen", and held —
+     clicking it would only tear down and reopen the same product, so it rests at the default cursor. */
+  .reg-item.current {
+    cursor: default;
+    background: var(--surface-base);
+    border-color: var(--hairline);
+    box-shadow: inset 0 1px 2px rgba(28, 26, 25, 0.08);
+  }
+  /* Switch LED: a dim working dot at rest, lit green for the open product (same LED vocabulary as
+     the hit-group dots — the green „offen" lamp the old Produktliste switcher used). */
+  .reg-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--led-working);
+    box-shadow: inset 0 0 0 1px rgba(28, 26, 25, 0.12);
+  }
+  .reg-dot.open {
+    background: var(--led-free);
+    box-shadow: 0 0 6px rgba(60, 154, 75, 0.5);
+  }
+  .reg-badge {
+    flex: none;
+    font-size: 9px;
+    color: var(--ink-strong);
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--surface-raised);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  /* The relative „zuletzt geöffnet"-Stempel — a quiet muted time at the row's right edge that
+     explains the recency order without shouting. Sits where „offen" would for the open product. */
+  .reg-when {
+    flex: none;
+    font-size: 9px;
+    color: var(--ink-muted);
+    white-space: nowrap;
   }
   .reg-body {
     min-width: 0;
@@ -600,7 +723,7 @@
   .reg-name {
     font-size: 12px;
     font-weight: 600;
-    color: var(--screen-fg);
+    color: var(--ink-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -608,25 +731,25 @@
   .reg-path {
     margin-top: 1px;
     font-size: 9px;
-    color: #57534d;
+    color: var(--ink-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* The "+ Produkt" key, sized down for the dark rail. */
+  /* The "+ Produkt" key — a small warm chassis key. */
   .key.add {
     appearance: none;
     cursor: pointer;
-    background: #211f1d;
-    color: #cdc9c1;
-    border: 1px solid #2d2a27;
+    background: var(--surface-base);
+    color: var(--ink-strong);
+    border: 1px solid var(--hairline);
     border-radius: var(--radius-sm);
     padding: 6px 10px;
     transition: background var(--dur) var(--ease);
   }
   .key.add:hover {
-    background: #2a2724;
+    background: var(--surface-sunken);
   }
 
   .iconbtn {
@@ -634,7 +757,7 @@
     cursor: pointer;
     background: transparent;
     border: none;
-    color: #6b6660;
+    color: var(--ink-muted);
     font-size: 14px;
     line-height: 1;
     padding: 4px 6px;
@@ -642,8 +765,8 @@
     transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
   }
   .iconbtn:hover {
-    color: var(--screen-fg);
-    background: rgba(255, 255, 255, 0.05);
+    color: var(--ink-strong);
+    background: var(--surface-sunken);
   }
   .iconbtn.small {
     flex: none;
