@@ -81,7 +81,9 @@
   // (creating=true ⇒ isCreate=true), KEIN neues Kommando.
   function duplicateBaustein(b: Baustein) {
     creating = true;
-    editing = duplicateDraft(b);
+    // $state.snapshot entkoppelt den Proxy hier (nur in .svelte verfügbar); duplicateDraft klont dann
+    // das reine Objekt — so wirft das reine .ts-Modul nicht über eine fehlende $state-Rune.
+    editing = duplicateDraft($state.snapshot(b));
   }
 
   // Speichern (Slice 2 + 3): Upsert über cmd.saveBausteinCmd. `isCreate` trägt die Absicht zum
@@ -401,16 +403,23 @@
     transform: translateY(0);
   }
 
-  /* Hover-Aktionscluster unten rechts (Duplizieren · Löschen): ruhige Werkstatt-Sprache, kein Orange.
-     Erst beim Überfahren der Karte sichtbar, damit der Primärklick (Bearbeiten) dominiert. Jede Aktion
-     trägt ein leichtes Backing, damit sie über dem Glob-Auszug lesbar bleibt. Die obere Ecke gehört dem
-     Herkunft-Etikett — die Aktionen liegen unten, damit sich nichts überlagert. */
+  /* Hover-Aktionsleiste (Duplizieren · Löschen): ein eigener, deckender Streifen am unteren Karten-
+     rand — spiegelt die Lösch-Bestätigung, deckt also den Glob-Auszug sauber ab, statt sich mit den
+     Mustern zu überlagern. Erst beim Überfahren sichtbar, damit der Primärklick (Bearbeiten) dominiert;
+     die obere Ecke bleibt dem Herkunft-Etikett. */
   .cardactions {
     position: absolute;
-    bottom: 10px;
-    right: 12px;
+    bottom: 8px;
+    right: 10px;
+    left: 10px;
     display: flex;
-    gap: 4px;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 6px 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    box-shadow: 0 1px 3px -2px rgba(8, 7, 6, 0.4);
     opacity: 0;
     transition: opacity var(--dur) var(--ease);
   }
@@ -421,19 +430,14 @@
   .act {
     appearance: none;
     cursor: pointer;
-    background: var(--surface-raised);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius);
-    padding: 3px 8px;
+    background: transparent;
+    border: 0;
+    padding: 2px;
     color: var(--ink-muted);
-    box-shadow: 0 1px 3px -2px rgba(8, 7, 6, 0.4);
-    transition:
-      color var(--dur) var(--ease),
-      border-color var(--dur) var(--ease);
+    transition: color var(--dur) var(--ease);
   }
   .act:hover {
     color: var(--ink-strong);
-    border-color: var(--ink-muted);
   }
   .act .label {
     color: inherit;

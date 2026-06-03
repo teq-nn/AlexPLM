@@ -42,9 +42,10 @@ export function emptyBaustein(): BausteinVoll {
  *  Namen neu abgeleitet (Kebab) — im Anlege-Modus prüft der Editor sie ohnehin auf Eindeutigkeit —,
  *  `version`=1 und `stillgelegt`=false; ALLES ANDERE wird wortwörtlich übernommen, inkl. der
  *  strukturierten Felder (startaufgaben, default_kanten, paar_default_kanten, globs …).
- *  Der $state-Proxy wird via $state.snapshot tief geklont, bevor structuredClone greift. */
+ *  Erwartet ein bereits entkoppeltes Objekt (der Aufrufer reicht `$state.snapshot(b)` herein — die
+ *  $state-Rune gibt es nur in .svelte-Dateien, nicht in diesem reinen .ts-Modul). */
 export function duplicateDraft(b: Baustein): BausteinVoll {
-  const copy = structuredClone($state.snapshot(b)) as Baustein;
+  const copy = structuredClone(b) as Baustein;
   const name = `${b.name} (Kopie)`;
   return {
     ...emptyBaustein(),

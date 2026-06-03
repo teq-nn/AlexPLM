@@ -29,20 +29,6 @@
   // Raums: am wenigsten invasiv, lässt die KontoPanel-Verdrahtung unangetastet. Bewusst ohne
   // Icons — diese Ecke ist still und text-only.
   let magazinOffen = $state(false);
-  // Der Trigger-Knopf + die gemessene Ankerposition des Popovers. Das Popover liegt fixed (nicht
-  // absolut): der LCD-Screen ist `overflow: hidden`, ein absolut gesetztes Popover würde dort
-  // abgeschnitten und unter der nächsten Leiste verschwinden. Fixed löst sich aus dem Clip und
-  // schwebt über allem; die Position wird beim Öffnen aus dem Trigger berechnet.
-  let triggerEl = $state<HTMLButtonElement | undefined>(undefined);
-  let popPos = $state({ top: 0, right: 0 });
-
-  function toggleMagazin() {
-    if (!magazinOffen && triggerEl) {
-      const r = triggerEl.getBoundingClientRect();
-      popPos = { top: r.bottom + 10, right: window.innerWidth - r.right };
-    }
-    magazinOffen = !magazinOffen;
-  }
 
   function schliesseMagazin() {
     magazinOffen = false;
@@ -137,8 +123,7 @@
           aria-haspopup="menu"
           aria-expanded={magazinOffen}
           title="Magazin: Bibliothek & Einstellungen · Konto"
-          bind:this={triggerEl}
-          onclick={toggleMagazin}
+          onclick={() => (magazinOffen = !magazinOffen)}
         >
           Magazin
         </button>
@@ -147,12 +132,7 @@
           <!-- Klick außerhalb schließt das Popover (Haus-Muster wie die Modal-Scrims). -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div class="scrim" role="presentation" onclick={schliesseMagazin}></div>
-          <div
-            class="popover"
-            role="menu"
-            aria-label="Magazin"
-            style="top: {popPos.top}px; right: {popPos.right}px;"
-          >
+          <div class="popover" role="menu" aria-label="Magazin">
             <button type="button" class="mitem" role="menuitem" onclick={waehleBibliothek}>
               Bibliothek
             </button>
@@ -170,6 +150,10 @@
   .bar {
     background: var(--screen-bg);
     padding: 14px 16px 16px;
+    /* Eigener Stapelkontext über dem Bühneninhalt: so liegt das Magazin-Popover (darin verankert)
+       beim Zeichnen UND beim Klicken über der Einstiegs-Leiste und der Bühne. */
+    position: relative;
+    z-index: 30;
   }
 
   /* Recessed LCD: inset shadow + faint scanline texture for instrument feel. */
@@ -187,12 +171,14 @@
       inset 0 1px 2px rgba(0, 0, 0, 0.9),
       inset 0 0 0 1px rgba(255, 255, 255, 0.03),
       0 0.5px 0 rgba(255, 255, 255, 0.04);
-    overflow: hidden;
+    /* NICHT `overflow: hidden` — sonst schneidet der Screen das Magazin-Popover ab. Die Scanline-
+       Textur (::after) rundet stattdessen ihre eigenen Ecken (border-radius: inherit). */
   }
   .screen::after {
     content: "";
     position: absolute;
     inset: 0;
+    border-radius: inherit;
     pointer-events: none;
     background: repeating-linear-gradient(
       0deg,
@@ -384,13 +370,17 @@
   .scrim {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    z-index: 40;
   }
-  /* Fixed (nicht absolut): so entkommt das Popover dem `overflow: hidden` des LCD-Screens und
-     schwebt über allem. Position (top/right) wird beim Öffnen aus dem Trigger gemessen. */
+  /* Absolut am Trigger verankert (rechtsbündig darunter) — die Seite stimmt damit immer. Der LCD-Screen
+     ist nicht länger `overflow: hidden` (siehe .screen), daher wird hier nichts mehr abgeschnitten; die
+     ganze Leiste liegt in einem eigenen Stapelkontext über dem Bühneninhalt (.bar z-index), sodass das
+     Popover sowohl darüber gezeichnet wird als auch Klicks empfängt. */
   .popover {
-    position: fixed;
-    z-index: 1001;
+    position: absolute;
+    z-index: 41;
+    top: calc(100% + 10px);
+    right: 0;
     min-width: 184px;
     display: flex;
     flex-direction: column;
