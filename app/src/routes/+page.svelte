@@ -47,7 +47,6 @@
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
   import ProduktSuche from "$lib/ProduktSuche.svelte";
-  import Produktliste from "$lib/Produktliste.svelte";
   import AufgabenListe from "$lib/AufgabenListe.svelte";
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
   import DiagnoseLog from "$lib/DiagnoseLog.svelte";
@@ -254,23 +253,16 @@
   // also nicht im Produkt-Stack/StackEinrichtung. Spätere Slices verdrahten hieran Bearbeiten/Anlegen.
   let magazinView = $state<"bibliothek" | null>(null);
 
-  // The Produktliste / Verlauf switcher (Issue #73). The Produkt-Registry is app-level, so the
-  // switcher lives in the app-level entry bar next to the Suche. A ref so opening/importing/
-  // switching can refresh its registry view and stamp the local "zuletzt geöffnet" Verlauf.
-  let produktliste = $state<Produktliste | undefined>(undefined);
-
-  /** Auto-register a freshly opened/imported product into the app-level Registry and stamp the
-   *  local Verlauf, so opened products fill the Produktliste even without ever using the search
-   *  (Issue #73). The registry stays path-only; the order lives locally per path. Best-effort —
-   *  a registry write hiccup must never break the open sequence. */
+  /** Auto-register a freshly opened/imported product into the app-level Registry, so opened
+   *  products appear in the „Suche"-Panel's product rail (the app-level switcher) even without ever
+   *  using the search (Issue #73). The registry stays path-only. Best-effort — a registry write
+   *  hiccup must never break the open sequence (the „Suche"-Panel re-reads the registry on open). */
   async function rememberProduct(path: string) {
-    produktliste?.markOpened(path);
     try {
       await cmd.registerProduct(path);
     } catch (e) {
-      // The Verlauf is a convenience over the read-only shell; a registry hiccup is not fatal.
+      // The registry is a convenience over the read-only shell; a registry hiccup is not fatal.
     }
-    await produktliste?.refresh();
   }
 
   // Issue #54-Folge — the diagnostic log panel. Off by default (the silent rhythm is untouched);
@@ -723,7 +715,7 @@
   }
 
   /** Open a product by an explicit path, reused by the folder dialog (openProduct) and by the
-   *  Produktliste switcher (Issue #73). Always tears the previous product fully down first
+   *  „Suche"-Panel's product rail switcher (Issue #73). Always tears the previous product fully down first
    *  (reset(): stops the status/sync loops, clears all per-product state), then opens the target —
    *  so it is safe to call while another product is open. Exactly ONE product stays open. */
   async function loadProduct(path: string) {
@@ -765,7 +757,7 @@
     }
   }
 
-  /** Switch the open product from the Produktliste (Issue #73) — no file dialog. loadProduct()
+  /** Switch the open product from the „Suche"-Panel's product rail (Issue #73) — no file dialog. loadProduct()
    *  already tears the current product fully down (Watcher/Loops/State) before opening the target,
    *  so this is just a guarded delegate: ignore a switch to the already-open product or while busy.
    *  Exactly ONE product stays open. */
@@ -1148,69 +1140,18 @@
     activeRevision={graph?.active_revision ?? null}
     activeRevisionArt={graph?.active_revision_art ?? null}
     {room}
+    {loading}
     onSetRoom={(r) => (room = r)}
+    onNewProduct={importProduct}
+    onOpenProduct={openProduct}
+    onOpenSuche={() => (sucheOpen = true)}
     onOpenSettings={() => (kontoOpen = true)}
     onOpenBibliothek={() => (magazinView = "bibliothek")}
   />
 
-  <!-- Einstiegs-Buttons: the product entry points live in their own app-level bar, not in the
-       Bausteine pane — they aren't part of browsing Bausteine. The write-vs-read distinction
-       stays legible: "Neues Produkt" is the solid primary key (schreibt), "Produkt öffnen" the
-       quieter ghost key (liest nur). -->
-  <!-- Die Einstiegs-Leiste gehört zur Produkt-Bühne; während die app-weite Bibliothek-Schau die
-       Bühne übernimmt (Issue #108) wird sie ausgeblendet — die Schau hat ihren eigenen Kopf mit
-       „← zur Werkbank". -->
-  {#if magazinView === null}
-  <div class="entrybar">
-    <div class="entry-actions">
-      <button
-        class="key"
-        onclick={importProduct}
-        disabled={loading !== null}
-      >
-        <span class="label"
-          >{loading === "gate"
-            ? "prüfe …"
-            : loading === "import" || loading === "migrate"
-              ? "lege an …"
-              : "Neues Produkt"}</span
-        >
-      </button>
-      <button class="key ghost" onclick={openProduct} disabled={loading !== null}>
-        <span class="label"
-          >{loading === "open" ? "öffne …" : "Produkt öffnen"}</span
-        >
-      </button>
-      <span class="entry-hint label">anlegen schreibt — öffnen liest nur</span>
-    </div>
-
-    <!-- Produktliste / Verlauf (Issue #73): the app-level switcher for zuletzt geöffnete Produkte.
-         Sits with the entry keys (same warm chassis), lets you wechseln ohne Datei-Dialog. The
-         registry is app-level — so is this — matching the cross-product Suche at the right edge. -->
-    <Produktliste
-      bind:this={produktliste}
-      currentPath={productPath}
-      onSwitch={switchProduct}
-      disabled={loading !== null}
-    />
-
-    <!-- Raum-Schalter (Issue #55, E45): Werkbank (Jetzt) und Verlauf · Graph sind zwei
-         gleichwertige Räume. Der Umschalter lebt jetzt als „Ansicht:"-Text-Toggle im LCD oben
-         rechts (siehe VersionBar) — dieselbe text-only Instrument-Sprache wie der Bildschirm. -->
-
-    <!-- Produktübergreifende Suche: an app-level instrument, reachable independent of an open
-         product (the registry spans products). Quiet ghost key — it only reads. -->
-    <button
-      class="key ghost suche"
-      onclick={() => (sucheOpen = true)}
-      title="Über alle registrierten Produkte suchen"
-    >
-      <span class="label">Suche über Produkte</span>
-    </button>
-
-  </div>
-  {/if}
-
+  <!-- Die Einstiegs-Leiste ist entfallen: die Produkt-Einstiege („Neues Produkt"/„Produkt öffnen")
+       leben im „Magazin", das Wechseln + die produktübergreifende Suche im „Suche"-Launcher — beide
+       oben im LCD. Unter dem Display geht es direkt mit der Bühne weiter. -->
   <div class="stage">
     {#if magazinView === "bibliothek"}
       <!-- Magazin · Bibliothek (Issue #108, Slice 1): eine app-weite, produkt-unabhängige Schau,
@@ -1654,7 +1595,11 @@
 
 <!-- Produktübergreifende Live-Suche (Issue #45, E45): an app-level instrument screen. -->
 {#if sucheOpen}
-  <ProduktSuche onClose={() => (sucheOpen = false)} />
+  <ProduktSuche
+    onClose={() => (sucheOpen = false)}
+    onSwitch={switchProduct}
+    currentPath={productPath}
+  />
 {/if}
 
 <!-- Globales Konto-Panel (ADR 0004, Issue #90): one app-wide server identity, reachable via the
@@ -1690,9 +1635,9 @@
     background: var(--surface-base);
   }
 
-  /* Fussleiste (Issue #105): the app-level footer shelf, mirror of the .entrybar at the top.
-     A thin seated bar with a top hairline; its contents sit at the right edge. flex: none so it
-     keeps its height and the .stage above it absorbs the rest — never an overlap. */
+  /* Fussleiste (Issue #105): the app-level footer shelf. A thin seated bar with a top hairline;
+     its contents sit at the right edge. flex: none so it keeps its height and the .stage above it
+     absorbs the rest — never an overlap. */
   .appfoot {
     flex: none;
     display: flex;
@@ -1709,23 +1654,6 @@
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-
-  /* The app-level entry bar: product entry points sit here, above the work chassis, so the
-     Bausteine pane stays about Bausteine. Reads as a shelf seated under the LCD display. */
-  .entrybar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    padding: 10px 16px;
-    background: var(--surface-raised);
-    border-bottom: 1px solid var(--hairline);
-  }
-  /* The app-level cross-product search trigger sits at the right edge of the entry bar. */
-  .key.suche {
-    flex: none;
   }
 
   /* Diagnose-Lämpchen (Issue #71): the diagnostic toggle, exiled from the productive work
@@ -1851,25 +1779,6 @@
   }
   .gear.on {
     color: var(--ink-strong);
-  }
-
-  .entry-actions {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  /* Both keys swap their label for a busy state (Neues Produkt→prüfe …/lege an …,
-     Produkt öffnen→öffne …); pin each to its widest so they don't twitch mid-action. */
-  .entry-actions > .key {
-    min-width: 140px;
-    text-align: center;
-  }
-  /* The read-only distinction, kept legible after the move (mirrors the empty-state sub-line). */
-  .entry-hint {
-    margin-left: 4px;
-    color: var(--ink-muted);
-    font-size: 11px;
-    opacity: 0.8;
   }
 
   /* Work chassis + instrument rail (foreign locks + Stände) share the row below the display. */
