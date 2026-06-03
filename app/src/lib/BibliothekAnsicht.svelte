@@ -81,7 +81,9 @@
   // (creating=true ⇒ isCreate=true), KEIN neues Kommando.
   function duplicateBaustein(b: Baustein) {
     creating = true;
-    editing = duplicateDraft(b);
+    // $state.snapshot entkoppelt den Proxy hier (nur in .svelte verfügbar); duplicateDraft klont dann
+    // das reine Objekt — so wirft das reine .ts-Modul nicht über eine fehlende $state-Rune.
+    editing = duplicateDraft($state.snapshot(b));
   }
 
   // Speichern (Slice 2 + 3): Upsert über cmd.saveBausteinCmd. `isCreate` trägt die Absicht zum
@@ -173,7 +175,11 @@
           <!-- Karte spiegelt den Werkbank-Karten-Look. Primärklick öffnet Bearbeiten (Slice 2); die
                „Duplizieren"-Aktion in der Ecke öffnet den Anlege-Pfad vorgefüllt (Slice 4). Beide als
                eigene Buttons in einem Wrapper — verschachtelte Buttons sind ungültiges HTML. -->
-          <div class="cardwrap" class:retired={b.stillgelegt}>
+          <div
+            class="cardwrap"
+            class:retired={b.stillgelegt}
+            class:confirming={confirmingDelete === b.id}
+          >
             <button class="card" onclick={() => openBaustein(b)}>
               <div class="ctop">
                 <span class="cname">{b.name}</span>
@@ -218,43 +224,48 @@
                 {/if}
               </div>
             </button>
-            <button
-              class="dup"
-              onclick={() => duplicateBaustein(b)}
-              title="Diesen Baustein als Vorlage für einen neuen kopieren"
-            >
-              <span class="label">Duplizieren</span>
-            </button>
-
-            <!-- Löschen: nur für eigene Bausteine. Mitgelieferte bekommen keine Aktion (Schranke auch
-                 hart im Backend). Zweistufig: erst die ruhige Aktion, dann die kurze Bestätigung. -->
-            {#if !isBundled(b.id)}
-              {#if confirmingDelete === b.id}
-                <div class="delconfirm">
-                  {#if deleteError}
-                    <span class="delerr mono">{deleteError}</span>
-                  {/if}
-                  <span class="delask label">Wirklich entfernen?</span>
-                  <button
-                    class="delyes"
-                    onclick={() => confirmDelete(b.id)}
-                    disabled={deleting}
-                  >
-                    <span class="label">{deleting ? "entfernt …" : "Entfernen"}</span>
-                  </button>
-                  <button class="delno" onclick={cancelDelete} disabled={deleting}>
-                    <span class="label">Abbrechen</span>
-                  </button>
-                </div>
-              {:else}
+            <!-- Hover-Aktionen unten rechts: Duplizieren (für jeden — auch ein mitgelieferter taugt als
+                 Vorlage) und Löschen (nur eigene; Mitgelieferte kämen per Seeding zurück, Schranke auch
+                 hart im Backend). Auf einem leichten Backing, damit die Texte über dem Glob-Auszug
+                 lesbar bleiben. Erst beim Überfahren sichtbar, damit der Primärklick (Bearbeiten) die
+                 Karte dominiert — die obere Ecke bleibt dem Herkunft-Etikett. Beim Bestätigen tritt die
+                 zweistufige Löschabfrage an ihre Stelle. -->
+            {#if confirmingDelete === b.id}
+              <div class="delconfirm">
+                {#if deleteError}
+                  <span class="delerr mono">{deleteError}</span>
+                {/if}
+                <span class="delask label">Wirklich entfernen?</span>
                 <button
-                  class="del"
-                  onclick={() => askDelete(b.id)}
-                  title="Diesen eigenen Baustein entfernen"
+                  class="delyes"
+                  onclick={() => confirmDelete(b.id)}
+                  disabled={deleting}
                 >
-                  <span class="label">Löschen</span>
+                  <span class="label">{deleting ? "entfernt …" : "Entfernen"}</span>
                 </button>
-              {/if}
+                <button class="delno" onclick={cancelDelete} disabled={deleting}>
+                  <span class="label">Abbrechen</span>
+                </button>
+              </div>
+            {:else}
+              <div class="cardactions">
+                <button
+                  class="act"
+                  onclick={() => duplicateBaustein(b)}
+                  title="Diesen Baustein als Vorlage für einen neuen kopieren"
+                >
+                  <span class="label">Duplizieren</span>
+                </button>
+                {#if !isBundled(b.id)}
+                  <button
+                    class="act"
+                    onclick={() => askDelete(b.id)}
+                    title="Diesen eigenen Baustein entfernen"
+                  >
+                    <span class="label">Löschen</span>
+                  </button>
+                {/if}
+              </div>
             {/if}
           </div>
         {/each}
@@ -396,31 +407,45 @@
     transform: translateY(0);
   }
 
-  /* Unaufdringliche Text-Aktion in der oberen Ecke — ruhige Werkstatt-Instrument-Sprache, kein Orange.
-     Erst beim Überfahren der Karte sichtbar, damit der Primärklick (Bearbeiten) die Karte dominiert. */
-  .dup {
-    appearance: none;
-    cursor: pointer;
+  /* Hover-Aktionsleiste (Duplizieren · Löschen): ein eigener Streifen am unteren Kartenrand. Statt
+     sich auf seinen deckenden Grund zu verlassen (der Glob-Auszug lugte je nach Umbruch darüber
+     hervor — Text über Text), blendet beim Überfahren der Glob-Auszug aus (siehe .globpeek) und die
+     Leiste tritt in den dann freien Streifen. Die Zeilenhöhe bleibt reserviert (min-height), daher
+     springt die Karte nicht. Erst beim Überfahren sichtbar, damit der Primärklick (Bearbeiten)
+     dominiert; die obere Ecke bleibt dem Herkunft-Etikett. */
+  .cardactions {
     position: absolute;
-    top: 10px;
-    right: 12px;
-    background: transparent;
-    border: 0;
-    padding: 2px 4px;
-    color: var(--ink-muted);
+    bottom: 8px;
+    right: 10px;
+    left: 10px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 6px 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    box-shadow: 0 1px 3px -2px rgba(8, 7, 6, 0.4);
     opacity: 0;
-    transition:
-      opacity var(--dur) var(--ease),
-      color var(--dur) var(--ease);
+    transition: opacity var(--dur) var(--ease);
   }
-  .cardwrap:hover .dup,
-  .dup:focus-visible {
+  .cardwrap:hover .cardactions,
+  .cardactions:focus-within {
     opacity: 1;
   }
-  .dup:hover {
+  .act {
+    appearance: none;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    padding: 2px;
+    color: var(--ink-muted);
+    transition: color var(--dur) var(--ease);
+  }
+  .act:hover {
     color: var(--ink-strong);
   }
-  .dup .label {
+  .act .label {
     color: inherit;
     font-size: 9.5px;
   }
@@ -448,35 +473,6 @@
   .herkunft .label {
     font-size: 8.5px;
     color: var(--ink-muted);
-  }
-
-  /* Löschen spiegelt die ruhige „Duplizieren"-Sprache: erst beim Überfahren sichtbar, kein Orange.
-     Liegt in der unteren Ecke, damit Bearbeiten (Primärklick) + Duplizieren (obere Ecke) frei bleiben. */
-  .del {
-    appearance: none;
-    cursor: pointer;
-    position: absolute;
-    bottom: 10px;
-    right: 12px;
-    background: transparent;
-    border: 0;
-    padding: 2px 4px;
-    color: var(--ink-muted);
-    opacity: 0;
-    transition:
-      opacity var(--dur) var(--ease),
-      color var(--dur) var(--ease);
-  }
-  .cardwrap:hover .del,
-  .del:focus-visible {
-    opacity: 1;
-  }
-  .del:hover {
-    color: var(--ink-strong);
-  }
-  .del .label {
-    color: inherit;
-    font-size: 9.5px;
   }
 
   /* Bestätigung: kurz, ruhig, deutsch — keine Git-/Technik-Vokabel. Liegt über der unteren Karten-
@@ -601,6 +597,14 @@
     flex-wrap: wrap;
     gap: 4px;
     min-height: 20px;
+    transition: opacity var(--dur) var(--ease);
+  }
+  /* Beim Überfahren (Aktionsleiste tritt auf) oder während der Lösch-Bestätigung weicht der Glob-
+     Auszug, damit die Leiste nie mit den Mustern kollidiert. Die reservierte Höhe bleibt, also
+     bleibt das Karten-Layout ruhig. */
+  .cardwrap:hover .globpeek,
+  .cardwrap.confirming .globpeek {
+    opacity: 0;
   }
   .gp {
     font-size: 10px;

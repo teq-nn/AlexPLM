@@ -150,6 +150,10 @@
   .bar {
     background: var(--screen-bg);
     padding: 14px 16px 16px;
+    /* Eigener Stapelkontext über dem Bühneninhalt: so liegt das Magazin-Popover (darin verankert)
+       beim Zeichnen UND beim Klicken über der Einstiegs-Leiste und der Bühne. */
+    position: relative;
+    z-index: 30;
   }
 
   /* Recessed LCD: inset shadow + faint scanline texture for instrument feel. */
@@ -167,12 +171,14 @@
       inset 0 1px 2px rgba(0, 0, 0, 0.9),
       inset 0 0 0 1px rgba(255, 255, 255, 0.03),
       0 0.5px 0 rgba(255, 255, 255, 0.04);
-    overflow: hidden;
+    /* NICHT `overflow: hidden` — sonst schneidet der Screen das Magazin-Popover ab. Die Scanline-
+       Textur (::after) rundet stattdessen ihre eigenen Ecken (border-radius: inherit). */
   }
   .screen::after {
     content: "";
     position: absolute;
     inset: 0;
+    border-radius: inherit;
     pointer-events: none;
     background: repeating-linear-gradient(
       0deg,
@@ -364,11 +370,15 @@
   .scrim {
     position: fixed;
     inset: 0;
-    z-index: 30;
+    z-index: 40;
   }
+  /* Absolut am Trigger verankert (rechtsbündig darunter) — die Seite stimmt damit immer. Der LCD-Screen
+     ist nicht länger `overflow: hidden` (siehe .screen), daher wird hier nichts mehr abgeschnitten; die
+     ganze Leiste liegt in einem eigenen Stapelkontext über dem Bühneninhalt (.bar z-index), sodass das
+     Popover sowohl darüber gezeichnet wird als auch Klicks empfängt. */
   .popover {
     position: absolute;
-    z-index: 31;
+    z-index: 41;
     top: calc(100% + 10px);
     right: 0;
     min-width: 184px;
