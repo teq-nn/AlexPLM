@@ -218,43 +218,48 @@
                 {/if}
               </div>
             </button>
-            <button
-              class="dup"
-              onclick={() => duplicateBaustein(b)}
-              title="Diesen Baustein als Vorlage für einen neuen kopieren"
-            >
-              <span class="label">Duplizieren</span>
-            </button>
-
-            <!-- Löschen: nur für eigene Bausteine. Mitgelieferte bekommen keine Aktion (Schranke auch
-                 hart im Backend). Zweistufig: erst die ruhige Aktion, dann die kurze Bestätigung. -->
-            {#if !isBundled(b.id)}
-              {#if confirmingDelete === b.id}
-                <div class="delconfirm">
-                  {#if deleteError}
-                    <span class="delerr mono">{deleteError}</span>
-                  {/if}
-                  <span class="delask label">Wirklich entfernen?</span>
-                  <button
-                    class="delyes"
-                    onclick={() => confirmDelete(b.id)}
-                    disabled={deleting}
-                  >
-                    <span class="label">{deleting ? "entfernt …" : "Entfernen"}</span>
-                  </button>
-                  <button class="delno" onclick={cancelDelete} disabled={deleting}>
-                    <span class="label">Abbrechen</span>
-                  </button>
-                </div>
-              {:else}
+            <!-- Hover-Aktionen unten rechts: Duplizieren (für jeden — auch ein mitgelieferter taugt als
+                 Vorlage) und Löschen (nur eigene; Mitgelieferte kämen per Seeding zurück, Schranke auch
+                 hart im Backend). Auf einem leichten Backing, damit die Texte über dem Glob-Auszug
+                 lesbar bleiben. Erst beim Überfahren sichtbar, damit der Primärklick (Bearbeiten) die
+                 Karte dominiert — die obere Ecke bleibt dem Herkunft-Etikett. Beim Bestätigen tritt die
+                 zweistufige Löschabfrage an ihre Stelle. -->
+            {#if confirmingDelete === b.id}
+              <div class="delconfirm">
+                {#if deleteError}
+                  <span class="delerr mono">{deleteError}</span>
+                {/if}
+                <span class="delask label">Wirklich entfernen?</span>
                 <button
-                  class="del"
-                  onclick={() => askDelete(b.id)}
-                  title="Diesen eigenen Baustein entfernen"
+                  class="delyes"
+                  onclick={() => confirmDelete(b.id)}
+                  disabled={deleting}
                 >
-                  <span class="label">Löschen</span>
+                  <span class="label">{deleting ? "entfernt …" : "Entfernen"}</span>
                 </button>
-              {/if}
+                <button class="delno" onclick={cancelDelete} disabled={deleting}>
+                  <span class="label">Abbrechen</span>
+                </button>
+              </div>
+            {:else}
+              <div class="cardactions">
+                <button
+                  class="act"
+                  onclick={() => duplicateBaustein(b)}
+                  title="Diesen Baustein als Vorlage für einen neuen kopieren"
+                >
+                  <span class="label">Duplizieren</span>
+                </button>
+                {#if !isBundled(b.id)}
+                  <button
+                    class="act"
+                    onclick={() => askDelete(b.id)}
+                    title="Diesen eigenen Baustein entfernen"
+                  >
+                    <span class="label">Löschen</span>
+                  </button>
+                {/if}
+              </div>
             {/if}
           </div>
         {/each}
@@ -396,31 +401,41 @@
     transform: translateY(0);
   }
 
-  /* Unaufdringliche Text-Aktion in der oberen Ecke — ruhige Werkstatt-Instrument-Sprache, kein Orange.
-     Erst beim Überfahren der Karte sichtbar, damit der Primärklick (Bearbeiten) die Karte dominiert. */
-  .dup {
-    appearance: none;
-    cursor: pointer;
+  /* Hover-Aktionscluster unten rechts (Duplizieren · Löschen): ruhige Werkstatt-Sprache, kein Orange.
+     Erst beim Überfahren der Karte sichtbar, damit der Primärklick (Bearbeiten) dominiert. Jede Aktion
+     trägt ein leichtes Backing, damit sie über dem Glob-Auszug lesbar bleibt. Die obere Ecke gehört dem
+     Herkunft-Etikett — die Aktionen liegen unten, damit sich nichts überlagert. */
+  .cardactions {
     position: absolute;
-    top: 10px;
+    bottom: 10px;
     right: 12px;
-    background: transparent;
-    border: 0;
-    padding: 2px 4px;
-    color: var(--ink-muted);
+    display: flex;
+    gap: 4px;
     opacity: 0;
-    transition:
-      opacity var(--dur) var(--ease),
-      color var(--dur) var(--ease);
+    transition: opacity var(--dur) var(--ease);
   }
-  .cardwrap:hover .dup,
-  .dup:focus-visible {
+  .cardwrap:hover .cardactions,
+  .cardactions:focus-within {
     opacity: 1;
   }
-  .dup:hover {
-    color: var(--ink-strong);
+  .act {
+    appearance: none;
+    cursor: pointer;
+    background: var(--surface-raised);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    padding: 3px 8px;
+    color: var(--ink-muted);
+    box-shadow: 0 1px 3px -2px rgba(8, 7, 6, 0.4);
+    transition:
+      color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease);
   }
-  .dup .label {
+  .act:hover {
+    color: var(--ink-strong);
+    border-color: var(--ink-muted);
+  }
+  .act .label {
     color: inherit;
     font-size: 9.5px;
   }
@@ -448,35 +463,6 @@
   .herkunft .label {
     font-size: 8.5px;
     color: var(--ink-muted);
-  }
-
-  /* Löschen spiegelt die ruhige „Duplizieren"-Sprache: erst beim Überfahren sichtbar, kein Orange.
-     Liegt in der unteren Ecke, damit Bearbeiten (Primärklick) + Duplizieren (obere Ecke) frei bleiben. */
-  .del {
-    appearance: none;
-    cursor: pointer;
-    position: absolute;
-    bottom: 10px;
-    right: 12px;
-    background: transparent;
-    border: 0;
-    padding: 2px 4px;
-    color: var(--ink-muted);
-    opacity: 0;
-    transition:
-      opacity var(--dur) var(--ease),
-      color var(--dur) var(--ease);
-  }
-  .cardwrap:hover .del,
-  .del:focus-visible {
-    opacity: 1;
-  }
-  .del:hover {
-    color: var(--ink-strong);
-  }
-  .del .label {
-    color: inherit;
-    font-size: 9.5px;
   }
 
   /* Bestätigung: kurz, ruhig, deutsch — keine Git-/Technik-Vokabel. Liegt über der unteren Karten-
