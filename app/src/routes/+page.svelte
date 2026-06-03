@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cmd } from "$lib/commands";
   import { createStatusPulse } from "$lib/statusPulse.svelte";
+  import { markOpened } from "$lib/verlauf";
   import { open } from "@tauri-apps/plugin-dialog";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -256,8 +257,11 @@
   /** Auto-register a freshly opened/imported product into the app-level Registry, so opened
    *  products appear in the „Suche"-Panel's product rail (the app-level switcher) even without ever
    *  using the search (Issue #73). The registry stays path-only. Best-effort — a registry write
-   *  hiccup must never break the open sequence (the „Suche"-Panel re-reads the registry on open). */
+   *  hiccup must never break the open sequence (the „Suche"-Panel re-reads the registry on open).
+   *  Also stamps the LOCAL „zuletzt geöffnet"-Reihenfolge (Verlauf) so the rail can sort the open
+   *  one to the top — the order is a local view convenience, kept out of the path-only registry. */
   async function rememberProduct(path: string) {
+    markOpened(path);
     try {
       await cmd.registerProduct(path);
     } catch (e) {

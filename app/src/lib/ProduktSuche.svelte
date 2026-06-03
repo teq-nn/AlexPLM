@@ -1,6 +1,7 @@
 <script lang="ts">
   import { cmd } from "$lib/commands";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { readHistory, forget, seit } from "$lib/verlauf";
   import type {
     RegisteredProduct,
     SearchResult,
@@ -29,6 +30,10 @@
   } = $props();
 
   let products = $state<RegisteredProduct[]>([]);
+  // The local „zuletzt geöffnet"-Reihenfolge (Verlauf, Issue #73): stamped from +page.svelte on
+  // every open/import/switch, read here to sort the rail newest-first. Held reactively so removing
+  // a product (which forgets its stamp) re-sorts at once.
+  let history = $state(readHistory());
   let query = $state("");
   let result = $state<SearchResult | null>(null);
   let searching = $state(false);
@@ -45,6 +50,17 @@
   }
   // Load the registry as soon as the surface mounts.
   void loadRegistry();
+
+  // Newest-opened first; entries never opened from here (no stamp) fall to the bottom, then
+  // alphabetical by name so the order is stable. The open product is NOT pinned to the top — it is
+  // marked instead (lit LED + „offen"), so its place in the Verlauf stays honest.
+  const sorted = $derived.by(() => {
+    const ts = (p: RegisteredProduct) => history[p.path] ?? 0;
+    return [...products].sort((a, b) => {
+      const d = ts(b) - ts(a);
+      return d !== 0 ? d : a.name.localeCompare(b.name);
+    });
+  });
 
   async function runSearch() {
     const q = query.trim();
@@ -119,6 +135,8 @@
   async function removeProduct(path: string) {
     try {
       products = await cmd.unregisterProduct(path);
+      // Drop the local Verlauf stamp too, so a removed product cannot resurface ranked if re-added.
+      history = forget(path);
       if (query.trim()) void runSearch();
     } catch (e) {
       error = String(e);
@@ -283,8 +301,9 @@
               noch keine Produkte registriert — nur Pfade, kein Inhalt
             </p>
           {:else}
-            {#each products as p (p.path)}
+            {#each sorted as p (p.path)}
               {@const isCurrent = p.path === currentPath}
+              {@const opened = seit(history[p.path])}
               <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
               <div
                 class="reg-item"
@@ -309,6 +328,11 @@
                 </div>
                 {#if isCurrent}
                   <span class="reg-badge label">offen</span>
+                {:else if opened}
+                  <!-- The local „zuletzt geöffnet"-Stempel that drives the sort, made legible —
+                       a quiet relative time, never an absolute one (those belong on the dark
+                       instrument displays). The open product shows „offen" instead. -->
+                  <span class="reg-when mono" title="zuletzt geöffnet">{opened}</span>
                 {/if}
                 <button
                   class="iconbtn small"
@@ -342,7 +366,9 @@
     animation: scrim-in 180ms var(--ease);
   }
   .screen {
-    width: min(1040px, 100%);
+    /* A modal, kept as-is — just smaller: ~70% of the window width (it used to open near-full).
+       Capped at 1040px so it stays sane on very wide monitors, floored so it never gets cramped. */
+    width: clamp(560px, 70vw, 1040px);
     height: min(740px, 100%);
     display: flex;
     flex-direction: column;
@@ -681,6 +707,14 @@
     border-radius: 999px;
     background: var(--surface-raised);
     box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  /* The relative „zuletzt geöffnet"-Stempel — a quiet muted time at the row's right edge that
+     explains the recency order without shouting. Sits where „offen" would for the open product. */
+  .reg-when {
+    flex: none;
+    font-size: 9px;
+    color: var(--ink-muted);
+    white-space: nowrap;
   }
   .reg-body {
     min-width: 0;
