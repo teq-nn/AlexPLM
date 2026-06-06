@@ -28,3 +28,18 @@ A tracked file that matches no Artefakt-Glob: it lies in the Unzugeordnet-Fach o
 
 ## Konto
 The single, app-wide identity used for every action against the self-hosted Forgejo/Gitea server: one Server-Adresse and one set of Zugangsdaten, set once and reused for all Produkte. There is exactly one Konto — the tool talks to one server. Owning a Konto is what lets a Produkt be veröffentlicht and a colleague invited; a Produkt names only its own owner/repo, never its own credentials.
+
+## Baustein-Revision
+A per-Baustein named release point with its own Art (Prototyp/Freigabe), bumped independently of the other Bausteine and minted as a durable Tag (`firmware/v1.1`). The Art rides here, not on the product as a whole. (E51)
+
+## Produkt-Revision
+A whole-tree product snapshot assembled from **one chosen release tag per Pflicht-Baustein** — a constructed snapshot whose tree matches the product BOM (e.g. new PCB Rev B + carried-over FW 1.1), with no Submodule. A WIP Baustein ships its previous release or is updated in time. Needs ≥1 release per Pflicht-Baustein; the first one seeds an initial Baustein-Revision from the current state. (E51, E52)
+
+## Rekonstruierbar
+A third Baustein path-class beside Ignore and LFS: paths deliberately **not tracked but reconstructable from a committed manifest** (Python `venv`, `west`/ESP-IDF modules, PlatformIO deps). The Baustein commits source + pinned manifest, not the vendored framework. A nested `.git`/Submodul is treated as an opaque, ignored boundary. (E50)
+
+## Integrations-Aufgabe
+An opt-in, cross-Baustein blocking Aufgabe ("needs fw test") raised against a specific source revision; the receiving Baustein answers yes/no (a "no" keeps the hard block). It blocks only the Produkt-Revision compose, never the target Baustein's own release, and is one-shot — the next source revision is re-flagged by hand, or not. (E53)
+
+## Absichts-Sperre
+A lock recorded **locally** when the Lock-Server is unreachable at open (offline, server down), reconciled against the server's locks on reconnect; a collision becomes a laute Ausnahme. Until confirmed, the card shows „offline bearbeitet, Sperre nicht bestätigt" rather than a silent all-clear. (E49)
