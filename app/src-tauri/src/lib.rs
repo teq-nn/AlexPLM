@@ -27,6 +27,7 @@ pub mod konto;
 pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
+pub mod nestedboundary;
 pub mod onboardglue;
 pub mod plmstore;
 pub mod projection;

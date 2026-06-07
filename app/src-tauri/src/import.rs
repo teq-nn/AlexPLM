@@ -176,6 +176,11 @@ pub fn import_attr_lines(markers: &BTreeMap<String, bool>) -> Vec<String> {
 
 /// Collect every leaf file (root-relative, forward-slash) the projection would consider, by
 /// reusing the same Baustein walk so import and the read view agree on what counts.
+///
+/// Because it rides [`project_product`], it also inherits the **opake genestete-`.git`-Grenze**
+/// (E50a): files behind a nested `west`/ESP-IDF/`venv` `.git` are not projected as a Baustein and
+/// so are never classified or marked `lockable` here. Classifier glue and projection thus consume
+/// exactly the same boundary as the watcher.
 fn collect_leaf_files(root: &Path) -> std::io::Result<Vec<String>> {
     let view = project_product(root)?;
     let mut files = Vec::new();

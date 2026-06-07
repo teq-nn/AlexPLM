@@ -84,6 +84,35 @@ fn reads_branch_from_git_head() {
     assert_eq!(view.branch, "gehaeuse-v2");
 }
 
+/// E50a: a nested `.git` (a framework-pulled toolchain like `west`/ESP-IDF/`venv`) is an opaque
+/// boundary — the projection neither descends into it nor projects it as a Baustein. The product's
+/// own real Bausteine still project normally; the foreign vendored tree stays invisible.
+#[test]
+fn nested_git_is_an_opaque_boundary_and_is_not_projected() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // The product's own work.
+    touch(&root.join("firmware/app/main.c"));
+    touch(&root.join("mechanik/gehaeuse/gehaeuse.f3d"));
+
+    // A framework pulled `west` into firmware: its own `.git` plus thousands of vendored files.
+    fs::create_dir_all(root.join("firmware/west/.git")).unwrap();
+    touch(&root.join("firmware/west/.git/HEAD"));
+    touch(&root.join("firmware/west/drivers/uart.c"));
+    touch(&root.join("firmware/west/vendor/huge.bin"));
+
+    let view = project_product(root).unwrap();
+    let paths: Vec<&str> = view.bausteine.iter().map(|b| b.path.as_str()).collect();
+
+    // The real Bausteine project; nothing behind the nested `.git` does.
+    assert_eq!(paths, ["firmware/app", "mechanik/gehaeuse"]);
+    assert!(
+        !paths.iter().any(|p| p.starts_with("firmware/west")),
+        "the foreign west tree must not be projected, got {paths:?}"
+    );
+}
+
 #[test]
 fn flat_folder_of_files_is_a_single_baustein() {
     let dir = tempfile::tempdir().unwrap();
