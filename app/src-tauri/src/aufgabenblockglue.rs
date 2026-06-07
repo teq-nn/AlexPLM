@@ -13,6 +13,7 @@
 //! [`RevisionArt::Prototyp`] to surface only the „blockiert überall" opt-outs.
 
 use crate::aufgabenblock::{decide_block, BlockDecision};
+use crate::artstore::read_art_in;
 use crate::graph::RevisionArt;
 use crate::taskstore::read_tasks;
 use std::path::Path;
@@ -26,6 +27,17 @@ use std::path::Path;
 pub fn block_for_art(root: &Path, art: RevisionArt) -> BlockDecision {
     let tasks = read_tasks(root);
     decide_block(&tasks, art)
+}
+
+/// Wie [`block_for_art`], aber die Strenge kommt aus dem **Baustein-Scope der Art** (E51a, Issue
+/// #131): die Art wird nicht übergeben, sondern aus dem **Heimat-getragenen** Art-Store für
+/// `(heimat, version)` gelesen ([`read_art_in`]). So blockiert eine offene Aufgabe **nur** den
+/// Bereich, der gerade als Freigabe reift — `elektronik` kann Freigabe sein (streng), während
+/// `firmware` für dieselbe Marke noch Prototyp ist (lax) und nicht mitblockiert wird. Eine nie
+/// freigegebene Baustein-Revision ist Default Prototyp (lax), also reibungsfrei.
+pub fn block_for_baustein(root: &Path, heimat: &str, version: &str) -> BlockDecision {
+    let art = read_art_in(root, heimat, version);
+    block_for_art(root, art)
 }
 
 #[cfg(test)]
@@ -90,6 +102,32 @@ mod tests {
         let p = block_for_art(&dir, RevisionArt::Prototyp);
         assert!(p.is_blocked());
         assert_eq!(p.blocking_count(), 1, "only the blockiert-ueberall task blocks a Prototyp");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **E51a Baustein-Scope der Art** (Issue #131): die Strenge kommt aus der **Heimat-getragenen**
+    /// Art, nicht aus einem Argument. Gibt der HW-Entwickler `elektronik` frei (Heimat-Art =
+    /// Freigabe), blockiert die offene Aufgabe genau diesen Bereich — während `firmware` für
+    /// dieselbe Marke Prototyp bleibt (Default, nie freigegeben) und reibungsfrei taggt.
+    #[test]
+    fn baustein_scope_drives_strictness_per_heimat() {
+        use crate::artstore::set_art_in;
+        let dir = tmp();
+        create_task(&dir, new("Footprint Q3 prüfen", TaskKind::Aufgabe, false)).unwrap();
+
+        // elektronik wird freigegeben → streng → die offene Aufgabe blockiert diesen Bereich.
+        set_art_in(&dir, "elektronik", "v1.0", RevisionArt::Freigabe).unwrap();
+        let e = block_for_baustein(&dir, "elektronik", "v1.0");
+        assert!(e.is_blocked(), "ein freigegebener Bereich ist streng");
+        assert_eq!(e.blocking_count(), 1);
+
+        // firmware hat dieselbe Marke nie freigegeben → Default Prototyp → lax → blockiert nicht.
+        let f = block_for_baustein(&dir, "firmware", "v1.0");
+        assert!(
+            !f.is_blocked(),
+            "ein noch reifender (Prototyp) Bereich blockiert nicht — unabhängige Reifung (E51a)"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
