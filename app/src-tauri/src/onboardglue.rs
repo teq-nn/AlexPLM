@@ -11,14 +11,25 @@
 //! Tool des Bausteins seine erste Binärdatei/Müll erzeugt — daher kein späteres `lfs migrate`.
 //!
 //! **Quelle der Muster (bewusste Entscheidung, ADR-würdig):**
-//! - **Ignore** = die `ignore`-Liste des Bausteins, 1:1 (das ist Tool-Wissen, ADR 0003).
+//! - **Ignore** = die `ignore`-Liste des Bausteins, 1:1 (das ist Tool-Wissen, ADR 0003) — **plus**
+//!   die aus den `rekonstruierbar`-Regeln (E50b) abgeleiteten Zeilen (siehe unten). Beide Pfad-Klassen
+//!   teilen denselben `.gitignore`-Marker-Block (E18, keine Spiegelung), denn beide steuern, **was git
+//!   sieht**: Ignore wirft Müll weg, Rekonstruierbar wirft ableitbaren Ballast weg und **hält das
+//!   gepinnte Manifest** verfolgt. Reihenfolge: erst Ignore, dann je Rekonstruierbar-Regel das
+//!   Framework-Ignore und direkt darunter die Manifest-Negationen (`!west.yml`).
 //! - **LFS** = die `lfs`-Liste des Bausteins **vereinigt** mit den Bausteins-`globs`, deren
 //!   Endung formatintrinsisch *lockable* ist (über [`crate::classifier`], die einzige Wahrheit
 //!   über Lockability — ADR 0003). So landen z.B. CAD-`globs` auch dann unter LFS, wenn der
 //!   Baustein keine explizite `lfs`-Liste pflegt (schließt #63: Onboarding ohne LFS-Muster).
 //!   Reihenfolge: erst explizite `lfs`, dann abgeleitete Globs; Duplikate werden entfernt.
+//!
+//! **Nested-`.git`-Grenze (E50a).** Die hier erzeugten Muster sind die *deklarative* Hälfte: sie sagen
+//! git, welche rekonstruierbaren Dateien es ignorieren soll. Die *beobachtende* Hälfte — der Walk, der
+//! an einem genesteten `.git` stoppt ([`crate::nestedboundary`]) — sorgt dafür, dass Watcher/
+//! Klassifizierer gar nicht erst in den fremden Framework-Baum hineinsehen. Beide ziehen am selben
+//! Strang: kein rekonstruierbarer Ballast im Repo, kein Commit-Sturm aus dem fremden Baum.
 
-use crate::baustein::Baustein;
+use crate::baustein::{Baustein, RekonstruierbarRegel};
 use crate::classifier::{classify, Bucket};
 use crate::markerblock::upsert_block;
 use crate::stackstore::ProduktStack;
@@ -29,9 +40,48 @@ const GITIGNORE: &str = ".gitignore";
 /// Dateiname der Attribut-Dotfile.
 const GITATTRIBUTES: &str = ".gitattributes";
 
-/// Die kanonische `.gitignore`-Zeilenmenge eines Bausteins: seine `ignore`-Liste, 1:1 (Tool-Wissen).
+/// Die kanonische `.gitignore`-Zeilenmenge eines Bausteins: seine `ignore`-Liste 1:1 (Tool-Wissen),
+/// gefolgt von den aus den `rekonstruierbar`-Regeln (E50b) abgeleiteten Zeilen. Beide Pfad-Klassen
+/// teilen denselben Marker-Block (E18). Rein, total, deterministisch.
 pub fn ignore_lines(b: &Baustein) -> Vec<String> {
-    b.ignore.clone()
+    let mut lines = b.ignore.clone();
+    lines.extend(rekonstruierbar_lines(&b.rekonstruierbar));
+    lines
+}
+
+/// Die `.gitignore`-Zeilen, die eine Liste von [`RekonstruierbarRegel`] erzeugt (E50b, Issue #137).
+///
+/// Pro Regel entsteht **zuerst** das Framework-Ignore (der rekonstruierbare Ballast fliegt aus dem
+/// Repo) und **direkt darunter** je gepinntem Manifest eine **Negation** (`!<manifest>`), die das
+/// Manifest aus dem Ignore wieder herausholt — git verfolgt also weiter **Quelle + gepinntes Manifest**,
+/// nie die rekonstruierbaren Framework-Dateien. Leere/whitespace-Einträge werden übersprungen (das
+/// `validate_baustein`-Gate verhindert sie ohnehin am Speichern; hier degradieren wir still). Total.
+///
+/// Bewusst **kein** `!`-Doppeln: ist ein Manifest schon ohne führendes `!` angegeben, setzen wir es
+/// davor; ein bereits negiert angegebenes Manifest bleibt unverändert (der Nutzer darf ausdrücklich
+/// auch eine handgeänderte Komponente verfolgen, ohne dass wir sein `!` verschlucken oder verdoppeln).
+pub fn rekonstruierbar_lines(regeln: &[RekonstruierbarRegel]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for regel in regeln {
+        let framework = regel.framework.trim();
+        if framework.is_empty() {
+            continue;
+        }
+        lines.push(framework.to_string());
+        for manifest in &regel.manifest {
+            let m = manifest.trim();
+            if m.is_empty() {
+                continue;
+            }
+            // Manifest wieder verfolgen: als Negation, ohne ein bereits gesetztes `!` zu verdoppeln.
+            if m.starts_with('!') {
+                lines.push(m.to_string());
+            } else {
+                lines.push(format!("!{m}"));
+            }
+        }
+    }
+    lines
 }
 
 /// Die kanonische `.gitattributes`-Zeilenmenge eines Bausteins: explizite `lfs`-Muster vereinigt
@@ -141,6 +191,7 @@ mod tests {
             globs: globs.iter().map(|s| s.to_string()).collect(),
             ignore: ignore.iter().map(|s| s.to_string()).collect(),
             lfs: lfs.iter().map(|s| s.to_string()).collect(),
+            rekonstruierbar: vec![],
             oeffnen: Oeffnen::Auto,
             startaufgaben: vec![],
             default_kanten: vec![],
@@ -190,6 +241,95 @@ mod tests {
                 expected_patterns.iter().map(|p| attr_line(p)).collect();
             assert_eq!(lfs_lines(&b), expected, "globs={globs:?} lfs={lfs:?}");
         }
+    }
+
+    /// Rekonstruierbar (E50b): jede Regel erzeugt das Framework-Ignore + die Manifest-Negationen,
+    /// in stabiler Reihenfolge (Framework zuerst, dann die `!`-Negationen darunter). Whitespace- und
+    /// Leereinträge fallen still weg; ein bereits negiert gepinntes Manifest wird nicht verdoppelt.
+    #[test]
+    fn rekonstruierbar_lines_emit_framework_ignore_plus_manifest_negations() {
+        // table: (regeln) -> erwartete .gitignore-Zeilen
+        let cases: &[(&[(&str, &[&str])], &[&str])] = &[
+            // west: modules/ + .west/ ignorieren, west.yml weiter verfolgen
+            (
+                &[("modules/", &["west.yml"][..]), (".west/", &[][..])],
+                &["modules/", "!west.yml", ".west/"],
+            ),
+            // PlatformIO: .pio/ ignorieren, platformio.ini + lockfile verfolgen
+            (
+                &[(".pio/", &["platformio.ini", "lockfile.json"][..])],
+                &[".pio/", "!platformio.ini", "!lockfile.json"],
+            ),
+            // ESP-IDF: sdkconfig als gepinntes Manifest; handgeänderte Komponente bereits negiert -> nicht verdoppeln
+            (
+                &[("components/", &["sdkconfig", "!components/mein_patch/"][..])],
+                &["components/", "!sdkconfig", "!components/mein_patch/"],
+            ),
+            // Whitespace/Leeres fällt still weg
+            (
+                &[("  modules/  ", &["  west.yml  ", "", "   "][..])],
+                &["modules/", "!west.yml"],
+            ),
+            // leeres Framework-Muster -> ganze Regel übersprungen
+            (&[("   ", &["west.yml"][..])], &[]),
+            (&[], &[]),
+        ];
+        for (regeln, expected) in cases {
+            let rk: Vec<RekonstruierbarRegel> = regeln
+                .iter()
+                .map(|(fw, ms)| RekonstruierbarRegel {
+                    framework: fw.to_string(),
+                    manifest: ms.iter().map(|m| m.to_string()).collect(),
+                })
+                .collect();
+            let got = rekonstruierbar_lines(&rk);
+            let want: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+            assert_eq!(got, want, "regeln = {regeln:?}");
+        }
+    }
+
+    /// `ignore_lines` hängt die rekonstruierbar-Zeilen **nach** der Ignore-Liste an (ein Marker-Block).
+    #[test]
+    fn ignore_lines_append_rekonstruierbar_after_plain_ignore() {
+        let mut b = baustein("zephyr", &["*.c"], &["build/", "twister-out/"], &[]);
+        b.rekonstruierbar = vec![RekonstruierbarRegel {
+            framework: "modules/".into(),
+            manifest: vec!["west.yml".into()],
+        }];
+        assert_eq!(
+            ignore_lines(&b),
+            vec![
+                "build/".to_string(),
+                "twister-out/".to_string(),
+                "modules/".to_string(),
+                "!west.yml".to_string(),
+            ]
+        );
+    }
+
+    /// End-to-end: ein rekonstruierbar-Baustein schreibt das Framework-Ignore + die Manifest-Negation
+    /// idempotent in den `.gitignore`-Marker-Block; Quelle + Manifest bleiben für git sichtbar.
+    #[test]
+    fn onboarding_writes_rekonstruierbar_into_gitignore_idempotently() {
+        let dir = tmp();
+        let mut b = baustein("zephyr", &["*.c"], &["build/"], &[]);
+        b.rekonstruierbar = vec![RekonstruierbarRegel {
+            framework: ".west/".into(),
+            manifest: vec!["west.yml".into()],
+        }];
+        onboard_baustein_dotfiles(&dir, &b).unwrap();
+        let ignore1 = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
+        assert!(ignore1.contains("# >>> baustein: zephyr >>>"));
+        assert!(ignore1.contains(".west/"));
+        assert!(ignore1.contains("!west.yml")); // Manifest bleibt verfolgt — ehrliche „Quelle + Manifest"
+
+        // Zweiter Lauf: nichts schreiben, nichts ändern (idempotent).
+        let wrote = upsert_dotfile(&dir, GITIGNORE, "zephyr", &ignore_lines(&b)).unwrap();
+        assert!(!wrote, "zweiter Lauf hätte nicht schreiben dürfen");
+        onboard_baustein_dotfiles(&dir, &b).unwrap();
+        let ignore2 = std::fs::read_to_string(dir.join(GITIGNORE)).unwrap();
+        assert_eq!(ignore1, ignore2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// End-to-end: Onboarding schreibt idempotente Blöcke in beide Dotfiles (zweimal == einmal).

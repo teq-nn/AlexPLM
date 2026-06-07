@@ -69,6 +69,54 @@ Eigentumsstreits (wessen Arbeit weiterläuft) ist ein Folge-Slice.
 
 ---
 
+## E50 — Pfad-Klasse `rekonstruierbar`: Quelle + gepinntes Manifest statt rekonstruierbarem Ballast
+**Entscheidung:** Der Baustein bekommt eine **dritte** Pfad-Klasse neben `ignore`/`lfs`:
+**`rekonstruierbar`**. Eine git-native Toolchain (`west`, ESP-IDF, PlatformIO, `venv`) zieht beim
+ersten Build **tausende rekonstruierbare** Framework-Dateien in den Heimat-Ordner — Dateien, die ein
+gepinntes **Manifest** (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile) jederzeit **wieder
+erzeugt**. Statt diesen ableitbaren Ballast mitzucommitten, verfolgt der Baustein **nur Quelle +
+gepinntes Manifest**: das Framework-Muster wird ignoriert, das Manifest bleibt ausdrücklich verfolgt.
+Der Zustand bleibt **reproduzierbar**, das Repo **schlank**.
+
+**`rekonstruierbar` ist nicht `ignore`.** Ignore wirft Müll weg, der nie zurückkommen muss;
+Rekonstruierbar wirft *ableitbaren* Ballast weg und **hält das Rezept** — das gepinnte Manifest —
+verfolgt, das ihn wiederherstellt. Aus einer Regel wird darum ein Ignore-Muster (das Framework)
+**plus** je Manifest eine **Negation** (`!west.yml`), die git das Manifest weiter sehen lässt.
+**Handgeänderte** Komponenten dürfen ausdrücklich mitverfolgt werden (auch als Negation gepinnt),
+damit lokale Patches nicht verlorengehen.
+
+**Wo die Zeilen leben.** Ausschließlich im **idempotenten Marker-Block** der Dotfiles (E18, keine
+Spiegelung) — und zwar im selben `.gitignore`-Block wie die Ignore-Muster, denn beide steuern, **was
+git sieht**. Reihenfolge: erst Ignore, dann je Rekonstruierbar-Regel das Framework-Ignore und direkt
+darunter die Manifest-Negationen. Beim Stilllegen bleiben sie — wie Ignore/LFS — als **Sediment**
+liegen (E17, nie automatisch entfernt). Die *deklarative* Hälfte (die Muster) ist die eine; die
+*beobachtende* Hälfte ist das **Nested-`.git`-Grenze-Prädikat** (E50a): der Walk stoppt am genesteten
+`.git`, sodass Watcher/Klassifizierer gar nicht erst in den fremden Framework-Baum hineinsehen. Beide
+ziehen am selben Strang: kein rekonstruierbarer Ballast im Repo, kein Commit-Sturm aus dem fremden Baum.
+
+**Ehrliche Formulierung.** „Du hast vollständige Ordner" heißt für eine git-native Toolchain **nicht**
+„jede Vendored-Datei liegt im Repo", sondern „**Quelle + rekonstruierendes Manifest**" — keine falsche
+Vollständigkeit. Darum verlangt die Validierung **beides**: ein Framework-Muster **und** mindestens ein
+gepinntes Manifest. Ein Muster ohne Manifest wäre nur ein Ignore und verspräche eine
+Wiederherstellbarkeit, die es nicht hat — harter Fehler.
+
+**Warum:** Ein Framework-Baum gehört weder vollständig ins Repo (er bläht es und das LFS-Archiv
+dauerhaft) noch blind ignoriert (dann ist der Stand **nicht** reproduzierbar). Die ehrliche Mitte ist:
+**das Manifest pinnen, den Rest rekonstruieren**. Das ehrt „behalten, nie umschreiben" (E9) und „lies
+zurück statt spiegeln" (E18) — der einzige gespeicherte Stand ist das, was git ohnehin kennt: Quelle
+und Manifest.
+**Verfeinert:** E18 (dieselbe alleinige Dotfile-Wahrheit, ein dritter Beitrag in denselben Block),
+E17 (Rekonstruierbar-Zeilen werden beim Stilllegen zu Sediment), E31 (LFS bleibt für unmergebare
+Binärquellen; Rekonstruierbar ist die *andere* Achse — ableitbar vs. unmergebar).
+**Baut auf E50a** (#130, das Nested-`.git`-Grenze-Prädikat in `nestedboundary.rs`).
+**Umfang jetzt (E50b, Issue #137):** die `rekonstruierbar`-Pfad-Klasse im Baustein-Schema
+(`RekonstruierbarRegel`), die abgeleiteten `.gitignore`-Marker-Block-Zeilen (Framework-Ignore +
+Manifest-Negation) im selben idempotenten Block wie Ignore (`onboardglue`), das Sediment-Verhalten
+(`stilllegen`), die Validierung „Framework + Manifest", der Editor mit ehrlicher Formulierung und die
+Tabellen-/Idempotenz-Tests im etablierten Marker-Block-/Classifier-Stil.
+
+---
+
 ## E51 — Baustein-Revision + Art, unabhängige Freigabe (Scope = Heimat)
 **Entscheidung:** Jeder **Baustein** trägt eine **eigene Revision** und eine **eigene Art**
 (Prototyp/Freigabe — E42) mit **Scope = Heimat-Ordner**. Die **Art wandert** von der bisher

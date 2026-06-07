@@ -674,6 +674,12 @@ export type Baustein = {
 	ignore?: string[],
 	/**  LFS-Muster (Marker-Block-Zeilen für `.gitattributes`). */
 	lfs?: string[],
+	/**
+	 *  Rekonstruierbar-Regeln (E50b, Issue #137): die **dritte** Pfad-Klasse — verfolge nur Quelle +
+	 *  gepinntes Manifest, ignoriere die rekonstruierbaren Framework-Dateien. Lebt im selben
+	 *  idempotenten `.gitignore`-Marker-Block wie die Ignore-Muster (E18, keine Spiegelung).
+	 */
+	rekonstruierbar?: RekonstruierbarRegel[],
 	/**  Öffnen-Aktion der Artefakt-Karte. */
 	oeffnen?: Oeffnen,
 	/**  Beim Onboarding anzulegende Startaufgaben/Hinweise. */
@@ -1205,6 +1211,38 @@ export type RegisteredProduct = {
 	path: string,
 	/**  Folder name, derived from `path` — a display convenience, not a second fact. */
 	name: string,
+};
+
+/**
+ *  Eine **Rekonstruierbar-Regel** (E50b, Issue #137) — die *dritte* Pfad-Klasse neben `ignore`/`lfs`.
+ * 
+ *  Eine git-native Toolchain (`west`, ESP-IDF, PlatformIO, `venv`) zieht beim ersten Build tausende
+ *  **rekonstruierbare** Framework-Dateien in den Heimat-Ordner — Dateien, die ein gepinntes
+ *  **Manifest** (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile) jederzeit **wieder erzeugt**.
+ *  Statt diesen ableitbaren Ballast mitzucommitten, verfolgt der Baustein **nur Quelle + gepinntes
+ *  Manifest**: das `framework`-Muster wird ignoriert, das `manifest` bleibt ausdrücklich verfolgt. Der
+ *  Zustand bleibt reproduzierbar, das Repo schlank — und die Formulierung **ehrlich**: „du hast
+ *  vollständige Ordner" heißt hier „Quelle + rekonstruierendes Manifest", keine falsche Vollständigkeit.
+ * 
+ *  Das **`rekonstruierbar` ist nicht `ignore`**: Ignore wirft Müll weg, der nie zurückkommen muss;
+ *  Rekonstruierbar wirft *ableitbaren* Ballast weg und **hält das Rezept** (das Manifest) verfolgt, das
+ *  ihn wiederherstellt. Beide leben ausschließlich im idempotenten Marker-Block der Dotfiles (E18, keine
+ *  Spiegelung); aus einer Rekonstruierbar-Regel wird ein Ignore-Muster **plus** eine Negation, die das
+ *  Manifest aus dem Ignore wieder herausnimmt (`!west.yml`), sodass git Quelle + Manifest weiter sieht.
+ */
+export type RekonstruierbarRegel = {
+	/**
+	 *  Das Muster der **rekonstruierbaren** Framework-Dateien, das ignoriert wird (z.B. `modules/`,
+	 *  `.west/`, `.pio/`). Das ist der ableitbare Ballast, den das Manifest jederzeit neu erzeugt.
+	 */
+	framework: string,
+	/**
+	 *  Die **gepinnten Manifest**-Pfade, die trotz des `framework`-Ignores ausdrücklich **verfolgt**
+	 *  bleiben (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile). Pro Eintrag entsteht eine
+	 *  Negations-Zeile (`!<manifest>`) im Marker-Block, die das Manifest aus dem Ignore zurückholt.
+	 *  Hier dürfen auch **handgeänderte** Komponenten stehen, damit lokale Patches nicht verlorengehen.
+	 */
+	manifest: string[],
 };
 
 /**

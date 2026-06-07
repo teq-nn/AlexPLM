@@ -47,7 +47,8 @@ pub struct StilllegenWirkung {
 /// Vorgehen (deterministisch):
 /// 1. Den stillzulegenden Baustein im Stack finden. Fehlt er, ist die Wirkung leer (mit `sediment`
 ///    leer) — nichts zu tun, nie Fehler.
-/// 2. `erloschene_globs` = seine Globs; `sediment` = seine Ignore- + LFS-Muster (bleiben liegen).
+/// 2. `erloschene_globs` = seine Globs; `sediment` = seine Ignore- + Rekonstruierbar- + LFS-Muster
+///    (bleiben als inertes Sediment liegen, E17 — nie automatisch entfernt).
 /// 3. `neue_waisen` = die Dateien, die **vorher** diesem Baustein zugeordnet waren und **nachher**
 ///    (mit ihm stillgelegt) zur Waise fallen — exakt über den `zuordnen`-Kern berechnet, einmal mit
 ///    dem aktiven, einmal mit dem stillgelegten Baustein. So bleibt das Modell die einzige Wahrheit
@@ -60,9 +61,13 @@ pub fn berechne_wirkung(stack: &ProduktStack, id: &str, tracked: &[String]) -> S
     };
     let b = &sb.baustein;
 
-    // Sediment = die Marker-Block-Quellen des Bausteins (Ignore + LFS), die liegen bleiben.
+    // Sediment = die Marker-Block-Quellen des Bausteins, die liegen bleiben. Der `.gitignore`-Block
+    // trägt Ignore **und** die aus den Rekonstruierbar-Regeln (E50b) abgeleiteten Zeilen — beide bleiben
+    // als Sediment liegen; dann die LFS-Muster. Quelle der Rekonstruierbar-Zeilen ist derselbe reine
+    // Helfer wie beim Onboarding (`onboardglue`), damit es keine zweite Glob-/Zeilen-Logik gibt.
     let mut sediment: Vec<String> = Vec::new();
     sediment.extend(b.ignore.iter().cloned());
+    sediment.extend(crate::onboardglue::rekonstruierbar_lines(&b.rekonstruierbar));
     sediment.extend(b.lfs.iter().cloned());
 
     // Zwei Regelsätze aus dem Stack: der aktuelle (vor dem Stilllegen) und der mit `id` stillgelegt.
@@ -130,6 +135,7 @@ mod tests {
             globs: globs.iter().map(|s| s.to_string()).collect(),
             ignore: ignore.iter().map(|s| s.to_string()).collect(),
             lfs: lfs.iter().map(|s| s.to_string()).collect(),
+            rekonstruierbar: vec![],
             oeffnen: Oeffnen::Auto,
             startaufgaben: vec![],
             default_kanten: vec![],
@@ -219,6 +225,33 @@ mod tests {
             // Akzeptanz „nichts relocated/removed": die Invariante steht immer im Vertrag.
             assert!(w.nichts_bewegt, "nichts_bewegt für: {}", c.name);
         }
+    }
+
+    /// Rekonstruierbar-Sediment (E50b): legt man einen Baustein mit `rekonstruierbar`-Regeln still,
+    /// bleiben dessen Framework-Ignores **und** Manifest-Negationen als Sediment liegen — gemeinsam
+    /// mit Ignore und LFS, in stabiler Reihenfolge (Ignore, dann Rekonstruierbar, dann LFS).
+    #[test]
+    fn stilllegen_keeps_rekonstruierbar_lines_as_sediment() {
+        use crate::baustein::RekonstruierbarRegel;
+        let mut zephyr = baustein("zephyr", "firmware", &["*.overlay", "*.c"], &["build/"], &["*.bin"]);
+        zephyr.rekonstruierbar = vec![
+            RekonstruierbarRegel {
+                framework: ".west/".into(),
+                manifest: vec!["west.yml".into()],
+            },
+            RekonstruierbarRegel {
+                framework: "modules/".into(),
+                manifest: vec!["west.yml".into()],
+            },
+        ];
+        let stack = stack_of(&[zephyr]);
+        let w = berechne_wirkung(&stack, "zephyr", &[]);
+        // Ignore -> Rekonstruierbar (Framework + !Manifest je Regel) -> LFS.
+        assert_eq!(
+            w.sediment,
+            ls(&["build/", ".west/", "!west.yml", "modules/", "!west.yml", "*.bin"]),
+        );
+        assert!(w.nichts_bewegt, "Stilllegen bewegt nichts");
     }
 
     /// Überlappende Globs (zwei Bausteine beanspruchen `*.c` in derselben Heimat): legt man den

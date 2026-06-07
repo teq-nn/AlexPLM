@@ -78,6 +78,33 @@ pub struct PaarDefaultKante {
     pub source_glob: String,
 }
 
+/// Eine **Rekonstruierbar-Regel** (E50b, Issue #137) — die *dritte* Pfad-Klasse neben `ignore`/`lfs`.
+///
+/// Eine git-native Toolchain (`west`, ESP-IDF, PlatformIO, `venv`) zieht beim ersten Build tausende
+/// **rekonstruierbare** Framework-Dateien in den Heimat-Ordner — Dateien, die ein gepinntes
+/// **Manifest** (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile) jederzeit **wieder erzeugt**.
+/// Statt diesen ableitbaren Ballast mitzucommitten, verfolgt der Baustein **nur Quelle + gepinntes
+/// Manifest**: das `framework`-Muster wird ignoriert, das `manifest` bleibt ausdrücklich verfolgt. Der
+/// Zustand bleibt reproduzierbar, das Repo schlank — und die Formulierung **ehrlich**: „du hast
+/// vollständige Ordner" heißt hier „Quelle + rekonstruierendes Manifest", keine falsche Vollständigkeit.
+///
+/// Das **`rekonstruierbar` ist nicht `ignore`**: Ignore wirft Müll weg, der nie zurückkommen muss;
+/// Rekonstruierbar wirft *ableitbaren* Ballast weg und **hält das Rezept** (das Manifest) verfolgt, das
+/// ihn wiederherstellt. Beide leben ausschließlich im idempotenten Marker-Block der Dotfiles (E18, keine
+/// Spiegelung); aus einer Rekonstruierbar-Regel wird ein Ignore-Muster **plus** eine Negation, die das
+/// Manifest aus dem Ignore wieder herausnimmt (`!west.yml`), sodass git Quelle + Manifest weiter sieht.
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RekonstruierbarRegel {
+    /// Das Muster der **rekonstruierbaren** Framework-Dateien, das ignoriert wird (z.B. `modules/`,
+    /// `.west/`, `.pio/`). Das ist der ableitbare Ballast, den das Manifest jederzeit neu erzeugt.
+    pub framework: String,
+    /// Die **gepinnten Manifest**-Pfade, die trotz des `framework`-Ignores ausdrücklich **verfolgt**
+    /// bleiben (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile). Pro Eintrag entsteht eine
+    /// Negations-Zeile (`!<manifest>`) im Marker-Block, die das Manifest aus dem Ignore zurückholt.
+    /// Hier dürfen auch **handgeänderte** Komponenten stehen, damit lokale Patches nicht verlorengehen.
+    pub manifest: Vec<String>,
+}
+
 /// Ein **Baustein**: das wiederverwendbare Tool-Wissen für ein Tool (ADR 0003).
 #[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Baustein {
@@ -97,6 +124,11 @@ pub struct Baustein {
     /// LFS-Muster (Marker-Block-Zeilen für `.gitattributes`).
     #[serde(default)]
     pub lfs: Vec<String>,
+    /// Rekonstruierbar-Regeln (E50b, Issue #137): die **dritte** Pfad-Klasse — verfolge nur Quelle +
+    /// gepinntes Manifest, ignoriere die rekonstruierbaren Framework-Dateien. Lebt im selben
+    /// idempotenten `.gitignore`-Marker-Block wie die Ignore-Muster (E18, keine Spiegelung).
+    #[serde(default)]
+    pub rekonstruierbar: Vec<RekonstruierbarRegel>,
     /// Öffnen-Aktion der Artefakt-Karte.
     #[serde(default)]
     pub oeffnen: Oeffnen,
@@ -206,6 +238,17 @@ pub fn validate_baustein(b: &Baustein, existing_ids: &[String], is_create: bool)
         r.err("globs", "Mindestens ein Artefakt-Muster");
     }
 
+    // Rekonstruierbar (E50b): jede Regel braucht ein Framework-Muster UND mindestens ein gepinntes
+    // Manifest. Ein Muster ohne Manifest wäre nur ein Ignore — der ehrliche Vertrag „Quelle + Manifest"
+    // verlangt das rekonstruierende Rezept, sonst verspräche er Wiederherstellbarkeit, die er nicht hat.
+    for k in &b.rekonstruierbar {
+        let manifest_live = k.manifest.iter().filter(|m| !m.trim().is_empty()).count();
+        if k.framework.trim().is_empty() || manifest_live == 0 {
+            r.err("rekonstruierbar", "Rekonstruierbar braucht ein Framework-Muster und ein gepinntes Manifest");
+            break;
+        }
+    }
+
     for k in &b.default_kanten {
         if k.derived_glob.trim().is_empty() || k.source_glob.trim().is_empty() {
             r.err("default_kanten", "Default-Kanten brauchen Quelle und Ableitung");
@@ -284,6 +327,7 @@ mod tests {
             globs: globs.iter().map(|s| s.to_string()).collect(),
             ignore: vec![],
             lfs: vec![],
+            rekonstruierbar: vec![],
             oeffnen,
             startaufgaben: vec![],
             default_kanten: vec![],
@@ -342,6 +386,10 @@ mod tests {
             globs: vec!["*.f3d".to_string(), "*.step".to_string()],
             ignore: vec![],
             lfs: vec!["*.f3d".to_string()],
+            rekonstruierbar: vec![RekonstruierbarRegel {
+                framework: "modules/".to_string(),
+                manifest: vec!["west.yml".to_string()],
+            }],
             oeffnen: Oeffnen::Auto,
             startaufgaben: vec![Startaufgabe {
                 titel: "Stückliste prüfen".to_string(),
@@ -544,8 +592,61 @@ mod tests {
         assert!(bs.ignore.is_empty());
         assert!(bs.lfs.is_empty());
         assert_eq!(bs.oeffnen, Oeffnen::Auto);
+        assert!(bs.rekonstruierbar.is_empty());
         assert!(bs.default_kanten.is_empty());
         assert!(bs.paar_default_kanten.is_empty());
         assert!(!bs.stillgelegt);
+    }
+
+    /// Rekonstruierbar (E50b): eine Regel braucht ein Framework-Muster UND ein gepinntes Manifest.
+    /// Ein Muster ohne Manifest (oder ein Manifest ohne Muster) ist ein harter Fehler — der ehrliche
+    /// „Quelle + Manifest"-Vertrag verlangt das rekonstruierende Rezept.
+    #[test]
+    fn rekonstruierbar_needs_framework_and_a_pinned_manifest() {
+        let base = b("zephyr", &["*.c"], Oeffnen::Auto);
+        let existing = vec!["zephyr".to_string()];
+
+        // Happy path: Framework-Muster + gepinntes Manifest -> speicherbar.
+        let ok = full(base.clone(), |b| {
+            b.rekonstruierbar = vec![RekonstruierbarRegel {
+                framework: "modules/".into(),
+                manifest: vec!["west.yml".into()],
+            }];
+        });
+        assert!(validate_baustein(&ok, &existing, false).ok(), "Quelle + Manifest muss passen");
+
+        // table: (mutate) -> expects a hard error on `rekonstruierbar`
+        let bad: Vec<Baustein> = vec![
+            // Framework-Muster fehlt
+            full(base.clone(), |b| {
+                b.rekonstruierbar = vec![RekonstruierbarRegel {
+                    framework: "   ".into(),
+                    manifest: vec!["west.yml".into()],
+                }];
+            }),
+            // Manifest fehlt -> wäre nur ein Ignore, kein rekonstruierendes Rezept
+            full(base.clone(), |b| {
+                b.rekonstruierbar = vec![RekonstruierbarRegel {
+                    framework: "modules/".into(),
+                    manifest: vec![],
+                }];
+            }),
+            // Manifest nur aus Leerzeichen -> zählt als fehlend
+            full(base.clone(), |b| {
+                b.rekonstruierbar = vec![RekonstruierbarRegel {
+                    framework: "modules/".into(),
+                    manifest: vec!["  ".into()],
+                }];
+            }),
+        ];
+        for bs in bad {
+            let r = validate_baustein(&bs, &existing, false);
+            assert!(!r.ok(), "erwartete Fehler, baustein = {bs:?}");
+            assert!(
+                r.errors.iter().any(|(f, _)| f == "rekonstruierbar"),
+                "Fehler auf rekonstruierbar erwartet, got {:?}",
+                r.errors
+            );
+        }
     }
 }
