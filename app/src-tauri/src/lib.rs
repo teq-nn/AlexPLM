@@ -31,6 +31,8 @@ pub mod onboardglue;
 pub mod plmstore;
 pub mod projection;
 pub mod pushglue;
+pub mod recovery;
+pub mod recoveryglue;
 pub mod registry;
 pub mod search;
 pub mod setup;
@@ -314,7 +316,13 @@ async fn knoten_abzweigen(
         if !root.is_dir() {
             return Err(format!("Kein Ordner: {path}"));
         }
-        von_hier_abzweigen(root, &stand_id, &branch, SystemTime::now()).map_err(|e| e.to_string())
+        // Recovery-Transaktion (E56): Schnappschuss vorher, automatischer Rückfall bei Fehler/Abbruch
+        // — scheitert das Abzweigen mitten im Werk, landet das Repo wieder auf dem Stand von vorher,
+        // und der Nutzer liest die ehrliche Domänen-Meldung statt rohen git-Texts.
+        recoveryglue::mit_rueckfallnetz(root, |r| {
+            von_hier_abzweigen(r, &stand_id, &branch, SystemTime::now())
+        })
+        .map_err(|e| e.to_string())
     })
     .await
 }
@@ -332,7 +340,11 @@ async fn knoten_zurueckwerfen(path: String, stand_id: String) -> Result<VersionG
         if !root.is_dir() {
             return Err(format!("Kein Ordner: {path}"));
         }
-        zurueckwerfen(root, &stand_id, SystemTime::now()).map_err(|e| e.to_string())
+        // Recovery-Transaktion (E56): Schnappschuss vorher, automatischer Rückfall bei Fehler/Abbruch.
+        // Das Zurückwerfen ist die gefährlichste Operation (es fasst die Historie scheinbar an) —
+        // scheitert es, dreht das Netz zurück auf den Stand von vorher; ehrliche Meldung, kein git-Text.
+        recoveryglue::mit_rueckfallnetz(root, |r| zurueckwerfen(r, &stand_id, SystemTime::now()))
+            .map_err(|e| e.to_string())
     })
     .await
 }
