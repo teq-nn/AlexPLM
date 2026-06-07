@@ -609,6 +609,33 @@
     await refreshEdges();
   }
 
+  /** „Export als einfache Ordner" (Issue #134, E56) — der Notausgang. Schreibt den Jetzt-Zustand
+   *  und jeden markierten Stand als blanke Ordner auf die Platte (ohne `_plm`/git-Voodoo lesbar).
+   *  Rein lokal — funktioniert auch, wenn der Server/Backend klemmt. Der Nutzer wählt das Ziel
+   *  (gern ein externer Ort wie ein USB-Stick); ohne Auswahl bricht der Export ruhig ab. */
+  let exporting = $state(false);
+  async function exportPlainFolders() {
+    if (!productPath || exporting) return;
+    // Den Ziel-Ordner wählen lassen — der Notausgang soll bewusst auch auf eine externe Platte gehen.
+    const target = await open({ directory: true, title: "Wohin exportieren?" });
+    if (typeof target !== "string") return; // abgebrochen — kein Fehler
+    exporting = true;
+    try {
+      const result = await cmd.exportPlainFolders(productPath, target);
+      // Den frisch geschriebenen Export-Ordner gleich im Dateimanager öffnen.
+      try {
+        await openPath(result.wurzel);
+      } catch (e) {
+        // Die Ordner liegen auf jeden Fall da; ein Fehlschlag beim Öffnen ist nicht fatal.
+        flashOpenError(e);
+      }
+    } catch (e) {
+      error = String(e);
+    } finally {
+      exporting = false;
+    }
+  }
+
   async function refreshEdges() {
     if (!productPath) return;
     try {
@@ -1172,6 +1199,8 @@
         onOpenAsFolder={openAsFolder}
         onBranchFrom={branchFrom}
         onThrowBack={throwBack}
+        onExportPlain={exportPlainFolders}
+        {exporting}
       />
     {:else}
     <main class="work">
