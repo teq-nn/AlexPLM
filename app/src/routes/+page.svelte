@@ -34,6 +34,7 @@
     WerkbankView,
     ArtefaktKarte as ArtefaktKarteT,
     ProduktStack,
+    ZusammenstellungsBericht,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import GraphRaum from "$lib/GraphRaum.svelte";
@@ -48,6 +49,7 @@
   import BibliothekAnsicht from "$lib/BibliothekAnsicht.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
+  import Zusammenstellung from "$lib/Zusammenstellung.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
   import AbgleichBeimOeffnen from "$lib/AbgleichBeimOeffnen.svelte";
@@ -437,6 +439,13 @@
   // driving the bar. Read read-only and refreshed whenever a new Stand settles.
   let graph = $state<VersionGraph | null>(null);
 
+  // Die Produkt-Zusammenstellung als Checkliste (Issue #140, E52a): pro Baustein ein Posten
+  // (beigetragen / Vorstand / ausstehend) + die Vollständigkeit. Read-only und opt-in — ohne
+  // Auswahl steht jeder Pflicht-Bereich aus. Refreshed on open und wenn ein Stand settled (neue
+  // Freigabe-Stände können dazukommen). Auswahl/Optional sind hier noch leer: die Checkliste zeigt
+  // den Reifestand, das Schnüren einer Revision ist eine spätere Geste.
+  let zusammenstellung = $state<ZusammenstellungsBericht | null>(null);
+
   // Manual „abgeleitet von" edges + their Stale-Warnungen (Issue #10). Opt-in: a product
   // with no drawn edges keeps this empty and shows no warnings (E40).
   let edgeView = $state<EdgeView>({ edges: [], warnings: [] });
@@ -587,6 +596,19 @@
       graph = await cmd.readVersionGraph(productPath);
     } catch (e) {
       // The tree is a read-only view; a transient read failure must not break the shell.
+      error = String(e);
+    }
+  }
+
+  // Die Produkt-Zusammenstellung neu berechnen (Issue #140, E52a): Checkliste + Vollständigkeit
+  // aus dem Stack + den verfügbaren Freigabe-Ständen. Noch keine laufende Auswahl/Optional-Achse
+  // verdrahtet (das Schnüren ist eine spätere Geste) — die Checkliste zeigt den reinen Reifestand.
+  // Read-only; ein Lesefehler darf die Schale nie brechen.
+  async function refreshZusammenstellung() {
+    if (!productPath) return;
+    try {
+      zusammenstellung = await cmd.evaluateZusammenstellung(productPath, [], []);
+    } catch (e) {
       error = String(e);
     }
   }
@@ -797,6 +819,7 @@
       await refreshTasks();
       await refreshWerkbank();
       await refreshStack();
+      await refreshZusammenstellung();
       await refreshSetup();
       pulse.start();
       // Reconcile beim Öffnen (Issue #129, E49a): BEFORE the daily rhythm begins, silently catch the
@@ -886,6 +909,7 @@
       await refreshEdges();
       await refreshTasks();
       await refreshWerkbank();
+      await refreshZusammenstellung();
       await refreshSetup();
       // A freshly created product has no server yet — open the one-time ceremony once so the
       // user is guided to share it. Reopening/daily use never re-triggers this.
@@ -1534,6 +1558,14 @@
 
       <div class="tree-col" style="width: {treeWidth}px;">
         <VersionTree {graph} onPromote={promote} onToggleArt={toggleArt} />
+        <!-- Die Produkt-Zusammenstellung als Checkliste (Issue #140, E52a): „elektronik ✓ Rev B ·
+             firmware ⧖ ausstehend". Zeigt den Reifestand je Baustein + ob die Revision vollständig
+             ist; kein Rollen-/Rechte-Gate. -->
+        {#if zusammenstellung}
+          <div class="zus-col">
+            <Zusammenstellung bericht={zusammenstellung} />
+          </div>
+        {/if}
       </div>
 
       <!-- Splitter between the Versionsbaum and the Fremde-Sperren-Schiene. -->
@@ -1901,10 +1933,22 @@
     max-width: 640px;
     min-height: 0;
     display: flex;
+    flex-direction: column;
   }
   .tree-col > :global(.display) {
     width: 100%;
     flex: 1;
+    min-height: 0;
+  }
+  /* Die Zusammenstellungs-Checkliste sitzt unter dem Versionsbaum, mit eigenem Scroll und einer
+     ruhigen Hairline als Naht. Routine = grau. */
+  .zus-col {
+    flex: none;
+    max-height: 42%;
+    overflow: auto;
+    padding: 10px;
+    border-top: 1px solid var(--hairline);
+    background: var(--surface-sunken);
   }
 
   /* A splitter is a hairline seam with an invisible widened grab zone. It carries no fill of

@@ -472,6 +472,30 @@ pub fn baustein_freigabe_tag_exists(
     tag_ref_exists(root, &tag)
 }
 
+/// Die **dauerhaften Baustein-Freigabe-Tags** eines Heimat-Bereichs auflisten (E51a, Issue #140) —
+/// die für diesen Bereich **verfügbaren freigegebenen Stände**, aus denen eine Produkt-Revision
+/// wählen kann (frischer Stand) oder einen Vorstand mitnimmt. Liefert die vollen Tag-Refs
+/// (`freigabe/<heimat-slug>/<label-slug>`), neuester zuerst, sodass die Zusammenstellungs-Glue
+/// (#140) sie direkt als `verfuegbare_staende` durchreichen kann.
+///
+/// Gefiltert wird mit demselben Heimat-Slug, mit dem [`release_baustein_revision`] die Tags setzt —
+/// so passt das Listen-Präfix genau zu den geschriebenen Refs. Treu zur Degradations-Invariante
+/// (E22): kein Repo / kein Tag ⇒ leere Liste, nie ein Fehler.
+pub fn list_baustein_freigaben(root: &Path, heimat: &str) -> Vec<String> {
+    let praefix = format!("{BAUSTEIN_FREIGABE_PREFIX}{}/", slug_for_ref(heimat));
+    let muster = format!("{praefix}*");
+    // `--sort=-creatordate`: neuester Stand zuerst (der natürliche „frischeste" Vorschlag oben).
+    match git(root, &["tag", "--list", "--sort=-creatordate", &muster]) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether a durable version tag exists for `version`.
 fn tag_exists(root: &Path, version: &str) -> std::io::Result<bool> {
     let tag = format!("{TAG_PREFIX}{version}");
