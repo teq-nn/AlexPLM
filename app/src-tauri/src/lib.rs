@@ -31,6 +31,8 @@ pub mod onboardglue;
 pub mod plmstore;
 pub mod projection;
 pub mod pushglue;
+pub mod reconcileglue;
+pub mod reconciler;
 pub mod registry;
 pub mod search;
 pub mod setup;
@@ -66,6 +68,8 @@ use konto::{
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use projection::{project_product, ProductView};
+use reconcileglue::reconcile_on_open;
+use reconciler::ReconcileDecision;
 use registry::{
     add_registered, read_registry, registry_path, relink_registered, remove_registered,
     RegisteredProduct,
@@ -672,6 +676,30 @@ async fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome
             return Err(format!("Kein Ordner: {path}"));
         }
         run_sync(root, other).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Run the **silent Reconcile beim Öffnen** (Issue #129, E49a): on open, read the real observed
+/// state of the three truth-places — disk (Inhalt), git (Verlauf), server-locks (flüchtige
+/// Koordination) — compare it against the last-seen `_plm` memory, and **silently catch up** every
+/// drift that is resolvable (re-seeding the memory, no prompt) so the user never works on a stale
+/// picture. The one drift that is not silently resolvable — a contested ownership (an unmergeable
+/// artifact the tool last knew was ours is now held by a colleague) — returns the single
+/// **Abgleichfrage**: a domain-language question ("Bens Sperre liegt jetzt auf deinem Gehaeuse —
+/// wessen Arbeit gilt?"), never a git conflict marker. The pure decision lives in
+/// [`reconciler::reconcile`]; this command only reads the world and obeys.
+#[tauri::command]
+#[specta::specta]
+async fn reconcile_product(path: String) -> Result<ReconcileDecision, String> {
+    // The reconcile reads the bounded, networked `git lfs locks`; off the main thread so opening a
+    // product can never freeze the UI on a slow coordination read.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        reconcile_on_open(root).map_err(|e| e.to_string())
     })
     .await
 }
@@ -1613,6 +1641,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         melde_problem,
         sweep_clean_locks,
         sync_product,
+        reconcile_product,
         list_bibliothek,
         save_baustein_cmd,
         delete_baustein_cmd,

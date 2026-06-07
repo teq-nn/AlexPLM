@@ -23,6 +23,8 @@
     SyncOutcome,
     PublishOutcome,
     LoudQuestion,
+    ReconcileDecision,
+    Abgleichfrage,
     StandChoice,
     Task,
     TaskKind,
@@ -47,6 +49,7 @@
   import VersionTree from "$lib/VersionTree.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
+  import AbgleichBeimOeffnen from "$lib/AbgleichBeimOeffnen.svelte";
   import ProduktSuche from "$lib/ProduktSuche.svelte";
   import AufgabenListe from "$lib/AufgabenListe.svelte";
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
@@ -174,6 +177,31 @@
     }
   }
   onDestroy(stopSyncLoop);
+
+  // The Reconcile beim Öffnen (Issue #129, E49a). On open the tool SILENTLY reconciles the real
+  // observed state of the three truth-places — Inhalt (Platte), Verlauf (Git), Koordination
+  // (Server-Sperren) — against the last-seen `_plm` memory, so the user never works on a stale
+  // picture. A drift that is silently resolvable is just caught up (no prompt); the ONE drift that
+  // is not — a contested Sperre (an Artefakt the tool last knew was ours, now held by a Kollege) —
+  // surfaces as a single domain-language `Abgleichfrage`, never a git conflict marker.
+  let abgleich = $state<Abgleichfrage | null>(null);
+
+  /** Run the silent open-time reconcile once per open (E49). Best-effort: a raw reconcile error must
+   *  never break the silent open — the tool stays quiet. The pure Reconciler (Rust) decides silent
+   *  catch-up vs. the to-report question; the UI only reflects a question, never the catch-ups. */
+  async function runReconcile(path: string) {
+    abgleich = null;
+    try {
+      const decision: ReconcileDecision = await cmd.reconcileProduct(path);
+      // „aktuell" and „still-aufgeholt" are SILENT by design (E49) — nothing surfaces; the catch-up
+      // already re-seeded the memory in the backend. Only a contested ownership raises its voice.
+      if (decision.kind === "abgleichfrage") {
+        abgleich = decision;
+      }
+    } catch (e) {
+      // Silent by design (E49): an offline/unpublished/unreadable product keeps the open quiet.
+    }
+  }
 
   /** Resolve the loud exception by choosing whose stand applies (Issue #43, E41). The backend
    *  applies the chosen side for the contested artifact and FINISHES the sync — a raw git conflict
@@ -363,6 +391,7 @@
     ceremonyOpen = false;
     syncQuiet = null;
     loud = null;
+    abgleich = null;
     loudFromPublish = false;
     resolving = false;
     stands = [];
@@ -746,6 +775,10 @@
       await refreshStack();
       await refreshSetup();
       pulse.start();
+      // Reconcile beim Öffnen (Issue #129, E49a): BEFORE the daily rhythm begins, silently catch the
+      // tool up to the real observed state so the user never works on a stale picture. A contested
+      // Sperre surfaces as the single `Abgleichfrage`; every other drift is caught up quietly.
+      await runReconcile(path);
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
       startSyncLoop();
       // Opened products fill the Verlauf even without the search (Issue #73): register + stamp.
@@ -1595,6 +1628,13 @@
      contradiction and raised its voice. Domain language only; no git markers, ever. -->
 {#if loud}
   <LauteAusnahme question={loud} busy={resolving} onChoose={resolveLoud} />
+{/if}
+
+<!-- The single open-time „Abgleich" moment (Issue #129, E49a): the silent reconcile hit a contested
+     Sperre it cannot catch up on its own. Domain language only; the three truth-places are named
+     honestly; no git markers, ever. -->
+{#if abgleich}
+  <AbgleichBeimOeffnen frage={abgleich} onClose={() => (abgleich = null)} />
 {/if}
 
 <!-- Produktübergreifende Live-Suche (Issue #45, E45): an app-level instrument screen. -->
