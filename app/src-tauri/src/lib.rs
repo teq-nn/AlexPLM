@@ -53,6 +53,8 @@ pub mod werkbank;
 pub mod worktreeglue;
 pub mod zuordnung;
 pub mod zuordnungstore;
+pub mod zusammenstellung;
+pub mod zusammenstellungglue;
 
 use aufgabenblock::BlockDecision;
 use aufgabenblockglue::{block_for_art, block_for_baustein};
@@ -64,6 +66,8 @@ use edgestore::{
 };
 use freigabegate::GateVerdict;
 use freigabegateglue::{gate_for_art, gate_for_baustein};
+use zusammenstellung::ZusammenstellungsBericht;
+use zusammenstellungglue::{zusammenstellung_fuer_produkt, WahlEingabe};
 use graph::{RevisionArt, VersionGraph};
 use graphread::{
     promote_to_revision, read_graph, release_baustein_revision, toggle_revision_freigabe,
@@ -1598,6 +1602,31 @@ fn evaluate_freigabe_gate_baustein(
     Ok(gate_for_baustein(root, &heimat, &version))
 }
 
+/// Die **Zusammenstellung einer Produkt-Revision** prüfen (Issue #140, E52a): aus dem Produkt-Stack,
+/// den verfügbaren Freigabe-Ständen je Heimat (E51a) und der aktuellen Auswahl die **Checkliste**
+/// (ein Posten je Baustein: „elektronik ✓ Rev B · firmware ⧖ ausstehend") und die
+/// **Vollständigkeit** berechnen. Vollständig ist die Revision genau dann, wenn **jeder**
+/// verpflichtende Baustein einen Beitrag trägt — einen frischen Freigabe-Stand **oder** das bewusste
+/// „Vorstand mitnehmen"; **optionale** Bausteine blockieren nie. `wahlen` ist die laufende Auswahl
+/// (heimat → frisch/Vorstand), `optionale_heimaten` benennt die optionalen Bereiche. Reine
+/// Lesepfade des `_plm`-Stacks + der git-Tags; das Urteil ist der reine
+/// [`zusammenstellung::zusammenstellen`]-Kern. **Keine** Rollen/Rechte — ein Beitrag ist
+/// Koordination, keine Autorisierung (E52a). Ein leeres Produkt ist eine leere, vollständige
+/// Checkliste (sperrt nie aus — E22).
+#[tauri::command]
+#[specta::specta]
+fn evaluate_zusammenstellung(
+    path: String,
+    wahlen: Vec<WahlEingabe>,
+    optionale_heimaten: Vec<String>,
+) -> Result<ZusammenstellungsBericht, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(zusammenstellung_fuer_produkt(root, &wahlen, &optionale_heimaten))
+}
+
 /// Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
 /// Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
 /// protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
@@ -1775,6 +1804,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         sichern,
         evaluate_freigabe_gate,
         evaluate_freigabe_gate_baustein,
+        evaluate_zusammenstellung,
         log_freigabe_begruendung,
         read_git_log,
         clear_git_log,

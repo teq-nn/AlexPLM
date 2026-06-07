@@ -238,6 +238,20 @@ export const commands = {
 	 */
 	evaluateFreigabeGateBaustein: (path: string, heimat: string, version: string) => typedError<GateVerdict, string>(__TAURI_INVOKE("evaluate_freigabe_gate_baustein", { path, heimat, version })),
 	/**
+	 *  Die **Zusammenstellung einer Produkt-Revision** prüfen (Issue #140, E52a): aus dem Produkt-Stack,
+	 *  den verfügbaren Freigabe-Ständen je Heimat (E51a) und der aktuellen Auswahl die **Checkliste**
+	 *  (ein Posten je Baustein: „elektronik ✓ Rev B · firmware ⧖ ausstehend") und die
+	 *  **Vollständigkeit** berechnen. Vollständig ist die Revision genau dann, wenn **jeder**
+	 *  verpflichtende Baustein einen Beitrag trägt — einen frischen Freigabe-Stand **oder** das bewusste
+	 *  „Vorstand mitnehmen"; **optionale** Bausteine blockieren nie. `wahlen` ist die laufende Auswahl
+	 *  (heimat → frisch/Vorstand), `optionale_heimaten` benennt die optionalen Bereiche. Reine
+	 *  Lesepfade des `_plm`-Stacks + der git-Tags; das Urteil ist der reine
+	 *  [`zusammenstellung::zusammenstellen`]-Kern. **Keine** Rollen/Rechte — ein Beitrag ist
+	 *  Koordination, keine Autorisierung (E52a). Ein leeres Produkt ist eine leere, vollständige
+	 *  Checkliste (sperrt nie aus — E22).
+	 */
+	evaluateZusammenstellung: (path: string, wahlen: WahlEingabe[], optionaleHeimaten: string[]) => typedError<ZusammenstellungsBericht, string>(__TAURI_INVOKE("evaluate_zusammenstellung", { path, wahlen, optionaleHeimaten })),
+	/**
 	 *  Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
 	 *  Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
 	 *  protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
@@ -749,6 +763,27 @@ export type BlockDecision = {
 };
 
 /**
+ *  Ein **Checklisten-Posten** je Baustein (E52a). Trägt alles, was die UI für eine Zeile braucht,
+ *  ohne neu zu entscheiden: den Bereich, ob er Pflicht ist, seinen Zustand und — falls ein Beitrag
+ *  gewählt ist — den dazugehörigen Release-Tag (das menschliche „Rev B" der Checkliste).
+ */
+export type ChecklistenPosten = {
+	/**  `id` des Bausteins (z.B. `"kicad"`). */
+	baustein_id: string,
+	/**  Der Heimat-Bereich, den dieser Posten stellt (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Ob dieser Bereich verpflichtend ist (für die Anzeige „Pflicht"/„optional"). */
+	pflicht: boolean,
+	/**  Der Checklisten-Zustand dieses Bereichs. */
+	zustand: PostenZustand,
+	/**
+	 *  Der Release-Tag des Beitrags (z.B. `freigabe/elektronik/Rev-B`), falls einer gewählt ist;
+	 *  sonst leer. Die UI zeigt daraus das menschliche „Rev B".
+	 */
+	release_tag: string,
+};
+
+/**
  *  Eine interne Default-Kante des Bausteins: ein abgeleitetes Glob „stammt aus" einem Quell-Glob
  *  (z.B. Fertigungs-STL stammt aus der CAD-Quelle). Pattern-basiert, nicht pro-Datei (PRD §13).
  *  **Baustein-Default** (E20): kommt beim Onboarding automatisch, ganz **innerhalb** des Bausteins.
@@ -1151,6 +1186,29 @@ export type PaarDefaultKante = {
 	/**  Glob der Quelle, aus der es stammt (z.B. Layout **und** BOM — je eine Paar-Kante). */
 	source_glob: string,
 };
+
+/**
+ *  Der **Zustand eines Checklisten-Postens** (E52a) — die eine Achse, die die UI als „✓ Rev B" /
+ *  „⧖ ausstehend" rendert. Genau einer pro Baustein; total.
+ */
+export type PostenZustand = 
+/**  Ein **frischer** Freigabe-Stand wurde für diese Produkt-Revision beigetragen („✓ Rev B"). */
+"beigetragen" | 
+/**
+ *  Der **Vorstand wird mitgenommen** — bewusst „alter Stand reicht" („✓ Vorstand"). Ein
+ *  vollwertiger Beitrag, getrennt benannt, damit die Checkliste die Geste sichtbar macht.
+ */
+"vorstand-mitgenommen" | 
+/**
+ *  Ein **verpflichtender** Bereich **ohne** Beitrag — er steht aus und hält die Vollständigkeit
+ *  („⧖ ausstehend"). Nur ein Pflicht-Baustein kann diesen Zustand tragen.
+ */
+"ausstehend" | 
+/**
+ *  Ein **optionaler** Bereich ohne Beitrag — er ist nicht gewählt, blockiert aber nie
+ *  („– nicht dabei"). Optional & offen ergibt **nie** `Ausstehend` (E52a).
+ */
+"optional-offen";
 
 /**
  *  Die abgeleitete **primäre Aktion** einer Artefakt-Karte (PRD §14). `Auto` löst sich aus dem
@@ -1715,6 +1773,25 @@ export type VersionGraph = {
 };
 
 /**
+ *  Die **aktuelle Auswahl** eines Bereichs in der laufenden Schnür-Sitzung (Issue #140), wie der
+ *  Aufrufer sie übergibt: für einen Heimat-Bereich entweder ein frischer Freigabe-Stand, das
+ *  bewusste „Vorstand mitnehmen" oder (gar nicht in der Map ⇒) offen. Schlicht — die Glue setzt sie
+ *  in die Kern-[`Auswahl`] um. `specta::Type` + `Deserialize`, damit sie als Befehls-Argument über
+ *  die Tauri-Naht kommt (das Frontend schickt die Auswahl der Schnür-Sitzung).
+ */
+export type WahlEingabe = {
+	/**  Der Heimat-Bereich, für den gewählt wurde (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Der gewählte Release-Tag (ein verfügbarer Freigabe-Stand des Bereichs, E51a). */
+	release_tag: string,
+	/**
+	 *  Ob es das bewusste „alter Stand reicht" ist (Vorstand mitnehmen) statt ein frischer Stand.
+	 *  Beides ist ein vollwertiger Beitrag (E52a) — die Flagge erhält nur die sichtbare Geste.
+	 */
+	vorstand_mitnehmen: boolean,
+};
+
+/**
  *  Exactly one action the Lock Warden returns per snapshot. The glue in [`crate::pushglue`] is
  *  the only thing that turns one of these into git/LFS calls.
  */
@@ -1747,6 +1824,29 @@ export type WerkbankView = {
 	karten: ArtefaktKarte[],
 	/**  Unzugeordnet-Fächer, eines je Arbeitsbereich mit Waisen, sortiert nach `arbeitsbereich`. */
 	unzugeordnet: UnzugeordnetFach[],
+};
+
+/**
+ *  Der **Zusammenstellungs-Bericht** einer Produkt-Revision (E52a): die Checkliste (ein Posten pro
+ *  Baustein, Eingabe-Reihenfolge erhalten) plus die daraus folgende **Vollständigkeit**. Total —
+ *  die UI rendert daraus die ganze Checkliste, ohne neu zu entscheiden.
+ */
+export type ZusammenstellungsBericht = {
+	/**
+	 *  Die Checkliste, ein Posten pro Baustein, in **Eingabe-Reihenfolge** (die Glue liefert sie in
+	 *  der natürlichen Stack-Reihenfolge; der Kern erhält sie stabil).
+	 */
+	posten: ChecklistenPosten[],
+	/**
+	 *  Ob die Produkt-Revision **vollständig** ist: **jeder** Pflicht-Baustein trägt einen Beitrag.
+	 *  Optionale Bausteine zählen hier nie hinein (E52a).
+	 */
+	vollstaendig: boolean,
+	/**
+	 *  Die Bereiche (Heimat-Pfade), die noch **ausstehen** — verpflichtend und ohne Beitrag. Leer
+	 *  ⇔ vollständig. Die UI nennt sie beim Heimat-Namen, damit klar ist, *was* noch fehlt.
+	 */
+	ausstehende: string[],
 };
 
 /* Tauri Specta runtime */
