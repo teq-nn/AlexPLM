@@ -26,7 +26,7 @@
 //! wird im Kern geprüft (table + property) und in der Glue physisch eingelöst: der gebaute Baum
 //! deckt sich Eintrag für Eintrag mit der BOM (kein „Tag HEAD + Lüge im Manifest").
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 // ----------------------------------------------------------------------------------------------
@@ -72,7 +72,7 @@ pub struct ComposeEintrag {
 /// gewählte Release-Stand, der seinen Heimat-Bereich stellt. Genau das, was der Compose-Commit-Baum
 /// physisch enthalten **muss** — die Glue prüft die Invariante **Baum = BOM** dagegen, damit kein
 /// „Tag HEAD + Lüge im Manifest" entsteht.
-#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(specta::Type, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StuecklistenPosten {
     /// `id` des Bausteins (z.B. `"kicad"`).
     pub baustein_id: String,

@@ -23,6 +23,8 @@ pub mod graph;
 pub mod graphread;
 pub mod import;
 pub mod import_gate;
+pub mod integrationsblock;
+pub mod integrationsblockglue;
 pub mod kartenstatus;
 pub mod knotenverben;
 pub mod konto;
@@ -74,6 +76,12 @@ use konto::{
     KontoConfig, KontoView,
 };
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
+use compose::StuecklistenPosten;
+use integrationsblock::{IntegrationsAntwort, IntegrationsAufgabe, IntegrationsBlockEntscheid};
+use integrationsblockglue::{
+    beantworte_integration, flagge_integration, integrationsblock_fuer_compose, loesche_integration,
+    read_integrationen,
+};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
 use offlinelock::IntentReconcile;
 use offlinelockglue::{acquire_lock_or_intent, has_intent_lock, reconcile_intents_on_connect, OpenLock};
@@ -1562,6 +1570,85 @@ fn evaluate_task_block_baustein(
     Ok(block_for_baustein(root, &heimat, &version))
 }
 
+/// Die offenen **Integrations-Aufgaben** eines Produkts lesen (Issue #141, E53) — die einmaligen,
+/// gegen eine Quell-Revision erhobenen Cross-Baustein-Test-Belege. Ein Produkt ohne Beleg-Datei hat
+/// null Forderungen (opt-in). Reiner Lese-Zugriff auf den `_plm`-Speicher.
+#[tauri::command]
+#[specta::specta]
+fn list_integrationen(path: String) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(read_integrationen(root))
+}
+
+/// **Flaggen** (HW, Issue #141, E53): eine neue, offene Integrations-Forderung anlegen — „mein
+/// `quell_baustein` braucht gegen `ziel_baustein` einen Test, erhoben gegen `quell_rev`". Der
+/// Empfänger (SW) beantwortet sie später mit ja/nein. Gibt die frische Liste zurück.
+#[tauri::command]
+#[specta::specta]
+fn flagge_integration_cmd(
+    path: String,
+    quell_baustein: String,
+    ziel_baustein: String,
+    quell_rev: String,
+) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    flagge_integration(root, &quell_baustein, &ziel_baustein, &quell_rev).map_err(|e| e.to_string())
+}
+
+/// **Beantworten** (SW/Empfänger, Issue #141, E53): die Antwort einer Integrations-Forderung auf
+/// ja/nein setzen — der Beleg liegt damit auf Akte. Eine fehlende id ist ein toleranter No-Op. Gibt
+/// die frische Liste zurück.
+#[tauri::command]
+#[specta::specta]
+fn beantworte_integration_cmd(
+    path: String,
+    id: String,
+    antwort: IntegrationsAntwort,
+) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    beantworte_integration(root, &id, antwort).map_err(|e| e.to_string())
+}
+
+/// Eine Integrations-Forderung löschen/zurücknehmen (Issue #141). Fehlende id ⇒ No-Op. Gibt die
+/// frische Liste zurück.
+#[tauri::command]
+#[specta::specta]
+fn delete_integration_cmd(path: String, id: String) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    loesche_integration(root, &id).map_err(|e| e.to_string())
+}
+
+/// Den **Integrations-Block an der Produkt-Compose** entscheiden (Issue #141, E53): aus den offenen
+/// Forderungen und der Compose-Auswahl (der Produkt-Stückliste der zu bauenden Revision) den
+/// Block-Entscheid + die passiven Leseschein-Zeilen ableiten. **Nur an der Compose** — eine
+/// eigenständige Baustein-/FW-Freigabe ruft dies nie auf, also blockiert eine Integration nie eine
+/// Einzel-Freigabe. Eine „nein"/offene Forderung gegen die komponierte Quell-Rev ist ein harter
+/// Block; der Leseschein blockiert nie. Reiner Lese-Zugriff; die Entscheidung ist der pure Kern.
+#[tauri::command]
+#[specta::specta]
+fn evaluate_integrationsblock(
+    path: String,
+    compose_auswahl: Vec<StuecklistenPosten>,
+) -> Result<IntegrationsBlockEntscheid, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(integrationsblock_fuer_compose(root, &compose_auswahl))
+}
+
 /// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Revision-Art
 /// berechnen (Issue #52, E19/E19.3). Sammelt die offenen Punkte — offene Aufgaben (#49), Waisen
 /// (#47) und Stale-Kanten (#10) — und staffelt sie **nach Härte** hinter **einem** kontextabhängigen
@@ -1811,7 +1898,12 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         set_task_status_cmd,
         delete_task_cmd,
         evaluate_task_block,
-        evaluate_task_block_baustein
+        evaluate_task_block_baustein,
+        list_integrationen,
+        flagge_integration_cmd,
+        beantworte_integration_cmd,
+        delete_integration_cmd,
+        evaluate_integrationsblock
     ])
 }
 
