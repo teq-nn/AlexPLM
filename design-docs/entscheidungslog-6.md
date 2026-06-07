@@ -67,6 +67,21 @@ stille Aufholung beim Öffnen ohne Prompt und die einzelne Abgleichfrage in der 
 (`AbgleichBeimOeffnen.svelte`) mit ehrlicher Benennung der drei Orte. Das **Auflösen** des
 Eigentumsstreits (wessen Arbeit weiterläuft) ist ein Folge-Slice.
 
+**Umfang E49b — Offline-Sperre (Absichts-Sperre) + laute Doppelbearbeitungs-Ausnahme (Issue #136):**
+Der HW-Entwickler öffnet ein sperrbares Binär (z. B. KiCad) **auch ohne erreichbaren Sperr-Server**.
+Ist die Sperre nicht erreichbar, hält die Werkbank lokal eine **Absichts-Sperre** fest (in
+`.plm-local/`, der **lokalen, ungeteilten** Ablage via `.git/info/exclude` — E38, nie ein geteilter
+Stand, sonst lebte die „Lebenslüge Sperre" weiter), und die Karte zeigt ehrlich „offline bearbeitet,
+Sperre nicht bestätigt" — **keine Schein-Sicherheit**. Der reine **Eingang-B-Kern**
+(`offlinelock.rs`): `(lokale Absichts-Sperren, Server-Sperren beim Verbinden) → Kollisions-/
+keine-Kollisions-Entscheidung`, pur, total, Tabellentest über das Kreuzprodukt. Eine erkannte
+**Doppelbearbeitung** („du und Ben habt beide offline an X gearbeitet") fließt in **dieselbe laute
+Ausnahme** wie Eingang A — die `Abgleichfrage` — mit Domänensatz inkl. der **Namen** der Beteiligten,
+**nie** ein stilles Überschreiben. Eigenschaft (erschöpfend bewiesen): die laute Meldung trägt nie
+einen rohen git-/Sperren-Marker. Klebstoff: `offlinelockglue.rs` (Absichts-Sperre aufzeichnen/lesen,
+offline-bewusstes Öffnen `acquire_lock_or_intent`, Abgleich beim Verbinden), die Kommandos
+`open_lockable_artifact` / `artifact_offline_intent` / `reconcile_offline_locks` und die Karten-Zeile.
+
 ---
 
 ## E50 — Pfad-Klasse `rekonstruierbar`: Quelle + gepinntes Manifest statt rekonstruierbarem Ballast

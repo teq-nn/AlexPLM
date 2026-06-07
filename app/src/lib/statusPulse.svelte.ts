@@ -33,6 +33,9 @@ export interface StatusPulseDeps {
 export interface StatusPulse {
   /** Per-artifact Auto-Lock LED, keyed on the product-relative Hauptdatei (E37). */
   readonly signals: Record<string, ArtifactSignal>;
+  /** E49b (#136): the product-relative paths opened offline that carry an unconfirmed
+   *  Absichts-Sperre — the card shows „offline bearbeitet, Sperre nicht bestätigt" for these. */
+  readonly offlineIntents: Set<string>;
   /** Colleagues' currently-held locks, for the foreign-locks panel (E37). */
   readonly foreignLocks: ForeignLock[];
   /** The Lock Warden's last decided action, reflected by the Sicherungsstatus readout (E35). */
@@ -59,6 +62,8 @@ export interface StatusPulse {
 
 export function createStatusPulse(deps: StatusPulseDeps): StatusPulse {
   let signals = $state<Record<string, ArtifactSignal>>({});
+  // E49b (#136): paths opened offline whose Absichts-Sperre is not yet confirmed against the server.
+  let offlineIntents = $state<Set<string>>(new Set());
   let foreignLocks = $state<ForeignLock[]>([]);
   // `refuse` surfaces as nothing — the daily rhythm stays silent.
   let wardenAction = $state<WardenAction | null>(null);
@@ -89,12 +94,17 @@ export function createStatusPulse(deps: StatusPulseDeps): StatusPulse {
       ),
     );
     try {
-      const [sigs, foreign] = await Promise.all([
+      const [sigs, foreign, intents] = await Promise.all([
         cmd.readStatus(productPath, paths),
         cmd.readForeignLocks(productPath),
+        // E49b (#136): which of these paths carry an unconfirmed offline Absichts-Sperre.
+        Promise.all(
+          paths.map(async (p) => [p, await cmd.artifactOfflineIntent(productPath, p)] as const),
+        ),
       ]);
       signals = Object.fromEntries(sigs.map((s) => [s.path, s]));
       foreignLocks = foreign;
+      offlineIntents = new Set(intents.filter(([, on]) => on).map(([p]) => p));
     } catch (e) {
       // Read-only status is best-effort; never blocks the shell (e.g. no LFS remote).
       deps.onError(String(e));
@@ -134,7 +144,10 @@ export function createStatusPulse(deps: StatusPulseDeps): StatusPulse {
     const productPath = deps.productPath();
     if (!productPath || !mainFile) return;
     try {
-      await cmd.lockArtifact(productPath, mainFile);
+      // E49b (#136): open through the offline-aware path. An unreachable lock server records a local
+      // Absichts-Sperre and the binary still opens (no false safety, the card says so); only a
+      // foreign-held lock — real, present coordination — throws and is surfaced loud.
+      await cmd.openLockableArtifact(productPath, mainFile);
     } catch (e) {
       deps.onError(String(e)); // a foreign-held lock is real, loud coordination — surface it
     }
@@ -156,6 +169,7 @@ export function createStatusPulse(deps: StatusPulseDeps): StatusPulse {
 
   function reset() {
     signals = {};
+    offlineIntents = new Set();
     foreignLocks = [];
     wardenAction = null;
     stop();
@@ -164,6 +178,9 @@ export function createStatusPulse(deps: StatusPulseDeps): StatusPulse {
   return {
     get signals() {
       return signals;
+    },
+    get offlineIntents() {
+      return offlineIntents;
     },
     get foreignLocks() {
       return foreignLocks;

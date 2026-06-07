@@ -129,6 +129,31 @@ export const commands = {
 	 */
 	lockArtifact: (product: string, path: string) => typedError<boolean, string>(__TAURI_INVOKE("lock_artifact", { product, path })),
 	/**
+	 *  Open a lockable binary **even with no reachable lock server** (Issue #136, E49b). The
+	 *  offline-aware sibling of [`lock_artifact`]: it tries the real `git lfs lock`, but if the lock
+	 *  server is unreachable it records a local **Absichts-Sperre** in `.plm-local/`, makes the file
+	 *  writable and returns [`OpenLock::OfflineIntent`] so the binary still opens — the card then shows
+	 *  „offline bearbeitet, Sperre nicht bestätigt", no false safety. A lock held by a **colleague**
+	 *  stays a loud error (real, present coordination the user must see). The pure decision lives in
+	 *  [`offlinelock`]; this command only reads the world and obeys.
+	 */
+	openLockableArtifact: (product: string, path: string) => typedError<OpenLock, string>(__TAURI_INVOKE("open_lockable_artifact", { product, path })),
+	/**
+	 *  Whether a lockable artifact currently carries an unconfirmed **Absichts-Sperre** (Issue #136,
+	 *  E49b) — the fact the card turns into „offline bearbeitet, Sperre nicht bestätigt". A pure read of
+	 *  the local `.plm-local/` store; no network, no second source of truth.
+	 */
+	artifactOfflineIntent: (product: string, path: string) => typedError<boolean, string>(__TAURI_INVOKE("artifact_offline_intent", { product, path })),
+	/**
+	 *  Reconcile the recorded **Absichts-Sperren** against the real server locks **on connect** (Issue
+	 *  #136, E49b) — the Eingang-B side of E49. Confirmable offline intents (the artifact is free or
+	 *  already ours) are cleared silently; a detected **double-edit** (a colleague was holding the
+	 *  artifact the whole time) surfaces as the single loud [`reconciler::Abgleichfrage`] — „du und Ben
+	 *  habt beide offline an X gearbeitet — wessen Arbeit gilt?", never a git/lock marker, never a
+	 *  silent overwrite. The pure decision lives in [`offlinelock::reconcile_intents`].
+	 */
+	reconcileOfflineLocks: (path: string) => typedError<IntentReconcile, string>(__TAURI_INVOKE("reconcile_offline_locks", { path })),
+	/**
 	 *  The Status Reader (Issue #6): read `git lfs locks` + worktree status purely once, then
 	 *  derive the per-artifact LED status (green/grey/orange) for the given product-relative paths.
 	 *  No second source of truth — every call reads git back (E37).
@@ -897,6 +922,31 @@ export type ImportResult = {
 };
 
 /**
+ *  The single decision the Offline-Lock reconciler returns on connect (Issue #136, E49b). Exactly
+ *  one; total. Mirrors the Eingang-A shape ([`crate::reconciler::ReconcileDecision`]): a silent
+ *  common case and a single loud exception.
+ */
+export type IntentReconcile = 
+/**
+ *  **keine Kollision** — every recorded Absichts-Sperre is confirmable: the artifact is free on
+ *  the server, or already held by us. The tool promotes the intents to real locks with **no**
+ *  prompt. Carries the confirmable artifacts for the calm log; empty when there were no offline
+ *  intents to begin with (a plain online connect). (A struct variant, not a newtype-of-`Vec`,
+ *  so the internally-tagged enum serialises cleanly for the typed frontend bindings.)
+ */
+{ kind: "keine-kollision"; bestaetigt: string[] } | 
+/**
+ *  **Doppelbearbeitung** — at least one Absichts-Sperre collides with a **foreign** server lock:
+ *  two people edited the same unmergeable artifact offline. The one moment the connect raises its
+ *  voice — the same loud [`Abgleichfrage`] Eingang A uses, naming the contested artifacts and the
+ *  colleagues, **never** a git/lock marker. The tool overwrites **nothing** until the user
+ *  answers.
+ */
+{
+	kind: "doppelbearbeitung",
+} & Abgleichfrage;
+
+/**
  *  Eine Referenz auf das angelegte Issue, wie sie ans Frontend geht (für die „angelegt"-Bestätigung
  *  mit Link). **Kein** Token, keine Server-Interna.
  */
@@ -1066,6 +1116,24 @@ export type OfflineProduct = {
 	/**  Human German reason, e.g. "Ordner nicht erreichbar". */
 	reason: string,
 };
+
+/**
+ *  The outcome of opening a lockable binary through the offline-aware path (Issue #136, E49b). One
+ *  of three; total. The non-lockable case is folded into [`OpenLock::Locked`] (a no-op „nothing to
+ *  coordinate", mirroring [`crate::lockglue::acquire_lock`]'s `Ok(false)` for text).
+ */
+export type OpenLock = 
+/**
+ *  The real `git lfs lock` was taken (or the path is mergeable text / pre-publish, so there was
+ *  nothing to coordinate). The binary is safely ours to edit; no Absichts-Sperre recorded.
+ */
+{ kind: "locked" } | 
+/**
+ *  The lock **server was unreachable**, so a local Absichts-Sperre was recorded and the file was
+ *  made writable: the binary opens, but the card must say „offline bearbeitet, Sperre nicht
+ *  bestätigt" — no false safety. Reconciled on the next connect.
+ */
+{ kind: "offline-intent" };
 
 /**
  *  Eine **Baustein-Paar-Default-Kante** (E20): „wenn dieser Baustein **und** der Partner-Baustein
