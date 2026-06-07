@@ -264,6 +264,18 @@ export const commands = {
 	 */
 	syncProduct: (path: string, other: string | null) => typedError<SyncOutcome, string>(__TAURI_INVOKE("sync_product", { path, other })),
 	/**
+	 *  Run the **silent Reconcile beim Öffnen** (Issue #129, E49a): on open, read the real observed
+	 *  state of the three truth-places — disk (Inhalt), git (Verlauf), server-locks (flüchtige
+	 *  Koordination) — compare it against the last-seen `_plm` memory, and **silently catch up** every
+	 *  drift that is resolvable (re-seeding the memory, no prompt) so the user never works on a stale
+	 *  picture. The one drift that is not silently resolvable — a contested ownership (an unmergeable
+	 *  artifact the tool last knew was ours is now held by a colleague) — returns the single
+	 *  **Abgleichfrage**: a domain-language question ("Bens Sperre liegt jetzt auf deinem Gehaeuse —
+	 *  wessen Arbeit gilt?"), never a git conflict marker. The pure decision lives in
+	 *  [`reconciler::reconcile`]; this command only reads the world and obeys.
+	 */
+	reconcileProduct: (path: string) => typedError<ReconcileDecision, string>(__TAURI_INVOKE("reconcile_product", { path })),
+	/**
 	 *  List the local Bibliothek (Issue #39, ADR 0003): the seeded + user-added Bausteine and the
 	 *  available Toolstacks. Pure read; missing/corrupt entries degrade to an empty list.
 	 */
@@ -505,6 +517,28 @@ export const commands = {
 
 /* Types */
 /**
+ *  The domain-language question shown when a drift is **not** silently resolvable (E49). Today the
+ *  one such drift is a contested ownership: an unmergeable artifact the tool last knew was *ours* is
+ *  now held by a colleague, so the tool cannot silently decide whose work continues. The question
+ *  names the artifact in the tool's own words and the contested truth-place — and holds **no** git
+ *  conflict marker by construction (see [`Abgleichfrage::contains_git_marker`]).
+ */
+export type Abgleichfrage = {
+	/**
+	 *  The one-line question, e.g. „Bens Sperre liegt jetzt auf deinem Gehaeuse — wessen Arbeit
+	 *  gilt?". Domain language only.
+	 */
+	frage: string,
+	/**  The contested artifacts, named as artifacts (never git refs). At least one. */
+	artefakte: string[],
+	/**
+	 *  The truth-place the contradiction lives in (always [`TruthOrt::Koordination`] today — a
+	 *  server-lock that changed hands).
+	 */
+	ort: TruthOrt,
+};
+
+/**
  *  A typed error for the auth-bearing ceremony commands (Issue #22). The `code` lets the frontend
  *  react precisely — `"auth"` reopens the credential field, `"keystore"` reports the OS keystore is
  *  unreachable — while `message` carries the human German text. Serialised to the frontend as
@@ -611,6 +645,18 @@ export type AufgabenTyp =
 "aufgabe" | 
 /**  Blockiert nie. */
 "hinweis";
+
+/**
+ *  One named catch-up the silent reconcile carried out, in domain language (E49). Says *which*
+ *  truth-place drifted and *what* the tool quietly learned — for the calm log only; the user is
+ *  never prompted. Carries **no** git marker by construction.
+ */
+export type Aufholung = {
+	/**  The truth-place that drifted (disk / git / server-locks), named honestly. */
+	ort: TruthOrt,
+	/**  The one-line domain-language note, e.g. „Verlauf ist außerhalb weitergelaufen — aufgeholt". */
+	notiz: string,
+};
 
 /**  Ein **Baustein**: das wiederverwendbare Tool-Wissen für ein Tool (ADR 0003). */
 export type Baustein = {
@@ -1127,6 +1173,28 @@ export type Punktart =
 /**  A Stale-Kante: the derivation is older than its source (→ Warnung). */
 "stale-kante";
 
+/**  The single decision the Reconciler returns. Exactly one; total. */
+export type ReconcileDecision = 
+/**
+ *  **aktuell** — the `_plm` memory already matched reality. Nothing drifted; nothing to do and
+ *  nothing shown. The quiet common case.
+ */
+({ kind: "aktuell" }) & { aufholungen?: never } | 
+/**
+ *  **still aufgeholt** — work happened outside, but every drift is silently resolvable: the tool
+ *  catches up (the glue re-seeds the `_plm` memory) with **no** user prompt (E49). Carries the
+ *  named catch-ups for the calm log. (A struct variant, not a newtype-of-`Vec`, so the
+ *  internally-tagged enum serialises cleanly for the typed frontend bindings.)
+ */
+{ kind: "still-aufgeholt"; aufholungen: Aufholung[] } | 
+/**
+ *  **Abgleichfrage** — a drift that cannot be silently resolved (a contested ownership). The one
+ *  moment the open raises its voice: a single domain-language question, never a git marker.
+ */
+{
+	kind: "abgleichfrage",
+} & Abgleichfrage;
+
 /**
  *  One registered product: **only its path** (forward-or-native as the OS gave it) plus the
  *  folder name as a convenience label the UI can show without re-reading the disk. The label is
@@ -1483,6 +1551,22 @@ export type Toolstack = {
 	/**  Referenzierte Baustein-`id`s in Reihenfolge. */
 	baustein_ids: string[],
 };
+
+/**
+ *  One of the three places a fact can honestly live (E49). The tool never collapses them into a
+ *  single fictional store — disk, git and the server-locks each drift on their own, so the
+ *  reconcile names each catch-up by the place it happened in.
+ */
+export type TruthOrt = 
+/**  **Disk = Inhalt.** The worktree files — the user's actual bytes. The *content*. */
+"inhalt" | 
+/**  **git = Verlauf.** The commit history — durable, shared. The *history*. */
+"verlauf" | 
+/**
+ *  **Server-Sperren = flüchtige Koordination.** The `git lfs locks` — *ephemeral coordination*
+ *  of who currently holds an unmergeable file. Never content, never history.
+ */
+"koordination";
 
 /**
  *  Ein **Unzugeordnet-Fach pro Arbeitsbereich**: die Waisen eines Arbeitsbereichs (oberster

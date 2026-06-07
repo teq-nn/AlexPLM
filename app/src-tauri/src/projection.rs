@@ -7,7 +7,13 @@
 //! The pure decision bits (`main_file_rank`, `pick_main_file`, `rel_path`) are split out
 //! from the filesystem walk so they can be exercised by `#[cfg(test)]` table tests
 //! without a real repo — the "reiner Kern + Tabellentest" pattern from the PRD.
+//!
+//! Genestete `.git` sind **opake Grenzen** (E50a, Issue #130): ein Unterordner mit eigenem
+//! `.git` (eingezogene Toolchain wie `west`/ESP-IDF/`venv`) wird **nicht** betreten und **nicht**
+//! als Baustein projiziert. Die Grenze ist dieselbe, an der auch Watcher und Klassifizierer
+//! stoppen — das reine Grenz-Prädikat lebt in [`crate::nestedboundary`].
 
+use crate::nestedboundary::GIT_MARKER;
 use serde::Serialize;
 use std::path::Path;
 
@@ -59,11 +65,18 @@ pub fn project_product(root: &Path) -> std::io::Result<ProductView> {
 fn collect_bausteine(root: &Path, dir: &Path, out: &mut Vec<Baustein>) -> std::io::Result<()> {
     let mut subdirs = Vec::new();
     let mut files = Vec::new();
+    // Trägt dieses Verzeichnis selbst ein `.git`? Am Produkt-Wurzel ist das das eigene Repo;
+    // tiefer ist es eine genestete, opake Grenze (E50a) — dann wird hier abgeschnitten.
+    let mut has_git = false;
 
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let ft = entry.file_type()?;
         let fname = entry.file_name().to_string_lossy().into_owned();
+        // `.git` (Verzeichnis ODER Submodul-`.git`-Datei) markiert eine git-Grenze.
+        if fname == GIT_MARKER {
+            has_git = true;
+        }
         if ft.is_dir() {
             if is_hidden(&fname) || is_plm(&fname) || DIR_DENYLIST.contains(&fname.as_str()) {
                 continue;
@@ -72,6 +85,12 @@ fn collect_bausteine(root: &Path, dir: &Path, out: &mut Vec<Baustein>) -> std::i
         } else if ft.is_file() && !is_hidden(&fname) {
             files.push(fname);
         }
+    }
+
+    // Genestetes `.git` unterhalb der Wurzel: opake Grenze. Nicht hineinsteigen, nicht als
+    // Baustein projizieren — der fremde Toolchain-Baum bleibt für Werkbank unsichtbar (E50a).
+    if has_git && dir != root {
+        return Ok(());
     }
 
     if subdirs.is_empty() {
