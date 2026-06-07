@@ -252,6 +252,20 @@ export const commands = {
 	 */
 	evaluateZusammenstellung: (path: string, wahlen: WahlEingabe[], optionaleHeimaten: string[]) => typedError<ZusammenstellungsBericht, string>(__TAURI_INVOKE("evaluate_zusammenstellung", { path, wahlen, optionaleHeimaten })),
 	/**
+	 *  **Cold-Start: initiale Revisionen seeden** (Issue #142, E52b). Beim **allerersten** Produkt-
+	 *  Release trägt **kein** verpflichtender Baustein eine Revision — die erste Produkt-Revision wäre
+	 *  damit nie vollständig, ohne dass der Nutzer erst N Bausteine **manuell** freigibt. Dieser **eine**
+	 *  Akt sät stattdessen je Pflicht-Baustein **ohne** jeden freigegebenen Stand eine **initiale**
+	 *  Baustein-Revision aus dem **aktuellen Stand** (HEAD) — der dauerhafte `freigabe/<heimat>/<version>`-
+	 *  Tag (E51a). Danach trägt jeder Pflicht-Baustein einen Stand und die erste Produkt-Revision ist
+	 *  komponierbar (E52a). `version` ist die gemeinsame initiale Versionsmarke (z.B. `"v0.1"`);
+	 *  `optionale_heimaten` benennt die optionalen Bereiche (die nie gesät werden). Schon revidierte
+	 *  Bausteine bleiben unberührt — wen es zu säen gilt, entscheidet der reine Kern
+	 *  ([`zusammenstellung::kaltstart_seed_liste`]). Liefert die Liste der gesäten Bausteine; ein leeres
+	 *  Produkt / kein offener Pflicht-Bereich sät nichts (E22), nie ein Fehler.
+	 */
+	seedColdStart: (path: string, version: string, optionaleHeimaten: string[]) => typedError<GesaeterBaustein[], string>(__TAURI_INVOKE("seed_cold_start", { path, version, optionaleHeimaten })),
+	/**
 	 *  Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
 	 *  Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
 	 *  protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
@@ -940,6 +954,21 @@ export type GeoeffneterOrdner = {
 	pfad: string,
 	/**  `true`, wenn der Ordner für diesen Stand neu angelegt wurde; `false`, wenn er schon stand. */
 	neu: boolean,
+};
+
+/**
+ *  Was **ein** Cold-Start-Seed-Akt getan hat (Issue #142, E52b): je gesätem Pflicht-Baustein der
+ *  Bereich und die initiale Versionsmarke, die aus dem aktuellen Stand freigegeben wurde. Die UI
+ *  rendert daraus „elektronik · firmware initial freigegeben", ohne neu zu entscheiden.
+ *  `specta::Type` + `Serialize`, damit der Bericht über die Tauri-Naht kommt.
+ */
+export type GesaeterBaustein = {
+	/**  `id` des gesäten Bausteins (z.B. `"kicad"`). */
+	baustein_id: string,
+	/**  Der Heimat-Bereich, der initial freigegeben wurde (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Die initiale Versionsmarke, die gesetzt wurde (z.B. `"v0.1"`). */
+	version: string,
 };
 
 /**

@@ -209,6 +209,53 @@ pub fn zusammenstellen(eintraege: &[BausteinEintrag]) -> ZusammenstellungsBerich
     ZusammenstellungsBericht { posten, vollstaendig, ausstehende }
 }
 
+// ----------------------------------------------------------------------------------------------
+// Cold-Start: die initiale Seed-Liste — rein, total, deterministisch (Issue #142, E52b)
+// ----------------------------------------------------------------------------------------------
+
+/// Ein **Cold-Start-Seed-Posten** (E52b): ein verpflichtender Baustein, der **noch keinen einzigen**
+/// freigegebenen Stand trägt — er braucht beim **allerersten** Produkt-Release eine **initiale**
+/// Revision aus dem aktuellen Stand, sonst hält er die erste Produkt-Revision auf, bevor sie
+/// überhaupt komponierbar ist. Schlichte Daten — die Glue ([`crate::zusammenstellungglue`]) setzt je
+/// Posten in **einem** Akt eine initiale Baustein-Revision (E51a-Tag) aus dem aktuellen Stand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedPosten {
+    /// `id` des Bausteins (z.B. `"kicad"`), fürs Protokoll und die Lesbarkeit.
+    pub baustein_id: String,
+    /// Der Heimat-Bereich, der initial freigegeben wird (z.B. `"elektronik"`).
+    pub heimat: String,
+}
+
+/// Die **Cold-Start-Seed-Liste** ableiten (Issue #142, E52b): aus **denselben** Baustein-Einträgen,
+/// die der [`zusammenstellen`]-Kern liest (Pflicht/Optional × verfügbare Stände), genau die
+/// **verpflichtenden** Bausteine herausfiltern, die **noch keinen einzigen** freigegebenen Stand
+/// tragen (`verfuegbare_staende` leer). **Rein, total, deterministisch**; macht **kein** I/O — die
+/// Auswahl spielt hier keine Rolle, denn der Seed sät den **ersten** Stand, bevor überhaupt gewählt
+/// werden kann.
+///
+/// Das Cold-Start-Problem (E52b): auf dem **allerersten** Produkt-Release trägt **kein** Pflicht-
+/// Baustein eine Revision — die erste Produkt-Revision wäre damit niemals vollständig, ohne dass der
+/// Nutzer erst N Bausteine **manuell** freigibt. Statt N Handgriffe liefert der Kern diese Liste, und
+/// **ein** Akt der Glue sät je Baustein eine initiale Revision aus dem aktuellen Stand. Danach trägt
+/// jeder Pflicht-Baustein einen Stand, und die erste Produkt-Revision ist komponierbar.
+///
+/// Die Regel, in einem Atemzug: ein Baustein gehört genau dann in die Seed-Liste, wenn er
+/// **verpflichtend** ist **und** seine `verfuegbare_staende` **leer** sind. Ein optionaler Baustein
+/// wird nie gesät (er blockiert nie — E52a); ein Pflicht-Baustein, der **schon** einen Stand trägt,
+/// braucht keine initiale Revision mehr. Die Reihenfolge der Eingabe bleibt erhalten.
+pub fn kaltstart_seed_liste(eintraege: &[BausteinEintrag]) -> Vec<SeedPosten> {
+    eintraege
+        .iter()
+        // Nur Pflicht-Bausteine **ohne** jeden freigegebenen Stand brauchen einen initialen Seed.
+        // Optionale blockieren nie; schon revidierte Pflicht-Bausteine haben bereits einen Stand.
+        .filter(|e| e.pflicht && e.verfuegbare_staende.is_empty())
+        .map(|e| SeedPosten {
+            baustein_id: e.baustein_id.clone(),
+            heimat: e.heimat.clone(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +274,22 @@ mod tests {
     }
     fn vorstand(tag: &str) -> Auswahl {
         Auswahl::VorstandMitnehmen { release_tag: tag.to_string() }
+    }
+    /// Wie [`eintrag`], aber mit gesetzten verfügbaren Ständen — für die Cold-Start-Seed-Tabelle, in
+    /// der „schon revidiert?" allein an der Stände-Liste hängt (nicht an der Auswahl).
+    fn eintrag_mit_staenden(
+        id: &str,
+        heimat: &str,
+        pflicht: bool,
+        staende: &[&str],
+    ) -> BausteinEintrag {
+        BausteinEintrag {
+            baustein_id: id.to_string(),
+            heimat: heimat.to_string(),
+            pflicht,
+            verfuegbare_staende: staende.iter().map(|s| s.to_string()).collect(),
+            auswahl: Auswahl::Offen,
+        }
     }
 
     /// **Die Kern-Akzeptanzmatrix** (AC): jede Kombination aus {Pflicht?, Beitrag?} → die richtige
@@ -394,5 +457,91 @@ mod tests {
             vec!["elektronik".to_string(), "mechanik".to_string()],
             "beide ausstehenden Pflicht-Bereiche, in Eingabe-Reihenfolge"
         );
+    }
+
+    /// **AC: die Cold-Start-Seed-Liste über {alle/manche/keine schon revidiert}** (E52b) — die eine
+    /// Tabelle, die beweist, *wer* beim allerersten Release eine initiale Revision braucht. Ein
+    /// Pflicht-Baustein **ohne** jeden Stand gehört hinein; ein **schon revidierter** (er trägt schon
+    /// einen `freigabe/...`-Stand) und jeder **optionale** nie. Optional blockiert auch im Cold-Start
+    /// nie (E52a).
+    #[test]
+    fn kaltstart_seed_liste_ueber_schon_revidiert() {
+        // (name, Einträge, erwartete Seed-Heimaten in Eingabe-Reihenfolge)
+        let cases: &[(&str, Vec<BausteinEintrag>, Vec<&str>)] = &[
+            // KEINER schon revidiert: beide Pflicht-Bausteine brauchen einen Seed.
+            (
+                "keiner revidiert",
+                vec![
+                    eintrag_mit_staenden("kicad", "elektronik", true, &[]),
+                    eintrag_mit_staenden("zephyr", "firmware", true, &[]),
+                ],
+                vec!["elektronik", "firmware"],
+            ),
+            // MANCHE schon revidiert: elektronik trägt schon einen Stand → nur firmware wird gesät.
+            (
+                "manche revidiert",
+                vec![
+                    eintrag_mit_staenden("kicad", "elektronik", true, &["freigabe/elektronik/Rev-A"]),
+                    eintrag_mit_staenden("zephyr", "firmware", true, &[]),
+                ],
+                vec!["firmware"],
+            ),
+            // ALLE schon revidiert: nichts mehr zu säen — der Cold-Start ist überstanden.
+            (
+                "alle revidiert",
+                vec![
+                    eintrag_mit_staenden("kicad", "elektronik", true, &["freigabe/elektronik/Rev-A"]),
+                    eintrag_mit_staenden("zephyr", "firmware", true, &["freigabe/firmware/v0.1"]),
+                ],
+                vec![],
+            ),
+            // Optionale ohne Stand werden NIE gesät (sie blockieren nie — E52a); der Pflicht-Bereich
+            // ohne Stand schon.
+            (
+                "optional wird nie gesät",
+                vec![
+                    eintrag_mit_staenden("kicad", "elektronik", true, &[]),
+                    eintrag_mit_staenden("doku", "doku", false, &[]),
+                ],
+                vec!["elektronik"],
+            ),
+            // Leeres Produkt: leere Seed-Liste, nie ein Panik (total).
+            ("leer", vec![], vec![]),
+        ];
+
+        for (name, eintraege, erwartet) in cases {
+            let seed = kaltstart_seed_liste(eintraege);
+            let heimaten: Vec<&str> = seed.iter().map(|s| s.heimat.as_str()).collect();
+            assert_eq!(heimaten, *erwartet, "Seed-Liste für {name}");
+        }
+    }
+
+    /// **AC: nach dem Seed ist die erste Produkt-Revision komponierbar** (E52b) — Brücke vom Seed
+    /// zum Vollständigkeits-Kern: bekämen die gesäten Pflicht-Bausteine ihren initialen Stand und
+    /// würde er als frischer Beitrag gewählt, ist die Zusammenstellung vollständig. Hier rein
+    /// modelliert: dieselben Bausteine **mit** Stand + frischer Auswahl → `vollstaendig`.
+    #[test]
+    fn nach_seed_ist_erste_produkt_revision_komponierbar() {
+        // Vor dem Seed: beide Pflicht-Bausteine ohne Stand → beide stehen in der Seed-Liste, und die
+        // Zusammenstellung (alles offen) ist unvollständig.
+        let vor = vec![
+            eintrag_mit_staenden("kicad", "elektronik", true, &[]),
+            eintrag_mit_staenden("zephyr", "firmware", true, &[]),
+        ];
+        assert_eq!(kaltstart_seed_liste(&vor).len(), 2, "beide brauchen einen Seed");
+        assert!(!zusammenstellen(&vor).vollstaendig, "vor dem Seed: noch nichts beigetragen");
+
+        // Nach dem Seed: jeder Pflicht-Baustein trägt seinen initialen Stand und wählt ihn frisch →
+        // die Seed-Liste ist leer und die erste Produkt-Revision ist vollständig, ohne N Handgriffe.
+        let nach = vec![
+            eintrag("kicad", "elektronik", true, frisch("freigabe/elektronik/Rev-A")),
+            eintrag("zephyr", "firmware", true, frisch("freigabe/firmware/v0.1")),
+        ];
+        let nach_staende = vec![
+            eintrag_mit_staenden("kicad", "elektronik", true, &["freigabe/elektronik/Rev-A"]),
+            eintrag_mit_staenden("zephyr", "firmware", true, &["freigabe/firmware/v0.1"]),
+        ];
+        assert!(kaltstart_seed_liste(&nach_staende).is_empty(), "nach dem Seed: nichts mehr zu säen");
+        assert!(zusammenstellen(&nach).vollstaendig, "nach dem Seed: erste Produkt-Revision komponierbar");
     }
 }

@@ -21,10 +21,11 @@
 //! allein [`zusammenstellen`]. Treu zur Degradations-Invariante (E22): ein leeres/fehlendes Produkt
 //! ergibt eine leere, **vollständige** Checkliste, nie einen Fehler.
 
-use crate::graphread::list_baustein_freigaben;
+use crate::graphread::{list_baustein_freigaben, release_baustein_revision};
 use crate::stackstore::read_stack;
 use crate::zusammenstellung::{
-    zusammenstellen, Auswahl, BausteinEintrag, ZusammenstellungsBericht,
+    kaltstart_seed_liste, zusammenstellen, Auswahl, BausteinEintrag, SeedPosten,
+    ZusammenstellungsBericht,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -72,6 +73,23 @@ pub fn zusammenstellung_fuer_produkt(
     wahlen: &[WahlEingabe],
     optionale_heimaten: &[String],
 ) -> ZusammenstellungsBericht {
+    zusammenstellen(&sammle_eintraege(root, wahlen, optionale_heimaten))
+}
+
+/// Die **Baustein-Einträge** des Produkt-Stacks für den Kern sammeln (Issue #140/#142): je aktiver
+/// Baustein ein Eintrag aus (Pflicht?, verfügbare Freigabe-Stände, aktuelle Auswahl). **Eine**
+/// Quelle für beide Kern-Aufgaben — die Checkliste ([`zusammenstellen`]) **und** die Cold-Start-
+/// Seed-Liste ([`kaltstart_seed_liste`]) lesen exakt dieselben Einträge, nichts wird dupliziert.
+///
+/// Ein **stillgelegter** Baustein (label-only, E10) stellt keinen Bereich mehr und fällt heraus.
+/// Pflicht/Optional ist im Baustein-Modell kein Feld (E52a): alle nicht in `optionale_heimaten`
+/// benannten aktiven Bausteine sind verpflichtend (Default „jeder Tool-Bereich gehört in die
+/// Revision"). `wahlen` ist die laufende Auswahl; fehlt ein Eintrag, steht der Bereich offen.
+fn sammle_eintraege(
+    root: &Path,
+    wahlen: &[WahlEingabe],
+    optionale_heimaten: &[String],
+) -> Vec<BausteinEintrag> {
     // Auswahl + Optional-Set für schnellen Zugriff nach Heimat indizieren.
     let auswahl_je_heimat: BTreeMap<&str, &WahlEingabe> =
         wahlen.iter().map(|w| (w.heimat.as_str(), w)).collect();
@@ -79,7 +97,7 @@ pub fn zusammenstellung_fuer_produkt(
         optionale_heimaten.iter().map(String::as_str).collect();
 
     let stack = read_stack(root);
-    let eintraege: Vec<BausteinEintrag> = stack
+    stack
         .bausteine
         .iter()
         // Ein stillgelegter Baustein stellt keinen Bereich (E10) — kein Checklisten-Posten.
@@ -98,9 +116,92 @@ pub fn zusammenstellung_fuer_produkt(
                 heimat,
             }
         })
-        .collect();
+        .collect()
+}
 
-    zusammenstellen(&eintraege)
+/// Was **ein** Cold-Start-Seed-Akt getan hat (Issue #142, E52b): je gesätem Pflicht-Baustein der
+/// Bereich und die initiale Versionsmarke, die aus dem aktuellen Stand freigegeben wurde. Die UI
+/// rendert daraus „elektronik · firmware initial freigegeben", ohne neu zu entscheiden.
+/// `specta::Type` + `Serialize`, damit der Bericht über die Tauri-Naht kommt.
+#[derive(specta::Type, serde::Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct GesaeterBaustein {
+    /// `id` des gesäten Bausteins (z.B. `"kicad"`).
+    pub baustein_id: String,
+    /// Der Heimat-Bereich, der initial freigegeben wurde (z.B. `"elektronik"`).
+    pub heimat: String,
+    /// Die initiale Versionsmarke, die gesetzt wurde (z.B. `"v0.1"`).
+    pub version: String,
+}
+
+/// **Der eine Cold-Start-Akt** (Issue #142, E52b): beim **allerersten** Produkt-Release je
+/// verpflichtendem Baustein **ohne** jeden freigegebenen Stand eine **initiale** Baustein-Revision
+/// aus dem **aktuellen Stand** (HEAD) säen — statt N manueller Freigaben zu verlangen. Danach trägt
+/// jeder Pflicht-Baustein einen Stand, und die erste Produkt-Revision ist komponierbar (E52a).
+///
+/// Die Teilung ist Haus-Muster: der reine [`kaltstart_seed_liste`]-Kern entscheidet **wen** es zu
+/// säen gilt (Pflicht-Baustein ohne Stand — über dieselben [`sammle_eintraege`] wie die Checkliste);
+/// diese Glue **tut** den Seitenffekt — sie setzt je Posten den **dauerhaften** Baustein-Freigabe-Tag
+/// (E51a) auf den aktuellen Stand über [`release_baustein_revision`]. Schon revidierte und optionale
+/// Bausteine werden nie gesät (das filtert der Kern bereits).
+///
+/// `version` ist die initiale Versionsmarke (z.B. `"v0.1"`/`"Rev A"`), die jeder gesäte Bereich
+/// gemeinsam trägt — der Cold-Start ist **ein** Akt, ein gemeinsamer Startpunkt. Der aktuelle Stand
+/// wird **einmal** als Commit-id (HEAD) aufgelöst, sodass alle initialen Tags auf denselben Stand
+/// zeigen. Treu zur Degradations-Invariante (E22): ein leeres Produkt / kein Pflicht-Baustein ohne
+/// Stand ⇒ es wird **nichts** gesät (leere Liste), nie ein Fehler. Idempotent in dem Sinn, dass ein
+/// zweiter Aufruf nichts mehr findet (alle Pflicht-Bausteine tragen dann bereits einen Stand).
+pub fn seede_initiale_revisionen(
+    root: &Path,
+    version: &str,
+    optionale_heimaten: &[String],
+) -> std::io::Result<Vec<GesaeterBaustein>> {
+    let version = version.trim();
+    if version.is_empty() {
+        return Err(std::io::Error::other("Version darf nicht leer sein"));
+    }
+
+    // Wen es zu säen gilt, entscheidet allein der reine Kern (Pflicht-Baustein ohne Stand). Die
+    // Auswahl ist leer — der Seed sät den **ersten** Stand, bevor überhaupt gewählt werden kann.
+    let eintraege = sammle_eintraege(root, &[], optionale_heimaten);
+    let seed: Vec<SeedPosten> = kaltstart_seed_liste(&eintraege);
+    if seed.is_empty() {
+        // Nichts zu säen — alle Pflicht-Bausteine tragen schon einen Stand (oder es gibt keine).
+        return Ok(Vec::new());
+    }
+
+    // Den aktuellen Stand **einmal** auflösen, damit alle initialen Tags auf denselben HEAD zeigen.
+    let head = aktueller_stand(root)?;
+
+    let mut gesaet = Vec::with_capacity(seed.len());
+    for posten in &seed {
+        // Je Pflicht-Baustein die initiale Revision aus dem aktuellen Stand freigeben (E51a-Tag).
+        release_baustein_revision(root, &posten.heimat, &head, version)?;
+        gesaet.push(GesaeterBaustein {
+            baustein_id: posten.baustein_id.clone(),
+            heimat: posten.heimat.clone(),
+            version: version.to_string(),
+        });
+    }
+    Ok(gesaet)
+}
+
+/// Die Commit-id des **aktuellen Stands** (HEAD) auflösen — der Stand, aus dem der Cold-Start die
+/// initialen Baustein-Revisionen sät. Fehlt HEAD (frisches Repo ohne Commit), ist das ein Fehler:
+/// ohne einen Stand gibt es nichts zu säen.
+fn aktueller_stand(root: &Path) -> std::io::Result<String> {
+    let out = crate::gitrunner::command(root)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(
+            "Kein aktueller Stand (HEAD) — es gibt nichts zu säen",
+        ));
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if id.is_empty() {
+        return Err(std::io::Error::other("Leerer HEAD — es gibt nichts zu säen"));
+    }
+    Ok(id)
 }
 
 #[cfg(test)]
@@ -294,6 +395,128 @@ mod tests {
         assert!(staende.contains(&"freigabe/firmware/v0.2".to_string()));
         assert!(staende.contains(&"freigabe/firmware/v0.3".to_string()));
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **AC: ein Akt sät je Pflicht-Baustein eine initiale Revision aus dem aktuellen Stand, und
+    /// danach ist die erste Produkt-Revision komponierbar** (Issue #142, E52b). Cold-Start: zwei
+    /// Pflicht-Bausteine, **keiner** je freigegeben → `seede_initiale_revisionen` sät beiden einen
+    /// `freigabe/<heimat>/<version>`-Tag auf HEAD, ganz ohne N manuelle Freigaben. Danach trägt jeder
+    /// Bereich einen Stand: wählt man ihn als Vorstand mit, ist die Zusammenstellung **vollständig**.
+    #[test]
+    fn ein_akt_seedet_initiale_revisionen_und_macht_komponierbar() {
+        let dir = tmp();
+        git_init(&dir);
+        write_stack(
+            &dir,
+            &stack_mit(vec![baustein("kicad", "elektronik"), baustein("zephyr", "firmware")]),
+        )
+        .unwrap();
+
+        // Vor dem Seed: kein Bereich trägt einen Stand → die erste Produkt-Revision (alles offen)
+        // ist unvollständig, beide Pflicht-Bereiche stehen aus.
+        let vor = zusammenstellung_fuer_produkt(&dir, &[], &[]);
+        assert!(!vor.vollstaendig, "vor dem Seed: noch nichts freigegeben");
+        assert_eq!(vor.ausstehende, vec!["elektronik".to_string(), "firmware".to_string()]);
+
+        // Der eine Cold-Start-Akt: je Pflicht-Baustein eine initiale Revision aus dem aktuellen Stand.
+        let gesaet = seede_initiale_revisionen(&dir, "v0.1", &[]).unwrap();
+        let heimaten: Vec<&str> = gesaet.iter().map(|g| g.heimat.as_str()).collect();
+        assert_eq!(heimaten, vec!["elektronik", "firmware"], "beide Pflicht-Bereiche gesät");
+        assert!(gesaet.iter().all(|g| g.version == "v0.1"));
+
+        // Beide tragen jetzt einen dauerhaften Baustein-Freigabe-Tag auf den aktuellen Stand (E51a).
+        let head = aktueller_stand(&dir).unwrap();
+        for (heimat, tag) in [
+            ("elektronik", "freigabe/elektronik/v0.1"),
+            ("firmware", "freigabe/firmware/v0.1"),
+        ] {
+            let staende = list_baustein_freigaben(&dir, heimat);
+            assert!(staende.contains(&tag.to_string()), "{heimat} trägt den initialen Tag");
+            let auf = String::from_utf8_lossy(
+                &crate::gitrunner::command(&dir)
+                    .args(["rev-parse", &format!("{tag}^{{commit}}")])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .trim()
+            .to_string();
+            assert_eq!(auf, head, "{tag} zeigt auf den aktuellen Stand");
+        }
+
+        // Nach dem Seed ist die erste Produkt-Revision komponierbar: jeder Bereich nimmt seinen
+        // initialen Stand als Vorstand mit → vollständig, ohne N manuelle Freigaben.
+        let nach = zusammenstellung_fuer_produkt(
+            &dir,
+            &[
+                wahl("elektronik", "freigabe/elektronik/v0.1", true),
+                wahl("firmware", "freigabe/firmware/v0.1", true),
+            ],
+            &[],
+        );
+        assert!(nach.vollstaendig, "nach dem Seed: erste Produkt-Revision komponierbar");
+        assert!(nach.ausstehende.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **AC: der Seed lässt schon revidierte Bausteine in Ruhe und sät optionale nie** (E52b). Cold-
+    /// Start mit gemischtem Stand: elektronik trägt **schon** einen Freigabe-Stand, doku ist
+    /// **optional**, firmware ist Pflicht **ohne** Stand → genau **firmware** wird gesät, sonst nichts.
+    #[test]
+    fn seed_laesst_schon_revidierte_und_optionale_in_ruhe() {
+        let dir = tmp();
+        git_init(&dir);
+        write_stack(
+            &dir,
+            &stack_mit(vec![
+                baustein("kicad", "elektronik"),
+                baustein("zephyr", "firmware"),
+                baustein("doku", "doku"),
+            ]),
+        )
+        .unwrap();
+        // elektronik ist schon einmal freigegeben (trägt einen Stand).
+        git(&dir, &["tag", "freigabe/elektronik/Rev-A"]);
+
+        let gesaet = seede_initiale_revisionen(&dir, "v0.1", &["doku".to_string()]).unwrap();
+        let heimaten: Vec<&str> = gesaet.iter().map(|g| g.heimat.as_str()).collect();
+        assert_eq!(heimaten, vec!["firmware"], "nur der Pflicht-Bereich ohne Stand wird gesät");
+
+        // elektronik behält genau seinen alten Stand (kein zweiter initialer Tag), doku bleibt leer.
+        assert_eq!(list_baustein_freigaben(&dir, "elektronik"), vec!["freigabe/elektronik/Rev-A"]);
+        assert!(list_baustein_freigaben(&dir, "doku").is_empty(), "optionaler Bereich wird nie gesät");
+        assert_eq!(list_baustein_freigaben(&dir, "firmware"), vec!["freigabe/firmware/v0.1"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **AC: sind alle Pflicht-Bausteine schon revidiert, sät der Akt nichts** (E52b) — der Cold-
+    /// Start ist überstanden, ein erneuter Aufruf ist ein No-op (leere Liste), nie ein Fehler. Das
+    /// macht den Akt idempotent: zweimal säen säet beim zweiten Mal nichts mehr.
+    #[test]
+    fn seed_ist_no_op_wenn_alle_schon_revidiert() {
+        let dir = tmp();
+        git_init(&dir);
+        write_stack(&dir, &stack_mit(vec![baustein("zephyr", "firmware")])).unwrap();
+
+        // Erster Akt sät firmware; ein zweiter findet nichts mehr (firmware trägt nun einen Stand).
+        let erst = seede_initiale_revisionen(&dir, "v0.1", &[]).unwrap();
+        assert_eq!(erst.len(), 1);
+        let zweit = seede_initiale_revisionen(&dir, "v0.2", &[]).unwrap();
+        assert!(zweit.is_empty(), "alle Pflicht-Bausteine tragen schon einen Stand → nichts zu säen");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **Degradation** (E22): ein leeres Produkt (kein Stack) sät nichts und ist kein Fehler.
+    #[test]
+    fn leeres_produkt_seedet_nichts() {
+        let dir = tmp();
+        git_init(&dir);
+        let gesaet = seede_initiale_revisionen(&dir, "v0.1", &[]).unwrap();
+        assert!(gesaet.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }
