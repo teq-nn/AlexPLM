@@ -169,6 +169,44 @@ der Glue; angepasste Tabellen-Tests und Degradations-/Round-Trip-Tests.
 
 ---
 
+## E53 — Integrations-Aufgabe: ja/nein-Block an der Compose + passiver Leseschein
+**Entscheidung:** Manche Belege gehören **zwischen** zwei Bausteine, nicht in einen. Die Werkbank
+führt die **Integrations-Aufgabe** ein: einen **opt-in**, **einmaligen**, **blockierenden**
+Cross-Baustein-Test als Forderung zwischen genau zwei Bausteinen. Der HW-Entwickler **flaggt** den
+Stand seines Bausteins **gegen** einen anderen (z.B. „PCB braucht FW-Test"), **erhoben gegen eine
+Quell-Revision** (den Stand seines Bausteins zum Flagge-Zeitpunkt). Der SW-Entwickler — der
+**Empfänger** — **beantwortet** die Forderung mit **ja/nein**, der Beleg liegt im Protokoll.
+
+Ein **„nein"** (oder eine noch **offene**, unbeantwortete Forderung) hält einen **harten Block** —
+**aber nur an der Produkt-Compose**, **nie** an der eigenständigen Baustein-/FW-Freigabe. Jeder
+Baustein reift für sich (E51a); die Integrations-Strenge sitzt erst dort, wo die Stände
+**zusammenkommen**. Ein **„ja"** ist ein **einmal verbrauchter** Beleg (kein Template): er gilt
+**genau für die Quell-Revision**, gegen die geflaggt wurde. Wird ein **neuer** Quell-Stand
+komponiert, ist der alte Beleg verbraucht — die Forderung muss am neuen Quell-Stand **neu geflaggt**
+werden (oder eben nicht). Ein „ja" gegen Rev D deckt nicht Rev E.
+
+An der Compose erscheint zusätzlich ein **passiver Leseschein**: eine abgeleitete Zeile pro
+Baustein-Paar (zuletzt belegt getestete Quell-Rev vs. zu komponierende Rev), z.B. „FW zuletzt gegen
+PCB Rev D getestet, du nimmst Rev E — kein Test für diese Kombination". Der Leseschein **blockiert
+nichts** — er macht nur die bekannte/fehlende Test-Kombination sichtbar.
+
+**Warum:** Die gewöhnliche Aufgabe (E42/#40) ist **Baustein-intern** und staffelt nach der
+Heimat-getragenen Art (E51a). Ein Integrationstest ist aber eine Aussage **über ein Paar** und nur
+dort sinnvoll streng, wo die Stände komponiert werden — würde er die Einzel-Freigabe blockieren,
+zwänge er wieder den künstlichen Gleichschritt, den E51 gerade aufgelöst hat. Die Einmaligkeit fällt
+aus der Quell-Rev-Bindung: ein Beleg, der automatisch jeden Folge-Stand mitdeckte, wäre eine stille
+Lüge über ungetestete Kombinationen. **Baut auf E51c/E52** (#139, der reine Compose-Kern, aus dessen
+Auswahl der Integrations-Block die komponierten Revisionen liest).
+
+**Umfang jetzt (Issue #141):** reiner **Integrations-Block-Kern** (`integrationsblock.rs`, neben dem
+Aufgaben-Block-Kern): offene Integrations-Aufgaben × Compose-Auswahl → Block-Entscheid (offen/„nein"
+⇒ harter Block) + abgeleitete passive Leseschein-Zeilen, kein I/O, Tabellentest über das Kreuzprodukt
+offen/ja/nein × Compose-Auswahl; dünne Glue (`integrationsblockglue.rs`) fürs Flaggen/Beantworten/
+Protokollieren im `_plm/integrationen.json`-Speicher und die Block-Auflösung **nur** an der Compose;
+Tauri-Kommandos + regenerierte `bindings.ts`.
+
+---
+
 ## Offene / verschobene Punkte (Strang #128)
 - **Auflösen der Abgleichfrage (E49-Folge):** den Eigentumsstreit aktiv entscheiden (Sperre brechen /
   übernehmen / abwarten), analog zum `resolve_sync` des stillen Syncs. Hier nur gemeldet, nicht gelöst.

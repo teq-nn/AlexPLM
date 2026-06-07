@@ -552,6 +552,38 @@ export const commands = {
 	 *  Prototyp (lax) und blockiert nicht.
 	 */
 	evaluateTaskBlockBaustein: (path: string, heimat: string, version: string) => typedError<BlockDecision, string>(__TAURI_INVOKE("evaluate_task_block_baustein", { path, heimat, version })),
+	/**
+	 *  Die offenen **Integrations-Aufgaben** eines Produkts lesen (Issue #141, E53) — die einmaligen,
+	 *  gegen eine Quell-Revision erhobenen Cross-Baustein-Test-Belege. Ein Produkt ohne Beleg-Datei hat
+	 *  null Forderungen (opt-in). Reiner Lese-Zugriff auf den `_plm`-Speicher.
+	 */
+	listIntegrationen: (path: string) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("list_integrationen", { path })),
+	/**
+	 *  **Flaggen** (HW, Issue #141, E53): eine neue, offene Integrations-Forderung anlegen — „mein
+	 *  `quell_baustein` braucht gegen `ziel_baustein` einen Test, erhoben gegen `quell_rev`". Der
+	 *  Empfänger (SW) beantwortet sie später mit ja/nein. Gibt die frische Liste zurück.
+	 */
+	flaggeIntegrationCmd: (path: string, quellBaustein: string, zielBaustein: string, quellRev: string) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("flagge_integration_cmd", { path, quellBaustein, zielBaustein, quellRev })),
+	/**
+	 *  **Beantworten** (SW/Empfänger, Issue #141, E53): die Antwort einer Integrations-Forderung auf
+	 *  ja/nein setzen — der Beleg liegt damit auf Akte. Eine fehlende id ist ein toleranter No-Op. Gibt
+	 *  die frische Liste zurück.
+	 */
+	beantworteIntegrationCmd: (path: string, id: string, antwort: IntegrationsAntwort) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("beantworte_integration_cmd", { path, id, antwort })),
+	/**
+	 *  Eine Integrations-Forderung löschen/zurücknehmen (Issue #141). Fehlende id ⇒ No-Op. Gibt die
+	 *  frische Liste zurück.
+	 */
+	deleteIntegrationCmd: (path: string, id: string) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("delete_integration_cmd", { path, id })),
+	/**
+	 *  Den **Integrations-Block an der Produkt-Compose** entscheiden (Issue #141, E53): aus den offenen
+	 *  Forderungen und der Compose-Auswahl (der Produkt-Stückliste der zu bauenden Revision) den
+	 *  Block-Entscheid + die passiven Leseschein-Zeilen ableiten. **Nur an der Compose** — eine
+	 *  eigenständige Baustein-/FW-Freigabe ruft dies nie auf, also blockiert eine Integration nie eine
+	 *  Einzel-Freigabe. Eine „nein"/offene Forderung gegen die komponierte Quell-Rev ist ein harter
+	 *  Block; der Leseschein blockiert nie. Reiner Lese-Zugriff; die Entscheidung ist der pure Kern.
+	 */
+	evaluateIntegrationsblock: (path: string, composeAuswahl: StuecklistenPosten[]) => typedError<IntegrationsBlockEntscheid, string>(__TAURI_INVOKE("evaluate_integrationsblock", { path, composeAuswahl })),
 };
 
 /* Types */
@@ -957,6 +989,80 @@ export type ImportResult = {
 };
 
 /**
+ *  Die **Antwort** des Empfängers auf eine Integrations-Forderung (E53). Der HW-Entwickler flaggt,
+ *  der SW-Entwickler (Empfänger) beantwortet mit ja/nein; bis dahin ist die Forderung **offen**.
+ */
+export type IntegrationsAntwort = 
+/**
+ *  Noch **offen** — der Empfänger hat die Forderung weder bejaht noch verneint. Hält den Block
+ *  an der Compose (eine geforderte, aber unbelegte Integration darf nicht still durchgehen).
+ */
+"offen" | 
+/**
+ *  **Ja** — der Empfänger bestätigt: für **diese** Quell-Revision ist der Integrationstest belegt.
+ *  Hebt den Block für genau diese Kombination auf (einmaliger, verbrauchter Beleg).
+ */
+"ja" | 
+/**
+ *  **Nein** — der Empfänger verneint: kein Test / Test nicht bestanden. Hält den harten Block an
+ *  der Compose.
+ */
+"nein";
+
+/**
+ *  Eine **Integrations-Aufgabe** (Issue #141, E53): die Forderung des HW-Entwicklers, seinen Baustein
+ *  **gegen** einen anderen integrativ zu testen — **erhoben gegen eine Quell-Revision**. Schlichte
+ *  Daten; die Glue füllt sie aus dem `_plm`-Beleg-Speicher. Der Kern macht **kein** I/O über sie.
+ * 
+ *  Das **Baustein-Paar** ist die Kombination, die getestet werden soll: `quell_baustein` ist der
+ *  flaggende Baustein (z.B. die Elektronik/PCB), `ziel_baustein` der Baustein, **gegen** den getestet
+ *  wird (z.B. die Firmware). `quell_rev` ist der Stand des flaggenden Bausteins, **gegen** den die
+ *  Forderung erhoben (und ein „ja" belegt) wurde — der Beleg gilt **genau** für diese Revision.
+ * 
+ *  Serde-/specta-tauglich: dieselbe Form ist der **Akten-Beleg** im `_plm`-Speicher
+ *  ([`crate::integrationsblockglue`]) **und** der Wire-Typ für die UI — eine Wahrheit, nicht zwei.
+ */
+export type IntegrationsAufgabe = {
+	/**  Stabile, undurchsichtige id der Forderung (die Glue vergibt sie; die UI keyt Zeilen darauf). */
+	id: string,
+	/**  Die `id` des **flaggenden** Bausteins (z.B. `"kicad"` / die PCB), der den Test fordert. */
+	quell_baustein: string,
+	/**  Die `id` des **Empfänger**-Bausteins, **gegen** den getestet wird (z.B. `"zephyr"` / die FW). */
+	ziel_baustein: string,
+	/**
+	 *  Die **Quell-Revision**, gegen die die Forderung erhoben (und ein „ja" belegt) wurde — der
+	 *  Stand des flaggenden Bausteins zum Flagge-Zeitpunkt (z.B. `"Rev D"`). Einmalig: ein Beleg gilt
+	 *  genau für diese Revision; ein neuer Quell-Stand braucht eine neue Forderung.
+	 */
+	quell_rev: string,
+	/**  Die Antwort des Empfängers (offen/ja/nein) — der Beleg auf Akte. */
+	antwort: IntegrationsAntwort,
+};
+
+/**
+ *  Der **Integrations-Block-Entscheid** für eine Produkt-Komposition (Issue #141, E53). Genau einer;
+ *  total. Trägt die **ids der blockierenden Forderungen** (damit die UI sie benennen kann, ohne die
+ *  Regel erneut zu prüfen) und die abgeleiteten **passiven** Leseschein-Zeilen.
+ */
+export type IntegrationsBlockEntscheid = {
+	/**
+	 *  Ob die Compose blockiert ist. `true` ⇔ [`Self::blockierende_ids`] ist nicht leer (als
+	 *  ehrliches einzelnes Flag mitgeführt, damit die UI eine Wahrheit liest).
+	 */
+	blockiert: boolean,
+	/**
+	 *  Die ids der Integrations-Forderungen, die diese Compose blockieren, in Eingabe-Reihenfolge.
+	 *  Leer ⇔ nicht blockiert. Genau die Forderungen, deren komponierte Kombination „nein"/offen ist.
+	 */
+	blockierende_ids: string[],
+	/**
+	 *  Die passiven Leseschein-Zeilen, eine pro relevantem Baustein-Paar, in stabiler Reihenfolge.
+	 *  Sie blockieren **nichts** — sie machen nur die bekannte/fehlende Test-Kombination sichtbar.
+	 */
+	lesescheine: LesescheinZeile[],
+};
+
+/**
  *  The single decision the Offline-Lock reconciler returns on connect (Issue #136, E49b). Exactly
  *  one; total. Mirrors the Eingang-A shape ([`crate::reconciler::ReconcileDecision`]): a silent
  *  common case and a single loud exception.
@@ -1089,6 +1195,32 @@ export type Label = {
 	id: number,
 	name: string,
 	color: string,
+};
+
+/**
+ *  Eine **passive Leseschein-Zeile** (E53): macht eine Test-Kombination an der Compose sichtbar,
+ *  **blockiert aber nichts**. Sie sagt, **welcher** belegte Stand zuletzt gegen den Partner getestet
+ *  wurde und **welcher** Stand jetzt komponiert wird — damit der Compose-Lesende selbst sieht, ob
+ *  die Kombination belegt ist („FW zuletzt gegen PCB Rev D getestet, du nimmst Rev E — kein Test für
+ *  diese Kombination").
+ */
+export type LesescheinZeile = {
+	/**  Der flaggende (Quell-)Baustein des Paares (z.B. `"kicad"`). */
+	quell_baustein: string,
+	/**  Der Empfänger-(Ziel-)Baustein des Paares (z.B. `"zephyr"`). */
+	ziel_baustein: string,
+	/**
+	 *  Die zuletzt **belegt getestete** Quell-Revision dieses Paares (`Some("Rev D")`), oder `None`,
+	 *  wenn für dieses Paar **gar kein** Test belegt ist.
+	 */
+	zuletzt_getestete_rev: string | null,
+	/**  Die Quell-Revision, die jetzt **komponiert** wird (z.B. `"Rev E"`). */
+	komponierte_rev: string,
+	/**
+	 *  Ob die komponierte Kombination **belegt** ist (`true` ⇔ ein „ja" gegen genau die komponierte
+	 *  Quell-Revision liegt vor). Rein informativ — der Leseschein blockiert nie.
+	 */
+	belegt: boolean,
 };
 
 /**
@@ -1609,6 +1741,21 @@ export type StilllegenWirkung = {
 	 *  (explizit getragen, damit die Akzeptanz „nichts relocated/removed" prüfbar im Vertrag steht).
 	 */
 	nichts_bewegt: boolean,
+};
+
+/**
+ *  Die **Produkt-Stückliste (BOM)** einer Produkt-Revision: pro verpflichtendem Baustein der eine
+ *  gewählte Release-Stand, der seinen Heimat-Bereich stellt. Genau das, was der Compose-Commit-Baum
+ *  physisch enthalten **muss** — die Glue prüft die Invariante **Baum = BOM** dagegen, damit kein
+ *  „Tag HEAD + Lüge im Manifest" entsteht.
+ */
+export type StuecklistenPosten = {
+	/**  `id` des Bausteins (z.B. `"kicad"`). */
+	baustein_id: string,
+	/**  Der Heimat-Bereich, den dieser Posten stellt (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Der dauerhafte Release-Tag des gewählten Stands (z.B. `freigabe/elektronik/Rev-B`). */
+	release_tag: string,
 };
 
 /**  The outcome of one silent daily sync pass, ready for the UI in the tool's vocabulary. */
