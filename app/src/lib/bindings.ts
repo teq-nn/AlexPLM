@@ -46,6 +46,21 @@ export const commands = {
 	 */
 	toggleRevisionArt: (path: string, version: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("toggle_revision_art", { path, version })),
 	/**
+	 *  **Einen Baustein-Bereich unabhängig freigeben** (Issue #131, E51a). Jeder Baustein trägt seine
+	 *  eigene Revision + Art mit Scope = Heimat-Ordner: der HW-Entwickler gibt `elektronik` als „Rev B"
+	 *  frei, ohne dass WIP-Firmware ihn blockiert. Die Art wandert dabei auf die **Baustein-Revision**
+	 *  (Heimat-getragen), und es wird ein **dauerhafter** Baustein-Freigabe-Tag gesetzt, damit dieser
+	 *  Stand später in eine Produkt-Revision **komponierbar** bleibt. Liefert den frischen
+	 *  Versionsbaum, damit die UI in einer Runde aktualisiert.
+	 */
+	releaseBaustein: (path: string, heimat: string, standId: string, version: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("release_baustein", { path, heimat, standId, version })),
+	/**
+	 *  Eine unabhängige **Baustein-Freigabe zurücknehmen** (Issue #131, E51a — reversibel, E22): die
+	 *  Heimat-Art zurück auf Prototyp und der dauerhafte Baustein-Freigabe-Tag wird entfernt. Liefert
+	 *  den frischen Versionsbaum.
+	 */
+	unreleaseBaustein: (path: string, heimat: string, version: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("unrelease_baustein", { path, heimat, version })),
+	/**
 	 *  **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
 	 *  den Stand `stand_id` als *separaten, schreibgeschützten* Ordner neben dem Produkt (ein detached
 	 *  `git worktree`). Die Werkbank (Jetzt-Zustand) bleibt unberührt — ein Klick auf einen alten Knoten
@@ -189,6 +204,14 @@ export const commands = {
 	 *  [`freigabegate::decide_gate`]-Kern. Ein leeres Produkt ist sauber (sperrt nie aus — E22).
 	 */
 	evaluateFreigabeGate: (path: string, art: RevisionArt) => typedError<GateVerdict, string>(__TAURI_INVOKE("evaluate_freigabe_gate", { path, art })),
+	/**
+	 *  Wie [`evaluate_freigabe_gate`], aber das Gate staffelt nach dem **Baustein-Scope der Art** (Issue
+	 *  #131, E51a): die angestrebte Art kommt für `(heimat, version)` aus dem Heimat-getragenen
+	 *  Art-Store statt als Argument. So staffelt das Gate die offenen Punkte nach der Strenge genau
+	 *  dieses Bereichs — `elektronik` kann freigegeben werden, während eine noch reifende Firmware
+	 *  (Prototyp) ihn nicht durch ein hartes Gate blockiert. Sperrt nie aus (E22).
+	 */
+	evaluateFreigabeGateBaustein: (path: string, heimat: string, version: string) => typedError<GateVerdict, string>(__TAURI_INVOKE("evaluate_freigabe_gate_baustein", { path, heimat, version })),
 	/**
 	 *  Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
 	 *  Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
@@ -482,6 +505,14 @@ export const commands = {
 	 *  can name them). A product with no task store is never blocked.
 	 */
 	evaluateTaskBlock: (path: string, art: RevisionArt) => typedError<BlockDecision, string>(__TAURI_INVOKE("evaluate_task_block", { path, art })),
+	/**
+	 *  Wie [`evaluate_task_block`], aber die Strenge kommt aus dem **Baustein-Scope der Art** (Issue
+	 *  #131, E51a): die Art wird nicht übergeben, sondern für `(heimat, version)` aus dem
+	 *  Heimat-getragenen Art-Store gelesen. So blockiert eine offene Aufgabe nur den Bereich, der gerade
+	 *  als Freigabe reift — jeder Baustein reift unabhängig. Ein nie freigegebener Bereich ist Default
+	 *  Prototyp (lax) und blockiert nicht.
+	 */
+	evaluateTaskBlockBaustein: (path: string, heimat: string, version: string) => typedError<BlockDecision, string>(__TAURI_INVOKE("evaluate_task_block_baustein", { path, heimat, version })),
 };
 
 /* Types */

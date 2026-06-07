@@ -51,7 +51,7 @@ pub mod zuordnung;
 pub mod zuordnungstore;
 
 use aufgabenblock::BlockDecision;
-use aufgabenblockglue::block_for_art;
+use aufgabenblockglue::{block_for_art, block_for_baustein};
 use baustein::{validate_baustein, dedup_globs, is_bundled_id, Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{
@@ -59,9 +59,12 @@ use edgestore::{
     remove_persisted_edge, EdgeView,
 };
 use freigabegate::GateVerdict;
-use freigabegateglue::gate_for_art;
+use freigabegateglue::{gate_for_art, gate_for_baustein};
 use graph::{RevisionArt, VersionGraph};
-use graphread::{promote_to_revision, read_graph, toggle_revision_freigabe};
+use graphread::{
+    promote_to_revision, read_graph, release_baustein_revision, toggle_revision_freigabe,
+    unrelease_baustein_revision,
+};
 use konto::{
     clear_konto as clear_konto_file, konto_path, read_konto as read_konto_file, write_konto,
     KontoConfig, KontoView,
@@ -279,6 +282,44 @@ fn toggle_revision_art(path: String, version: String) -> Result<VersionGraph, St
         return Err(format!("Kein Ordner: {path}"));
     }
     toggle_revision_freigabe(root, &version).map_err(|e| e.to_string())
+}
+
+/// **Einen Baustein-Bereich unabhängig freigeben** (Issue #131, E51a). Jeder Baustein trägt seine
+/// eigene Revision + Art mit Scope = Heimat-Ordner: der HW-Entwickler gibt `elektronik` als „Rev B"
+/// frei, ohne dass WIP-Firmware ihn blockiert. Die Art wandert dabei auf die **Baustein-Revision**
+/// (Heimat-getragen), und es wird ein **dauerhafter** Baustein-Freigabe-Tag gesetzt, damit dieser
+/// Stand später in eine Produkt-Revision **komponierbar** bleibt. Liefert den frischen
+/// Versionsbaum, damit die UI in einer Runde aktualisiert.
+#[tauri::command]
+#[specta::specta]
+fn release_baustein(
+    path: String,
+    heimat: String,
+    stand_id: String,
+    version: String,
+) -> Result<VersionGraph, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    release_baustein_revision(root, &heimat, &stand_id, &version).map_err(|e| e.to_string())
+}
+
+/// Eine unabhängige **Baustein-Freigabe zurücknehmen** (Issue #131, E51a — reversibel, E22): die
+/// Heimat-Art zurück auf Prototyp und der dauerhafte Baustein-Freigabe-Tag wird entfernt. Liefert
+/// den frischen Versionsbaum.
+#[tauri::command]
+#[specta::specta]
+fn unrelease_baustein(
+    path: String,
+    heimat: String,
+    version: String,
+) -> Result<VersionGraph, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    unrelease_baustein_revision(root, &heimat, &version).map_err(|e| e.to_string())
 }
 
 /// **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
@@ -1446,6 +1487,25 @@ fn evaluate_task_block(path: String, art: RevisionArt) -> Result<BlockDecision, 
     Ok(block_for_art(root, art))
 }
 
+/// Wie [`evaluate_task_block`], aber die Strenge kommt aus dem **Baustein-Scope der Art** (Issue
+/// #131, E51a): die Art wird nicht übergeben, sondern für `(heimat, version)` aus dem
+/// Heimat-getragenen Art-Store gelesen. So blockiert eine offene Aufgabe nur den Bereich, der gerade
+/// als Freigabe reift — jeder Baustein reift unabhängig. Ein nie freigegebener Bereich ist Default
+/// Prototyp (lax) und blockiert nicht.
+#[tauri::command]
+#[specta::specta]
+fn evaluate_task_block_baustein(
+    path: String,
+    heimat: String,
+    version: String,
+) -> Result<BlockDecision, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(block_for_baustein(root, &heimat, &version))
+}
+
 /// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Revision-Art
 /// berechnen (Issue #52, E19/E19.3). Sammelt die offenen Punkte — offene Aufgaben (#49), Waisen
 /// (#47) und Stale-Kanten (#10) — und staffelt sie **nach Härte** hinter **einem** kontextabhängigen
@@ -1461,6 +1521,25 @@ fn evaluate_freigabe_gate(path: String, art: RevisionArt) -> Result<GateVerdict,
         return Err(format!("Kein Ordner: {path}"));
     }
     Ok(gate_for_art(root, art))
+}
+
+/// Wie [`evaluate_freigabe_gate`], aber das Gate staffelt nach dem **Baustein-Scope der Art** (Issue
+/// #131, E51a): die angestrebte Art kommt für `(heimat, version)` aus dem Heimat-getragenen
+/// Art-Store statt als Argument. So staffelt das Gate die offenen Punkte nach der Strenge genau
+/// dieses Bereichs — `elektronik` kann freigegeben werden, während eine noch reifende Firmware
+/// (Prototyp) ihn nicht durch ein hartes Gate blockiert. Sperrt nie aus (E22).
+#[tauri::command]
+#[specta::specta]
+fn evaluate_freigabe_gate_baustein(
+    path: String,
+    heimat: String,
+    version: String,
+) -> Result<GateVerdict, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(gate_for_baustein(root, &heimat, &version))
 }
 
 /// Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
@@ -1614,6 +1693,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         read_version_graph,
         promote_revision,
         toggle_revision_art,
+        release_baustein,
+        unrelease_baustein,
         knoten_als_ordner,
         knoten_abzweigen,
         knoten_zurueckwerfen,
@@ -1634,6 +1715,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         freigeben,
         sichern,
         evaluate_freigabe_gate,
+        evaluate_freigabe_gate_baustein,
         log_freigabe_begruendung,
         read_git_log,
         clear_git_log,
@@ -1669,7 +1751,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         edit_task_cmd,
         set_task_status_cmd,
         delete_task_cmd,
-        evaluate_task_block
+        evaluate_task_block,
+        evaluate_task_block_baustein
     ])
 }
 

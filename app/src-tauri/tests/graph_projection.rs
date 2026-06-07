@@ -13,7 +13,9 @@ use app_lib::graph::{
     project_graph, BranchFact, CommitFact, RevisionArt, RevisionFact, RepoSnapshot,
 };
 use app_lib::graphread::{
-    promote_to_revision, read_graph, read_snapshot, toggle_revision_freigabe, VERSION_NOTES,
+    baustein_freigabe_tag_exists, baustein_revision_art, promote_to_revision, read_graph,
+    read_snapshot, release_baustein_revision, toggle_revision_freigabe,
+    unrelease_baustein_revision, VERSION_NOTES,
 };
 use std::path::Path;
 use std::process::Command;
@@ -342,6 +344,77 @@ fn an_external_branch_committed_to_outside_the_app_appears_as_a_distinct_line() 
     assert!(!node(&zweig_tip).on_active);
     assert_eq!(node(&zweig_tip).branch.as_deref(), Some("gehaeuse-v2"));
     assert_eq!(g.active_branch.as_deref(), Some("main"));
+}
+
+fn tag_exists(root: &Path, tag: &str) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["tag", "--list", tag])
+        .output()
+        .unwrap();
+    out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
+#[test]
+fn a_baustein_releases_independently_and_sets_a_durable_tag() {
+    // Issue #131 / E51a end-to-end over a real repo: jeder Baustein trägt seine eigene Revision +
+    // Art mit Scope = Heimat. Der HW-Entwickler gibt `elektronik` als „Rev B" frei — das setzt einen
+    // dauerhaften Tag — während die WIP-Firmware für dieselbe Marke Prototyp bleibt und nicht
+    // mitblockiert wird. Jeder Bereich reift unabhängig.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_repo(root);
+    commit_file(root, "a.txt", "one", "auto: a.txt, 2026-05-30T09:00:00Z");
+    let target = head(root);
+
+    // Vor der Freigabe: jede Baustein-Revision ist Default Prototyp (lax), kein Tag.
+    assert_eq!(
+        baustein_revision_art(root, "elektronik", "Rev B"),
+        RevisionArt::Prototyp
+    );
+    assert!(!baustein_freigabe_tag_exists(root, "elektronik", "Rev B").unwrap());
+
+    // `elektronik` unabhängig freigeben → Heimat-Art = Freigabe, dauerhafter Tag gesetzt.
+    release_baustein_revision(root, "elektronik", &target, "Rev B").unwrap();
+    assert_eq!(
+        baustein_revision_art(root, "elektronik", "Rev B"),
+        RevisionArt::Freigabe,
+        "die Art wandert auf die Baustein-Revision (E51a)"
+    );
+    assert!(
+        baustein_freigabe_tag_exists(root, "elektronik", "Rev B").unwrap(),
+        "eine Baustein-Freigabe setzt einen dauerhaften Tag"
+    );
+    // Der dauerhafte Tag zeigt auf genau den freigegebenen Stand (komponierbar). Der git-Tag-Name
+    // ist die ref-sichere Slug-Form des menschlichen Labels („Rev B" → „Rev-B").
+    assert!(tag_exists(root, "freigabe/elektronik/Rev-B"));
+
+    // Unabhängigkeit: `firmware` hat dieselbe Marke nie freigegeben → bleibt Prototyp, kein Tag.
+    assert_eq!(
+        baustein_revision_art(root, "firmware", "Rev B"),
+        RevisionArt::Prototyp,
+        "ein anderer Bereich reift unabhängig — WIP-Firmware blockiert die HW-Freigabe nicht"
+    );
+    assert!(!baustein_freigabe_tag_exists(root, "firmware", "Rev B").unwrap());
+
+    // Die Heimat-getragene Art überlebt einen frischen Read (persistiert im _plm-Store).
+    // (read_snapshot trägt weiterhin die produkt-globale Art — die Baustein-Art liegt im
+    // Heimat-Scope und wird über baustein_revision_art gelesen.)
+    let _ = read_snapshot(root).unwrap();
+    assert_eq!(
+        baustein_revision_art(root, "elektronik", "Rev B"),
+        RevisionArt::Freigabe
+    );
+
+    // Zurücknehmen (E22 reversibel): Heimat-Art zurück auf Prototyp, dauerhafter Tag entfernt.
+    unrelease_baustein_revision(root, "elektronik", "Rev B").unwrap();
+    assert_eq!(
+        baustein_revision_art(root, "elektronik", "Rev B"),
+        RevisionArt::Prototyp
+    );
+    assert!(!baustein_freigabe_tag_exists(root, "elektronik", "Rev B").unwrap());
+    assert!(!tag_exists(root, "freigabe/elektronik/Rev-B"));
 }
 
 #[test]

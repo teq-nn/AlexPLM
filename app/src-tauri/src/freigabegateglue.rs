@@ -20,6 +20,7 @@
 //! this glue computes: Issue #52's UI calls this with [`RevisionArt::Freigabe`] at the moment a
 //! Prototyp is toggled up to a Freigabe, to staff the open points before the tag is raised.
 
+use crate::artstore::read_art_in;
 use crate::edgestore::read_edge_view;
 use crate::freigabegate::{decide_gate, GateInputs, GateVerdict};
 use crate::graph::RevisionArt;
@@ -57,6 +58,17 @@ pub fn gate_for_art(root: &Path, art: RevisionArt) -> GateVerdict {
         fremd_warnung: None,
     };
     decide_gate(&inputs, art)
+}
+
+/// Wie [`gate_for_art`], aber die angestrebte Art kommt aus dem **Baustein-Scope** (E51a, Issue
+/// #131): sie wird aus dem **Heimat-getragenen** Art-Store für `(heimat, version)` gelesen
+/// ([`read_art_in`]) statt übergeben. So staffelt das Gate die offenen Punkte nach der Strenge
+/// **genau dieses Bereichs** — der HW-Entwickler kann `elektronik` freigeben, während die
+/// WIP-Firmware (für dieselbe Marke noch Prototyp) ihn nicht durch ein hartes Gate blockiert. Eine
+/// nie freigegebene Baustein-Revision ist Default Prototyp (lax). Sperrt nie aus (E22).
+pub fn gate_for_baustein(root: &Path, heimat: &str, version: &str) -> GateVerdict {
+    let art = read_art_in(root, heimat, version);
+    gate_for_art(root, art)
 }
 
 #[cfg(test)]
@@ -126,6 +138,33 @@ mod tests {
         let p = gate_for_art(&dir, RevisionArt::Prototyp);
         assert_eq!(p.knopf, KnopfZustand::Taggen);
         assert!(p.punkte.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **E51a Baustein-Scope der Art** (Issue #131): das Gate staffelt nach der **Heimat-getragenen**
+    /// Art. Ein freigegebener Bereich (`elektronik`) staffelt die offene Aufgabe als harten Block;
+    /// ein noch reifender Bereich (`firmware`, Default Prototyp für dieselbe Marke) ist sauber —
+    /// jeder Bereich reift unabhängig.
+    #[test]
+    fn baustein_scope_staffs_the_gate_per_heimat() {
+        use crate::artstore::set_art_in;
+        let dir = tmp();
+        create_task(&dir, aufgabe("Footprint Q3 prüfen")).unwrap();
+
+        // elektronik wurde freigegeben → harter Block (Knopf aus, Aufgabe benannt).
+        set_art_in(&dir, "elektronik", "v1.0", RevisionArt::Freigabe).unwrap();
+        let e = gate_for_baustein(&dir, "elektronik", "v1.0");
+        assert_eq!(e.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert!(e.harter_block);
+        assert_eq!(e.punkte.len(), 1);
+        assert_eq!(e.punkte[0].haerte, Haerte::Hart);
+        assert_eq!(e.punkte[0].art, Punktart::Aufgabe);
+
+        // firmware: dieselbe Marke nie freigegeben → Default Prototyp → sauberes Taggen.
+        let f = gate_for_baustein(&dir, "firmware", "v1.0");
+        assert_eq!(f.knopf, KnopfZustand::Taggen);
+        assert!(f.punkte.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }
