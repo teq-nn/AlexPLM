@@ -26,6 +26,23 @@
 //! me too, and the dialog carries a cross-person Warnung („du taggst auch X' frischen Stand
 //! mit"). That warning is informational; it carries no Härte of its own.
 //!
+//! ## Scope = Heimat-Pfade (E51b, Issue #138)
+//!
+//! Eine Baustein-Freigabe staffelt **nur** die offenen Punkte ihres eigenen Bereichs: gibt der
+//! HW-Entwickler `elektronik` als „Rev B" frei, halten WIP-Firmware-Punkte (`firmware/…`) ihn
+//! **nicht** als Geisel — sie fallen aus dem Urteil. Dafür nimmt der Kern einen [`Scope`] (die
+//! Heimat-Pfade des reifenden Bausteins) entgegen und **filtert** die offenen Punkte darauf,
+//! **bevor** er staffelt. Die Härte-Logik (Hart/Weich/Warnung, Knopf-Zustände) bleibt **unberührt**
+//! — der Scope entscheidet nur, *welche* Punkte überhaupt zur Staffelung kommen.
+//!
+//! Ein Punkt liegt im Scope, wenn sein **Pfad** unter einem der Heimat-Pfade liegt (auf
+//! Segmentgrenze, damit `elektro` nicht in `elektronik` „passt"): eine Waise/Stale-Kante über ihren
+//! Pfad, eine Aufgabe über ihre Verknüpfung (`Arbeitsbereich`/`Artefakt`). Ein **produkt-weiter**
+//! Punkt ohne Heimat-Pfad (eine Aufgabe am Produkt/an einer Version, ein label-only Pflicht-Eintrag)
+//! ist **bereichsübergreifend** und bleibt in **jedem** Scope (er gehört keinem Bereich allein).
+//! Ein **leerer** Scope filtert nicht — das ganze Produkt ist im Blick (der produkt-weite Aufrufer
+//! und der Degradationspfad behalten ihr bisheriges Verhalten).
+//!
 //! The button has exactly **three Zustände** ([`KnopfZustand`]), driven by the härtestes vorhandene
 //! item: clean → `Taggen`; only soft/warning → `TrotzdemFreigeben` (needs Begründung); any hard →
 //! `GesperrtDurchAufgabe` (off). The pure core decides which — the UI re-derives nothing.
@@ -33,7 +50,7 @@
 use crate::aufgabenblock::{decide_block, BlockDecision};
 use crate::edges::StaleWarning;
 use crate::graph::RevisionArt;
-use crate::tasks::Task;
+use crate::tasks::{Task, TaskLink};
 use serde::Serialize;
 
 /// The Härte of a single open point at the Freigabe-Gate (E19). Ordered **härtestes zuerst**:
@@ -153,6 +170,72 @@ impl GateVerdict {
     }
 }
 
+/// Der **Heimat-Scope** einer Baustein-Freigabe (E51b, Issue #138): die produkt-relativen
+/// Heimat-Pfade des reifenden Bausteins, auf die der Kern die offenen Punkte filtert, **bevor** er
+/// staffelt. Ein Punkt liegt im Scope, wenn sein Pfad unter **einem** dieser Pfade liegt (auf
+/// Segmentgrenze). Ein **leerer** Scope filtert nicht — das ganze Produkt ist im Blick (der
+/// produkt-weite Aufrufer und der Degradationspfad).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Scope {
+    /// Die Heimat-Pfade des Bereichs (z.B. `["elektronik"]`). Leer ⇒ ganzes Produkt (kein Filter).
+    pub heimaten: Vec<String>,
+}
+
+impl Scope {
+    /// Ein Scope über genau eine Heimat — die übliche Baustein-Freigabe (`elektronik`).
+    pub fn heimat(heimat: impl Into<String>) -> Self {
+        Scope {
+            heimaten: vec![heimat.into()],
+        }
+    }
+
+    /// Ob dieser Scope **nicht** filtert: ein leerer Scope nimmt das ganze Produkt in den Blick
+    /// (produkt-weiter Aufrufer / Degradation).
+    fn is_whole_product(&self) -> bool {
+        self.heimaten.iter().all(|h| h.trim().is_empty())
+    }
+
+    /// Ob ein **pfad-tragender** Punkt im Scope liegt: sein Pfad unter einer der Heimaten (auf
+    /// Segmentgrenze). Ein leerer Scope lässt alles durch.
+    fn contains_path(&self, path: &str) -> bool {
+        self.is_whole_product() || self.heimaten.iter().any(|h| within_heimat(path, h))
+    }
+
+    /// Ob ein **produkt-weiter** Punkt (ohne Heimat-Pfad) im Scope bleibt: er ist
+    /// bereichsübergreifend und gehört keinem Bereich allein, also bleibt er in **jedem** Scope.
+    /// (Eigene Methode statt eines Literals, damit die Regel an einer Stelle benannt ist.)
+    fn keeps_product_wide(&self) -> bool {
+        true
+    }
+}
+
+/// Ob `path` **innerhalb** der Heimat `heimat` liegt (oder Heimat leer = ganze Produktwurzel).
+/// Vergleich auf Segmentgrenze, damit `elektro` nicht in `elektronik` „passt". Rein + total.
+/// (Spiegelt `zuordnung::within_heimat`; der Kern bleibt I/O-frei und self-contained.) `pub(crate)`,
+/// damit die Glue (E51b) dieselbe Segmentregel zum Einsortieren der git-diff-Pfade nutzt.
+pub(crate) fn within_heimat(path: &str, heimat: &str) -> bool {
+    let h = heimat.trim().trim_matches('/');
+    if h.is_empty() {
+        return true;
+    }
+    let p = path.trim().trim_matches('/');
+    p == h || p.starts_with(&format!("{h}/"))
+}
+
+/// Ob eine Aufgabe im `scope` liegt (E51b). Eine Aufgabe mit Heimat-Pfad-Verknüpfung
+/// (`Arbeitsbereich`/`Artefakt`) gehört dem Bereich ihres Pfads — sie bleibt nur, wenn dieser im
+/// Scope liegt. Eine **produkt-weite** Aufgabe (am Produkt, an einer Version, oder ohne
+/// Verknüpfung) gehört keinem Bereich allein und bleibt bereichsübergreifend in jedem Scope. Rein.
+fn task_in_scope(task: &Task, scope: &Scope) -> bool {
+    match &task.link {
+        Some(TaskLink::Arbeitsbereich(pfad)) | Some(TaskLink::Artefakt(pfad)) => {
+            scope.contains_path(pfad)
+        }
+        // Produkt / Version / kein Link ⇒ produkt-weit, bereichsübergreifend.
+        _ => scope.keeps_product_wide(),
+    }
+}
+
 /// The collected inputs the gate classifies — already gathered by the glue, never fetched here.
 /// Keeping this a plain snapshot keeps [`decide_gate`] pure and the table tests trivial.
 #[derive(Debug, Clone, Default)]
@@ -165,15 +248,17 @@ pub struct GateInputs {
     /// The product-relative paths of Waisen — tracked files without an Etikett. Each → weicher
     /// Block.
     pub waisen: Vec<String>,
-    /// The labels of fehlende Pflicht-Artefakte. Each → weicher Block.
+    /// The labels of fehlende Pflicht-Artefakte. Each → weicher Block. Label-only ⇒ produkt-weit
+    /// (kein Heimat-Pfad), bleibt also in jedem Scope (E51b) — das Pflicht-Modell trägt noch keinen
+    /// Pfad (eigene Slice).
     pub fehlende_pflicht: Vec<String>,
     /// The personenübergreifende Warnung, if any (E19.1).
     pub fremd_warnung: Option<FremdWarnung>,
 }
 
-/// The **Freigabe-Gate decision**: given the collected open points and the intended
-/// Revision-Art, produce the härte-sortierte Liste + Knopf-Zustand. **Pure, total,
-/// deterministic** — no I/O, no clock.
+/// The **Freigabe-Gate decision**: given the collected open points, the intended Revision-Art and
+/// the **Heimat-Scope** of the reifenden Bausteins, produce the härte-sortierte Liste +
+/// Knopf-Zustand. **Pure, total, deterministic** — no I/O, no clock.
 ///
 /// The rule (E19/E19.3), in one breath: a Freigabe collects its open points from the
 /// Aufgaben-Block (harter Block), the Waisen/Pflicht-Check (weicher Block) and the Stale-Kanten
@@ -181,20 +266,33 @@ pub struct GateInputs {
 /// vorhandene item — `Taggen` (clean) / `TrotzdemFreigeben` (weich, needs Begründung) /
 /// `GesperrtDurchAufgabe` (hart, off).
 ///
+/// **Scope (E51b):** before any staffing the open points are **filtered to `scope`** — a Punkt
+/// außerhalb der Heimat-Pfade fällt heraus, sodass die Firmware-WIP eine Elektronik-Freigabe nicht
+/// als Geisel hält. Ein **leerer** Scope filtert nicht (ganzes Produkt). Die Härte-Logik darunter
+/// ist **unverändert**: der Scope entscheidet nur, *welche* Punkte gestaffelt werden, nie *wie*.
+///
 /// The hard-block set is decided by the reused [`decide_block`] core (#49) at the given `art`, so
 /// a Prototyp surfaces only its „blockiert überall" Aufgaben as hard, while a Freigabe surfaces
 /// every open Aufgabe. The Waisen/Pflicht weicher Block and the Stale Warnung do not depend on the
 /// Art (they are technical completeness, not Strenge).
-pub fn decide_gate(inputs: &GateInputs, art: RevisionArt) -> GateVerdict {
-    let block: BlockDecision = decide_block(&inputs.tasks, art);
+pub fn decide_gate(inputs: &GateInputs, art: RevisionArt, scope: &Scope) -> GateVerdict {
+    // Scope-Filter zuerst (E51b): nur die Aufgaben des Bereichs gehen in den #49-Kern, damit eine
+    // out-of-scope blockierende Aufgabe gar nicht erst als harter Block auftaucht. Die Strenge-/
+    // Härte-Logik darunter bleibt unberührt.
+    let scoped_tasks: Vec<Task> = inputs
+        .tasks
+        .iter()
+        .filter(|t| task_in_scope(t, scope))
+        .cloned()
+        .collect();
+    let block: BlockDecision = decide_block(&scoped_tasks, art);
 
     let mut punkte: Vec<OffenerPunkt> = Vec::new();
 
     // Harter Block: the open Aufgaben that block at this Art (decided by the #49 core, in its
     // input order). Name each with its title for the row + its three Auswege.
     for id in &block.blocking_task_ids {
-        let label = inputs
-            .tasks
+        let label = scoped_tasks
             .iter()
             .find(|t| &t.id == id)
             .map(|t| t.title.clone())
@@ -208,7 +306,8 @@ pub fn decide_gate(inputs: &GateInputs, art: RevisionArt) -> GateVerdict {
     }
 
     // Weicher Block: Waisen, then fehlende Pflicht-Artefakte. Overridable by a logged Begründung.
-    for pfad in &inputs.waisen {
+    // Eine Waise trägt einen Pfad → wird auf den Scope gefiltert (E51b).
+    for pfad in inputs.waisen.iter().filter(|p| scope.contains_path(p)) {
         punkte.push(OffenerPunkt {
             haerte: Haerte::Weich,
             art: Punktart::Waise,
@@ -216,7 +315,11 @@ pub fn decide_gate(inputs: &GateInputs, art: RevisionArt) -> GateVerdict {
             label: pfad.clone(),
         });
     }
+    // Fehlende Pflicht: label-only ⇒ produkt-weit, bleibt in jedem Scope (E51b).
     for pflicht in &inputs.fehlende_pflicht {
+        if !scope.keeps_product_wide() {
+            continue;
+        }
         punkte.push(OffenerPunkt {
             haerte: Haerte::Weich,
             art: Punktart::FehlendePflicht,
@@ -225,8 +328,9 @@ pub fn decide_gate(inputs: &GateInputs, art: RevisionArt) -> GateVerdict {
         });
     }
 
-    // Warnung: the Stale-Kanten. Visible, never block.
-    for w in &inputs.stale {
+    // Warnung: the Stale-Kanten. Visible, never block. Each carries the derived path → auf den
+    // Scope gefiltert (E51b).
+    for w in inputs.stale.iter().filter(|w| scope.contains_path(&w.derived)) {
         punkte.push(OffenerPunkt {
             haerte: Haerte::Warnung,
             art: Punktart::StaleKante,
@@ -287,6 +391,16 @@ mod tests {
     fn open_aufgabe(id: &str, title: &str) -> Task {
         task(id, title, TaskKind::Aufgabe, TaskStatus::Offen, false)
     }
+    /// Eine offene Aufgabe, an einen Arbeitsbereich (Heimat-Pfad) gehängt — der Scope-Bezug (E51b).
+    fn open_aufgabe_at(id: &str, title: &str, arbeitsbereich: &str) -> Task {
+        let mut t = open_aufgabe(id, title);
+        t.link = Some(TaskLink::Arbeitsbereich(arbeitsbereich.to_string()));
+        t
+    }
+    /// Der **leere** Scope: kein Filter, ganzes Produkt im Blick (bisheriges Verhalten).
+    fn whole() -> Scope {
+        Scope::default()
+    }
     fn stale(derived: &str) -> StaleWarning {
         StaleWarning {
             derived: derived.to_string(),
@@ -344,7 +458,7 @@ mod tests {
                 fehlende_pflicht: vec![],
                 fremd_warnung: None,
             };
-            let v = decide_gate(&inputs, RevisionArt::Freigabe);
+            let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
             assert_eq!(
                 v.knopf, *expect,
                 "hart={hart} weich={weich} warn={warn} → {expect:?}"
@@ -374,7 +488,7 @@ mod tests {
             stale: vec![stale("layout/board.kicad_pcb")],
             fremd_warnung: None,
         };
-        let v = decide_gate(&inputs, RevisionArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
 
         let order: Vec<(Haerte, &str)> = v
             .punkte
@@ -408,7 +522,7 @@ mod tests {
             waisen: vec!["verirrt.csv".to_string()],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, RevisionArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
         assert!(v.harter_block);
         assert!(
             !v.begruendung_noetig,
@@ -427,7 +541,7 @@ mod tests {
             waisen: vec!["fertigung/verirrt.csv".to_string()],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, RevisionArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
         assert_eq!(v.knopf, KnopfZustand::TrotzdemFreigeben);
         assert!(v.begruendung_noetig);
         assert!(!v.harter_block);
@@ -444,7 +558,7 @@ mod tests {
             stale: vec![stale("layout/board.kicad_pcb")],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, RevisionArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
         assert_eq!(v.knopf, KnopfZustand::Taggen);
         assert!(
             v.is_clean(),
@@ -468,6 +582,7 @@ mod tests {
                 ..Default::default()
             },
             RevisionArt::Prototyp,
+            &whole(),
         );
         assert_eq!(
             p.knopf,
@@ -482,6 +597,7 @@ mod tests {
                 ..Default::default()
             },
             RevisionArt::Freigabe,
+            &whole(),
         );
         assert_eq!(f.knopf, KnopfZustand::GesperrtDurchAufgabe);
 
@@ -499,6 +615,7 @@ mod tests {
                 ..Default::default()
             },
             RevisionArt::Prototyp,
+            &whole(),
         );
         assert_eq!(pu.knopf, KnopfZustand::GesperrtDurchAufgabe);
     }
@@ -516,7 +633,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        let v = decide_gate(&inputs, RevisionArt::Freigabe);
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
         assert_eq!(v.knopf, KnopfZustand::Taggen, "a Hinweis never blocks");
         assert!(v.punkte.is_empty());
     }
@@ -537,6 +654,7 @@ mod tests {
                 ..Default::default()
             },
             RevisionArt::Freigabe,
+            &whole(),
         );
         assert_eq!(clean.knopf, KnopfZustand::Taggen);
         assert_eq!(clean.fremd_warnung, Some(warn.clone()));
@@ -550,6 +668,7 @@ mod tests {
                 ..Default::default()
             },
             RevisionArt::Freigabe,
+            &whole(),
         );
         assert_eq!(held.knopf, KnopfZustand::GesperrtDurchAufgabe);
         assert_eq!(held.hard_blocking_task_ids(), vec!["alex-task"]);
@@ -561,7 +680,7 @@ mod tests {
     #[test]
     fn empty_is_clean_and_decision_is_deterministic() {
         let empty = GateInputs::default();
-        let v = decide_gate(&empty, RevisionArt::Freigabe);
+        let v = decide_gate(&empty, RevisionArt::Freigabe, &whole());
         assert!(v.is_clean());
         assert!(v.punkte.is_empty());
         assert!(v.fremd_warnung.is_none());
@@ -573,8 +692,141 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            decide_gate(&inputs, RevisionArt::Freigabe),
-            decide_gate(&inputs, RevisionArt::Freigabe)
+            decide_gate(&inputs, RevisionArt::Freigabe, &whole()),
+            decide_gate(&inputs, RevisionArt::Freigabe, &whole())
         );
+    }
+
+    /// **E51b Scope-Filter — out-of-scope fällt heraus, in-scope bleibt hart/weich** (Issue #138):
+    /// das E19-Beispiel-Gemenge über zwei Bereiche. Eine Freigabe von `elektronik` staffelt **nur**
+    /// die Punkte unter `elektronik/` — die `firmware`-WIP (eine offene blockierende Aufgabe und eine
+    /// firmware-Waise) fällt aus dem Urteil und hält die Freigabe nicht als Geisel. Die Härte-Logik
+    /// darunter ist unverändert: die in-scope-Aufgabe ist weiter ein **harter** Block, die in-scope-
+    /// Waise weiter **weich**, die in-scope-Stale-Kante weiter eine **Warnung**.
+    #[test]
+    fn scope_drops_out_of_scope_points_and_keeps_in_scope_hardness() {
+        let inputs = GateInputs {
+            tasks: vec![
+                // in scope (elektronik) → harter Block …
+                open_aufgabe_at("e-hart", "Footprint Q3 prüfen", "elektronik"),
+                // … out of scope (firmware) → fällt heraus, blockiert die elektronik-Freigabe nicht.
+                open_aufgabe_at("f-hart", "Bootloader fixen", "firmware"),
+            ],
+            waisen: vec![
+                "elektronik/verirrt.csv".to_string(), // in scope → weich
+                "firmware/build/stray.bin".to_string(), // out of scope → fällt heraus
+            ],
+            stale: vec![
+                stale("elektronik/board.kicad_pcb"), // in scope → Warnung
+                stale("firmware/app.elf"),           // out of scope → fällt heraus
+            ],
+            ..Default::default()
+        };
+
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &Scope::heimat("elektronik"));
+
+        // Nur die drei elektronik-Punkte bleiben, härtestes zuerst — die firmware-Punkte sind weg.
+        let order: Vec<(Haerte, &str)> = v
+            .punkte
+            .iter()
+            .map(|p| (p.haerte, p.ref_id.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (Haerte::Hart, "e-hart"),
+                (Haerte::Weich, "elektronik/verirrt.csv"),
+                (Haerte::Warnung, "elektronik/board.kicad_pcb"),
+            ],
+            "nur in-scope-Punkte, Härte-Logik unverändert"
+        );
+        // Die in-scope-Aufgabe ist weiter ein harter Block; die firmware-Aufgabe gerade nicht.
+        assert_eq!(v.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert_eq!(v.hard_blocking_task_ids(), vec!["e-hart"]);
+    }
+
+    /// **Aus Sicht der Firmware-Freigabe** dreht sich das Bild um (Issue #138): derselbe Eingabe-
+    /// schnappschuss, aber Scope = `firmware` → nur die firmware-Aufgabe blockiert, die elektronik-
+    /// Punkte fallen heraus. Jeder Bereich reift für sich.
+    #[test]
+    fn scope_is_per_heimat_independent() {
+        let inputs = GateInputs {
+            tasks: vec![
+                open_aufgabe_at("e-hart", "Footprint Q3 prüfen", "elektronik"),
+                open_aufgabe_at("f-hart", "Bootloader fixen", "firmware"),
+            ],
+            waisen: vec!["elektronik/verirrt.csv".to_string()],
+            ..Default::default()
+        };
+
+        let f = decide_gate(&inputs, RevisionArt::Freigabe, &Scope::heimat("firmware"));
+        assert_eq!(f.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert_eq!(
+            f.hard_blocking_task_ids(),
+            vec!["f-hart"],
+            "nur die firmware-Aufgabe hält die firmware-Freigabe"
+        );
+        // Die elektronik-Waise gehört nicht zu firmware → kein weicher Block daraus.
+        assert!(
+            f.punkte.iter().all(|p| p.art != Punktart::Waise),
+            "out-of-scope-Waise fällt heraus"
+        );
+    }
+
+    /// **Segmentgrenze**: ein Geschwister-Ordner mit gemeinsamem Präfix (`elektronik-alt/`) liegt
+    /// **nicht** im Scope von `elektronik` — `elektro` „passt" nicht in `elektronik`.
+    #[test]
+    fn scope_respects_segment_boundaries() {
+        let inputs = GateInputs {
+            waisen: vec![
+                "elektronik/x.csv".to_string(),      // echt in scope
+                "elektronik-alt/x.csv".to_string(),  // nur Präfix-Kollision → draußen
+            ],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &Scope::heimat("elektronik"));
+        let refs: Vec<&str> = v.punkte.iter().map(|p| p.ref_id.as_str()).collect();
+        assert_eq!(refs, vec!["elektronik/x.csv"], "nur das echte Kind, nicht der Geschwisterordner");
+    }
+
+    /// **Produkt-weite Punkte bleiben bereichsübergreifend** (Issue #138): eine Aufgabe am Produkt
+    /// (kein Heimat-Pfad) und ein label-only Pflicht-Eintrag gehören keinem Bereich allein — sie
+    /// bleiben in **jedem** Scope. Eine produkt-weite blockierende Aufgabe hält darum auch eine
+    /// Baustein-Freigabe.
+    #[test]
+    fn product_wide_points_stay_in_every_scope() {
+        let mut produktweit = open_aufgabe("p-hart", "Konformitätserklärung");
+        produktweit.link = Some(TaskLink::Produkt);
+        let inputs = GateInputs {
+            tasks: vec![produktweit],
+            fehlende_pflicht: vec!["Testprotokoll".to_string()],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &Scope::heimat("elektronik"));
+        assert_eq!(
+            v.hard_blocking_task_ids(),
+            vec!["p-hart"],
+            "eine produkt-weite Aufgabe blockiert jeden Bereich"
+        );
+        assert!(
+            v.punkte.iter().any(|p| p.art == Punktart::FehlendePflicht),
+            "ein label-only Pflicht-Punkt bleibt bereichsübergreifend"
+        );
+    }
+
+    /// **Der leere Scope filtert nicht** (E51b): das ganze Produkt bleibt im Blick — derselbe
+    /// Verdikt wie vor der Scope-Verschärfung (Rückwärtskompatibilität für den produkt-weiten
+    /// Aufrufer und den Degradationspfad).
+    #[test]
+    fn empty_scope_sees_the_whole_product() {
+        let inputs = GateInputs {
+            tasks: vec![open_aufgabe_at("f-hart", "Bootloader fixen", "firmware")],
+            waisen: vec!["mechanik/verirrt.csv".to_string()],
+            stale: vec![stale("elektronik/board.kicad_pcb")],
+            ..Default::default()
+        };
+        let v = decide_gate(&inputs, RevisionArt::Freigabe, &whole());
+        assert_eq!(v.punkte.len(), 3, "ein leerer Scope lässt alle Bereiche durch");
+        assert_eq!(v.knopf, KnopfZustand::GesperrtDurchAufgabe);
     }
 }
