@@ -29,6 +29,7 @@ export function emptyBaustein(): BausteinVoll {
     globs: [],
     ignore: [],
     lfs: [],
+    rekonstruierbar: [],
     oeffnen: "auto" as Oeffnen,
     startaufgaben: [],
     default_kanten: [],
@@ -58,7 +59,10 @@ export function duplicateDraft(b: Baustein): BausteinVoll {
 }
 
 export type FieldErrors = Partial<
-  Record<"name" | "id" | "heimat" | "globs" | "default_kanten" | "paar_default_kanten", string>
+  Record<
+    "name" | "id" | "heimat" | "globs" | "rekonstruierbar" | "default_kanten" | "paar_default_kanten",
+    string
+  >
 >;
 
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -84,6 +88,17 @@ export function validate(
 
   const liveGlobs = b.globs.map((g) => g.trim()).filter(Boolean);
   if (liveGlobs.length === 0) errors.globs = "Mindestens ein Artefakt-Muster";
+
+  // Rekonstruierbar (E50b): jede Regel braucht ein Framework-Muster UND ein gepinntes Manifest —
+  // ein Muster ohne Manifest wäre nur ein Ignore (der ehrliche „Quelle + Manifest"-Vertrag verlangt
+  // das rekonstruierende Rezept). Spiegelt den reinen Rust-Kern `validate_baustein` (Autorität).
+  for (const k of b.rekonstruierbar ?? []) {
+    const manifestLive = (k.manifest ?? []).map((m) => m.trim()).filter(Boolean);
+    if (!k.framework.trim() || manifestLive.length === 0) {
+      errors.rekonstruierbar = "Rekonstruierbar braucht ein Framework-Muster und ein gepinntes Manifest";
+      break;
+    }
+  }
 
   for (const k of b.default_kanten ?? []) {
     if (!k.derived_glob.trim() || !k.source_glob.trim()) {

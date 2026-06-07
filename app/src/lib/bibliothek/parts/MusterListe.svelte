@@ -1,20 +1,28 @@
 <script lang="ts">
-  // Bibliothek-Editor (Issue #108) — a flat (unordered) list of patterns: used for Ignore + LFS muster.
+  // Bibliothek-Editor (Issue #108) — a flat (unordered) list of patterns: used for Ignore + LFS muster
+  // und (Issue #137, E50b) für das gepinnte Manifest je Rekonstruierbar-Regel. Zwei Wege, die Liste
+  // zurückzugeben: `bind:items` (Ignore/LFS, direkt am draft) ODER ein `onItems`-Callback, wenn die
+  // Liste in einem verschachtelten Objekt sitzt (Manifest in einer Regel) — dort greift bind: nicht sauber.
   let {
     items = $bindable([]),
     placeholder = "*.endung",
-  }: { items: string[]; placeholder?: string } = $props();
+    onItems,
+  }: { items: string[]; placeholder?: string; onItems?: (items: string[]) => void } = $props();
 
+  function commit(next: string[]) {
+    items = next;
+    onItems?.(next);
+  }
   function add() {
-    items = [...items, ""];
+    commit([...items, ""]);
   }
   function remove(i: number) {
-    items = items.filter((_, j) => j !== i);
+    commit(items.filter((_, j) => j !== i));
   }
   function set(i: number, v: string) {
     const next = items.slice();
     next[i] = v;
-    items = next;
+    commit(next);
   }
 </script>
 

@@ -17,6 +17,7 @@
   import { validate, emptyBaustein, toKebab, type BausteinVoll } from "./validate";
   import GlobListe from "./parts/GlobListe.svelte";
   import MusterListe from "./parts/MusterListe.svelte";
+  import RekonstruierbarEditor from "./parts/RekonstruierbarEditor.svelte";
   import OeffnenWahl from "./parts/OeffnenWahl.svelte";
   import StartaufgabenEditor from "./parts/StartaufgabenEditor.svelte";
   import KantenEditor from "./parts/KantenEditor.svelte";
@@ -111,7 +112,7 @@
       <button class="mtab" class:on={mode === m.k} onclick={() => (mode = m.k)}>
         <span class="label">{m.label}</span>
         {#if m.k === "grund" && (check.errors.name || check.errors.id || check.errors.heimat)}<span class="dot"></span>{/if}
-        {#if m.k === "artefakte" && check.errors.globs}<span class="dot"></span>{/if}
+        {#if m.k === "artefakte" && (check.errors.globs || check.errors.rekonstruierbar)}<span class="dot"></span>{/if}
         {#if m.k === "kanten" && (check.errors.default_kanten || check.errors.paar_default_kanten)}<span class="dot"></span>{/if}
       </button>
     {/each}
@@ -162,6 +163,14 @@
             <span class="label fl">Große Dateien</span>
             <MusterListe bind:items={draft.lfs} />
           </div>
+        </div>
+        <div class="fld">
+          <span class="label fl">
+            Rekonstruierbar
+            <span class="sub">verfolgt Quelle + gepinntes Manifest, nicht die rekonstruierbaren Framework-Dateien</span>
+          </span>
+          <RekonstruierbarEditor bind:items={draft.rekonstruierbar} />
+          {#if check.errors.rekonstruierbar}<span class="err label">{check.errors.rekonstruierbar}</span>{/if}
         </div>
       </div>
     {:else if mode === "aufgaben"}
