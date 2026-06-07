@@ -9,27 +9,54 @@
 //! missing/empty/corrupt file yields an empty list — never an error — so the list view degrades
 //! to „keine Aufgaben" rather than breaking the shell.
 
-use crate::plmstore::PlmDocument;
+use crate::plmstore::{self, PlmCollection, PLM_DIR};
 use crate::tasks::{add_task, edit_task, remove_task, set_status, NewTask, Task, TaskEdit, TaskStatus};
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// File that holds the product's Aufgaben & Hinweise, inside `_plm/` (ADR 0002).
+/// Legacy single-array file of the product's Aufgaben & Hinweise, inside `_plm/` (ADR 0002).
+/// Now migrated to one file per task under `_plm/aufgaben/` (E54, Issue #132); kept for migration.
 pub const TASKS_FILE: &str = "aufgaben.json";
+/// Per-entry directory holding one JSON file per task, keyed by task id (E54).
+pub const TASKS_DIR: &str = "aufgaben";
 
-/// The `_plm/aufgaben.json` document — path, degradation and pretty/atomic write live in the deep
-/// [`PlmDocument`] layer; this store mints ids, reads the clock and feeds the pure `tasks` core.
-const TASKS: PlmDocument<Vec<Task>> = PlmDocument::new(TASKS_FILE);
+/// The Aufgaben collection — **one ID-named file per task** under `_plm/aufgaben/` (E54). Path,
+/// per-file degradation and the atomic pretty write live in the deep [`PlmCollection`] layer; this
+/// store mints ids, reads the clock and feeds the pure `tasks` core. Keyed by [`Task::id`], so two
+/// newly created tasks never share a file.
+///
+/// The legacy `_plm/aufgaben.json` was a **`Vec<Task>` array**, not the `key → Task` map this
+/// collection persists, so its migration is done by hand in [`read_tasks`] (reading the array
+/// directly) rather than through the collection's built-in (map-shaped) legacy path.
+const TASKS: PlmCollection<Task> = PlmCollection::new(TASKS_DIR, TASKS_FILE);
 
-/// Read the persisted task list for a product. A missing/empty/corrupt file means **zero
-/// tasks** (opt-in) — not an error.
-pub fn read_tasks(root: &Path) -> Vec<Task> {
-    TASKS.read(root)
+/// Absolute path of the legacy `_plm/aufgaben.json` single-array file for a product `root`.
+fn array_tasks_path(root: &Path) -> PathBuf {
+    root.join(PLM_DIR).join(TASKS_FILE)
 }
 
-/// Persist the task list (pretty + atomic, creating `_plm/` as needed).
+/// Read the persisted task list for a product. A missing/empty/corrupt entry means **zero
+/// tasks** (opt-in) — not an error; a single mangled task file is skipped, not fatal.
+///
+/// The on-disk store is a `task-id → Task` map (one file each); the list is its values, ordered by
+/// id. Ids are time-based ([`mint_id`]), so id order is creation order — the view is stable.
+/// Migration (E54): when the per-entry directory is **absent**, the legacy `_plm/aufgaben.json`
+/// array is read instead so existing products are not silently emptied. The next write lays the
+/// tasks out one file per task.
+pub fn read_tasks(root: &Path) -> Vec<Task> {
+    if TASKS.dir_path(root).is_dir() {
+        TASKS.read(root).into_values().collect()
+    } else {
+        plmstore::read_or_default::<Vec<Task>>(&array_tasks_path(root))
+    }
+}
+
+/// Persist the task list as one file per task (pretty + atomic, creating `_plm/aufgaben/` as needed).
 fn write_tasks(root: &Path, tasks: &[Task]) -> std::io::Result<()> {
-    TASKS.write(root, &tasks.to_vec())
+    let map: BTreeMap<String, Task> =
+        tasks.iter().map(|t| (t.id.clone(), t.clone())).collect();
+    TASKS.write(root, &map)
 }
 
 /// A machine timestamp `YYYY-MM-DDTHH:MM:SSZ` for `now` — reused from the auto-commit layer so
@@ -104,6 +131,20 @@ mod tests {
         dir
     }
 
+    /// A fully-formed [`Task`] for seeding the legacy array file (id is overridden by the caller).
+    fn tasks_seed(title: &str) -> Task {
+        Task {
+            id: String::new(),
+            title: title.to_string(),
+            kind: TaskKind::Aufgabe,
+            status: TaskStatus::Offen,
+            link: None,
+            due: None,
+            blocks_everywhere: false,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
     fn new(title: &str, kind: TaskKind, link: Option<TaskLink>) -> NewTask {
         NewTask {
             title: title.to_string(),
@@ -124,17 +165,60 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_zero_tasks() {
         let dir = tmp();
-        fs::create_dir_all(TASKS.path(&dir).parent().unwrap()).unwrap();
-        fs::write(TASKS.path(&dir), "{ not json ]").unwrap();
+        // a single hand-mangled entry file is skipped per-file, never fatal.
+        let path = TASKS.entry_path(&dir, "t-corrupt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{ not json ]").unwrap();
         assert!(read_tasks(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn writes_to_the_new_plm_location() {
+    fn writes_one_file_per_task_under_the_plm_dir() {
         let dir = tmp();
         create_task(&dir, new("x", TaskKind::Aufgabe, None)).unwrap();
-        assert!(TASKS.path(&dir).is_file(), "tasks live in _plm/aufgaben.json");
+        let id = read_tasks(&dir)[0].id.clone();
+        assert!(TASKS.entry_path(&dir, &id).is_file(), "each task is its own file under _plm/aufgaben/");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// E54: two newly created tasks land in two separate files — no shared line to merge-conflict on.
+    #[test]
+    fn two_created_tasks_land_in_separate_files() {
+        let dir = tmp();
+        create_task(&dir, new("a", TaskKind::Aufgabe, None)).unwrap();
+        create_task(&dir, new("b", TaskKind::Hinweis, None)).unwrap();
+        let tasks = read_tasks(&dir);
+        let p0 = TASKS.entry_path(&dir, &tasks[0].id);
+        let p1 = TASKS.entry_path(&dir, &tasks[1].id);
+        assert_ne!(p0, p1, "distinct ids -> distinct files");
+        assert!(p0.is_file() && p1.is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Migration: a product that only has the legacy `_plm/aufgaben.json` array file must keep its
+    /// tasks (not be silently emptied); the next write lays them out one file per task.
+    #[test]
+    fn migrates_legacy_aufgaben_array_file() {
+        let dir = tmp();
+        // seed the old single-array file the way pre-E54 Werkbank wrote it.
+        let legacy = vec![
+            Task { id: "t-1".to_string(), ..tasks_seed("Alt-Aufgabe") },
+            Task { id: "t-2".to_string(), ..tasks_seed("Alt-Hinweis") },
+        ];
+        let path = dir.join("_plm").join(TASKS_FILE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        // read folds the legacy array in.
+        let read = read_tasks(&dir);
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].title, "Alt-Aufgabe");
+
+        // the next mutation materialises the per-entry directory without losing the old tasks.
+        create_task(&dir, new("Neu", TaskKind::Aufgabe, None)).unwrap();
+        assert!(TASKS.entry_path(&dir, "t-1").is_file(), "legacy task written out per file");
+        assert_eq!(read_tasks(&dir).len(), 3);
         let _ = fs::remove_dir_all(&dir);
     }
 
