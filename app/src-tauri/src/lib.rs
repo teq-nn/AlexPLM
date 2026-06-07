@@ -7,6 +7,8 @@ pub mod autolock;
 pub mod baustein;
 pub mod bibliothek;
 pub mod classifier;
+pub mod compose;
+pub mod composeglue;
 pub mod credentials;
 pub mod defaultkanten;
 pub mod edges;
