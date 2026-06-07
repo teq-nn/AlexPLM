@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod defaultkanten;
 pub mod edges;
 pub mod edgestore;
+pub mod exportglue;
 pub mod feedback;
 pub mod forgejo;
 pub mod freigabegate;
@@ -80,6 +81,7 @@ use tasks::{NewTask, Task, TaskEdit, TaskKind, TaskLink, TaskStatus};
 use warden::{Checkpoint, WardenAction};
 use werkbank::{read_werkbank, WerkbankView};
 use worktreeglue::{als_ordner_oeffnen, von_hier_abzweigen, zurueckwerfen, GeoeffneterOrdner};
+use exportglue::{export_einfache_ordner, ExportErgebnis};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -333,6 +335,31 @@ async fn knoten_zurueckwerfen(path: String, stand_id: String) -> Result<VersionG
             return Err(format!("Kein Ordner: {path}"));
         }
         zurueckwerfen(root, &stand_id, SystemTime::now()).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// **Export als einfache Ordner** (Issue #134, E56) — der Notausgang. Materialisiert den
+/// Jetzt-Zustand und jeden markierten Stand als blanke Ordner auf der Platte, die **ohne**
+/// `_plm`/git-Voodoo lesbar sind (kein `.git`, kein Store). Rein lokal: liest aus dem lokalen git,
+/// schreibt mit git-Plumbing heraus, fasst **nie** das Netz an — funktioniert also auch, wenn der
+/// Server/Backend klemmt. `ziel == None` schreibt in den Fallback-Ort `<produkt>/.plm-export`.
+/// Gibt den Wurzel-Ordner + je einen Eintrag pro Stand zurück, damit die UI ihn sofort öffnen kann.
+#[tauri::command]
+#[specta::specta]
+async fn export_plain_folders(
+    path: String,
+    target: Option<String>,
+) -> Result<ExportErgebnis, String> {
+    // Kopiert/extrahiert ggf. viele Dateien (ls-files-Walk + checkout-index je Stand); off the main
+    // thread wie die übrigen git-Lese-/Schreibpfade, damit ein großes Produkt die WebView nie einfriert.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        let ziel = target.as_deref().map(Path::new);
+        export_einfache_ordner(root, ziel).map_err(|e| e.to_string())
     })
     .await
 }
@@ -1588,6 +1615,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         knoten_als_ordner,
         knoten_abzweigen,
         knoten_zurueckwerfen,
+        export_plain_folders,
         read_edges,
         add_edge,
         remove_edge,

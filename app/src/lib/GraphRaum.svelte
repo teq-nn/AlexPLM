@@ -18,6 +18,8 @@
     onOpenAsFolder,
     onBranchFrom,
     onThrowBack,
+    onExportPlain,
+    exporting = false,
   }: {
     graph: VersionGraph | null;
     onPromote: (node: StandNode, version: string, notes: string) => Promise<void>;
@@ -28,6 +30,11 @@
     onBranchFrom: (node: StandNode, branch: string) => Promise<void>;
     /** „Zurückwerfen" (destructive, behind the black gate): the SAFE restore. */
     onThrowBack: (node: StandNode) => Promise<void>;
+    /** „Export als einfache Ordner" (Issue #134, E56): der Notausgang — Jetzt-Zustand + markierte
+     *  Stände als blanke Ordner auf die Platte, rein lokal (auch wenn der Server klemmt). */
+    onExportPlain: () => Promise<void>;
+    /** Whether the export is currently running (disables the key + shows a busy label). */
+    exporting?: boolean;
   } = $props();
 
   // The two pure display filters (E45). Default = everything visible; they only hide, never write.
@@ -154,6 +161,21 @@
     >
       <span class="t-led" aria-hidden="true"></span>
       <span class="t-text label">nur Revisionen</span>
+    </button>
+
+    <!-- Notausgang (Issue #134, E56): „Export als einfache Ordner" — der kalte, jederzeit
+         erreichbare Hebel, der den Jetzt-Zustand und die markierten Stände als blanke Ordner auf
+         die Platte schreibt (ohne _plm/git-Voodoo lesbar). Rein lokal: funktioniert selbst dann,
+         wenn der Server/Backend klemmt. Ruhig am rechten Rand der Instrument-Leiste, kein Alarm. -->
+    <button
+      type="button"
+      class="export-key"
+      onclick={onExportPlain}
+      disabled={exporting}
+      title="Notausgang: Jetzt-Zustand und alle markierten Stände als einfache Ordner auf die Platte schreiben — rein lokal, auch wenn der Server klemmt"
+    >
+      <span class="glyph" aria-hidden="true">⤓</span>
+      <span class="label">{exporting ? "exportiere …" : "Export als einfache Ordner"}</span>
     </button>
   </div>
 
@@ -336,6 +358,48 @@
   }
   .toggle.on .t-text {
     color: var(--screen-fg);
+  }
+
+  /* Notausgang-Taste: ruhig am rechten Rand (auto-Margin schiebt sie ans Ende der Leiste). Ein
+     seated Key in derselben dunklen Sprache wie die Filter — kein Alarm-Orange, der Notausgang ist
+     sachlich, nicht panisch. */
+  .export-key {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.03);
+    color: #8c8881;
+    cursor: pointer;
+    transition:
+      background var(--dur) var(--ease),
+      border-color var(--dur) var(--ease),
+      color var(--dur) var(--ease);
+  }
+  .export-key:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--screen-fg);
+    border-color: rgba(232, 230, 225, 0.3);
+  }
+  .export-key:focus-visible {
+    outline: none;
+    border-color: rgba(232, 230, 225, 0.4);
+  }
+  .export-key:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+  .export-key .glyph {
+    font-size: 13px;
+    line-height: 1;
+  }
+  .export-key .label {
+    font-size: 10px;
+    text-transform: none;
+    letter-spacing: 0.02em;
   }
 
   .tree-wrap {

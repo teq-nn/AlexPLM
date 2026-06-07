@@ -69,6 +69,15 @@ export const commands = {
 	 */
 	knotenZurueckwerfen: (path: string, standId: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("knoten_zurueckwerfen", { path, standId })),
 	/**
+	 *  **Export als einfache Ordner** (Issue #134, E56) — der Notausgang. Materialisiert den
+	 *  Jetzt-Zustand und jeden markierten Stand als blanke Ordner auf der Platte, die **ohne**
+	 *  `_plm`/git-Voodoo lesbar sind (kein `.git`, kein Store). Rein lokal: liest aus dem lokalen git,
+	 *  schreibt mit git-Plumbing heraus, fasst **nie** das Netz an — funktioniert also auch, wenn der
+	 *  Server/Backend klemmt. `ziel == None` schreibt in den Fallback-Ort `<produkt>/.plm-export`.
+	 *  Gibt den Wurzel-Ordner + je einen Eintrag pro Stand zurück, damit die UI ihn sofort öffnen kann.
+	 */
+	exportPlainFolders: (path: string, target: string | null) => typedError<ExportErgebnis, string>(__TAURI_INVOKE("export_plain_folders", { path, target })),
+	/**
 	 *  Read the product's manual „abgeleitet von" edges and their Stale-Warnungen (Issue #10).
 	 *  Edges are opt-in: a product with no edge file has zero edges and no warnings (E40). Pure
 	 *  read — the edges + artifact timestamps are gathered then judged by the pure core.
@@ -680,6 +689,28 @@ export type EdgeView = {
 	 *  passende Baustein-Paarung im Stack liegt oder alle bereits bestätigt sind.
 	 */
 	vorschlaege?: KantenVorschlag[],
+};
+
+/**
+ *  Das Ergebnis von „Export als einfache Ordner": der Wurzel-Ordner des Exports plus je ein
+ *  Eintrag pro herausgeschriebenem Stand (Jetzt-Zustand zuerst, dann die markierten Stände).
+ */
+export type ExportErgebnis = {
+	/**  Absoluter Pfad des Wurzel-Ordners, in dem alle Stände als Unterordner liegen. */
+	wurzel: string,
+	/**  Die einzelnen Stände (Jetzt-Zustand + markierte Stände), in der Reihenfolge der Anlage. */
+	staende: ExportierterStand[],
+};
+
+/**
+ *  Ein einzelner materialisierter Stand des Exports: sein Name (Jetzt-Zustand oder Versions-Marke)
+ *  und der blanke Ordner-Pfad (Vorwärts-Schrägstriche), den die UI dem OS zum Öffnen übergibt.
+ */
+export type ExportierterStand = {
+	/**  Menschenlesbare Marke des Stands: `"Jetzt-Zustand"` oder das Versions-Etikett (z. B. `v1.0`). */
+	marke: string,
+	/**  Absoluter Pfad des blanken Ordners dieses Stands, in Vorwärts-Schrägstrich-Anzeige. */
+	pfad: string,
 };
 
 /**  A foreign lock as sent to the UI (serializable view of [`LockInfo`] plus the ready tooltip). */
