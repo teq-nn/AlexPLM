@@ -69,7 +69,9 @@ use edgestore::{
 use freigabegate::GateVerdict;
 use freigabegateglue::{gate_for_art, gate_for_baustein};
 use zusammenstellung::ZusammenstellungsBericht;
-use zusammenstellungglue::{zusammenstellung_fuer_produkt, WahlEingabe};
+use zusammenstellungglue::{
+    seede_initiale_revisionen, zusammenstellung_fuer_produkt, GesaeterBaustein, WahlEingabe,
+};
 use graph::{RevisionArt, VersionGraph};
 use graphread::{
     promote_to_revision, read_graph, release_baustein_revision, toggle_revision_freigabe,
@@ -1714,6 +1716,31 @@ fn evaluate_zusammenstellung(
     Ok(zusammenstellung_fuer_produkt(root, &wahlen, &optionale_heimaten))
 }
 
+/// **Cold-Start: initiale Revisionen seeden** (Issue #142, E52b). Beim **allerersten** Produkt-
+/// Release trägt **kein** verpflichtender Baustein eine Revision — die erste Produkt-Revision wäre
+/// damit nie vollständig, ohne dass der Nutzer erst N Bausteine **manuell** freigibt. Dieser **eine**
+/// Akt sät stattdessen je Pflicht-Baustein **ohne** jeden freigegebenen Stand eine **initiale**
+/// Baustein-Revision aus dem **aktuellen Stand** (HEAD) — der dauerhafte `freigabe/<heimat>/<version>`-
+/// Tag (E51a). Danach trägt jeder Pflicht-Baustein einen Stand und die erste Produkt-Revision ist
+/// komponierbar (E52a). `version` ist die gemeinsame initiale Versionsmarke (z.B. `"v0.1"`);
+/// `optionale_heimaten` benennt die optionalen Bereiche (die nie gesät werden). Schon revidierte
+/// Bausteine bleiben unberührt — wen es zu säen gilt, entscheidet der reine Kern
+/// ([`zusammenstellung::kaltstart_seed_liste`]). Liefert die Liste der gesäten Bausteine; ein leeres
+/// Produkt / kein offener Pflicht-Bereich sät nichts (E22), nie ein Fehler.
+#[tauri::command]
+#[specta::specta]
+fn seed_cold_start(
+    path: String,
+    version: String,
+    optionale_heimaten: Vec<String>,
+) -> Result<Vec<GesaeterBaustein>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    seede_initiale_revisionen(root, &version, &optionale_heimaten).map_err(|e| e.to_string())
+}
+
 /// Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
 /// Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
 /// protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
@@ -1892,6 +1919,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         evaluate_freigabe_gate,
         evaluate_freigabe_gate_baustein,
         evaluate_zusammenstellung,
+        seed_cold_start,
         log_freigabe_begruendung,
         read_git_log,
         clear_git_log,
