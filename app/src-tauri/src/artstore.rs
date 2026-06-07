@@ -26,17 +26,18 @@
 //! Treu zur Degradations-Invariante (E22): fehlend/leer/kaputt ⇒ leerer Zustand, nie Fehler.
 
 use crate::graph::RevisionArt;
-use crate::plmstore::PlmDocument;
-use serde::{Deserialize, Serialize};
+use crate::plmstore::PlmCollection;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// File that holds the per-Heimat Revision-Art map, inside `_plm/` (ADR 0002).
+/// Legacy single-file location of the Revision-Art map, inside `_plm/` (ADR 0002). It carried either
+/// the **flache** produkt-globale `version → token`-Map (vor E51a) oder das Schema-2-Dokument mit
+/// Heimat-Achse (E51a). Beide Formen werden beim Lesen transparent in die per-Eintrag-Ablage unter
+/// `_plm/revisionen/` migriert (E54, Issue #132).
 pub const ART_FILE: &str = "revisionen.json";
-
-/// Aktuelle Schema-Version des `revisionen.json`-Dokuments (E51a). `1` war die alte flache,
-/// produkt-globale `version → token`-Map; `2` führt die **Heimat-Achse** ein.
-const SCHEMA_VERSION: u32 = 2;
+/// Per-entry directory holding one JSON file per Release-Pointer (E54). Jeder Eintrag ist ein
+/// `(Heimat, version)`-Paar; der Schlüssel kodiert beide Achsen kollisionsfrei (siehe [`entry_key`]).
+pub const ART_DIR: &str = "revisionen";
 
 /// Der **produkt-globale** Heimat-Scope (E51a). Bestehende, vor der Heimat-Achse geschriebene
 /// Arten landen bei der Migration hier, und ein Aufrufer ohne Baustein-Bezug (eine produkt-weite
@@ -44,71 +45,105 @@ const SCHEMA_VERSION: u32 = 2;
 /// darum ein stabiles, nie als echter Ordnername vorkommendes Sentinel.
 pub const GLOBAL_HEIMAT: &str = "*produkt*";
 
-/// Das `_plm/revisionen.json`-Dokument (Schema 2, E51a): pro **Heimat** eine version-label → Art-
-/// token-Map. `BTreeMap` hält die Schlüssel geordnet, damit die Datei stabil und diffbar bleibt.
-/// `schema` macht die Form selbstbeschreibend und künftige Migrationen erkennbar.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-struct RevisionenDoc {
-    /// Schema-Version dieses Dokuments. Fehlt sie (alte flache Form), migriert [`read_doc`].
-    #[serde(default)]
-    schema: u32,
-    /// Pro Heimat-Ordner eine `version-label → Art-token`-Map. Der produkt-globale Scope liegt
-    /// unter [`GLOBAL_HEIMAT`].
-    #[serde(default)]
-    heimaten: BTreeMap<String, BTreeMap<String, String>>,
+/// The Release-Pointer collection — **one ID-named file per recorded Revision-Art** (E54, Issue
+/// #132), unter `_plm/revisionen/`, mit Migration von der alten Einzeldatei `_plm/revisionen.json`.
+/// Der Eintragsschlüssel kodiert die **Heimat-Achse** (E51a, Issue #131) zusammen mit dem
+/// Versions-Label (siehe [`entry_key`]); der Payload ist das Art-token. Zwei auf zwei Seiten
+/// promotete `(Heimat, version)`-Paare landen in zwei Dateien, kollidieren im Merge also nie. Pfad,
+/// Per-Datei-Degradation und der atomare Pretty-Write leben in der tiefen [`PlmCollection`]-Schicht;
+/// dieser Store ist die Heimat-skopierte Art-Domäne darüber.
+const ART: PlmCollection<String> = PlmCollection::new(ART_DIR, ART_FILE);
+
+/// Encode a `(heimat, version)` pair into a single, **collision-free** collection key (E51a × E54).
+/// Längen-präfigiert (`<heimat-byte-len>|<heimat>|<version>`), damit weder ein `|` in der Heimat
+/// noch im Versions-Label zwei verschiedene Paare auf denselben Schlüssel — und damit dieselbe Datei
+/// — abbilden kann. [`PlmCollection`] escaped den Schlüssel zusätzlich für den Dateinamen, der
+/// In-Memory-Schlüssel hier ist aber schon für sich injektiv.
+fn entry_key(heimat: &str, version: &str) -> String {
+    format!("{}|{}|{}", heimat.len(), heimat, version)
 }
 
-/// Die rohe, **alte** flache Form (Schema 1): eine produkt-globale `version → token`-Map. Nur zum
-/// Erkennen+Migrieren bestehender Dateien gelesen, nie mehr geschrieben.
-type LegacyFlat = BTreeMap<String, String>;
+/// Inverse of [`entry_key`]: split a stored key back into `(heimat, version)`. A malformed key
+/// (hand-edited, falsche Länge) degradiert zu `None` und wird vom Aufrufer übersprungen — nie ein
+/// Fehler (E22).
+fn split_entry_key(key: &str) -> Option<(String, String)> {
+    let (len_str, rest) = key.split_once('|')?;
+    let n: usize = len_str.parse().ok()?;
+    if rest.len() < n {
+        return None;
+    }
+    let (heimat, tail) = rest.split_at(n);
+    let version = tail.strip_prefix('|')?;
+    Some((heimat.to_string(), version.to_string()))
+}
 
-/// Path, degradation and pretty/atomic write live in the deep [`PlmDocument`] layer; this store is
-/// the per-Heimat Art domain over it. Das Dokument wird als **roher** JSON-Wert gelesen, weil wir
-/// zwischen der neuen ([`RevisionenDoc`]) und der alten flachen ([`LegacyFlat`]) Form unterscheiden
-/// müssen — beides degradiert sauber zu „leer".
-const ART: PlmDocument<serde_json::Value> = PlmDocument::new(ART_FILE);
+/// In-memory domain shape (E51a): pro **Heimat** eine `version-label → Art-token`-Map. Wird aus der
+/// per-Eintrag-Ablage (und der migrierten Altdaten) zusammengesetzt und zurückgeschrieben.
+type Heimaten = BTreeMap<String, BTreeMap<String, String>>;
 
-/// Read the whole document, **migrating** an old flat map into the new Heimat-scoped shape. A
-/// missing/empty/corrupt file means an empty document (every tag then reads as the default
-/// Prototyp) — never an error (E22). Die alte flache Form (Schema 1) wird in den produkt-globalen
-/// Scope ([`GLOBAL_HEIMAT`]) gehoben, damit keine bereits aufgezeichnete Art verloren geht.
-fn read_doc(root: &Path) -> RevisionenDoc {
-    let raw = ART.read(root);
+/// The raw Schema-2 document the legacy single file may have carried (E51a). Nur zum
+/// Erkennen+Migrieren bestehender Dateien gelesen.
+#[derive(serde::Deserialize)]
+struct LegacyDoc {
+    #[serde(default)]
+    heimaten: Heimaten,
+}
+
+/// Read the whole `heimat → version → token` model. Liest zuerst die per-Eintrag-Ablage unter
+/// `_plm/revisionen/` (jede Datei ist ein `(Heimat, version)`-Eintrag) und faltet — falls diese
+/// **fehlt** — die alte Einzeldatei `_plm/revisionen.json` transparent ein (Migration, E54 × E51a):
+/// das **Schema-2-Dokument** (mit Heimat-Achse) wie auch die **alte flache** produkt-globale Map
+/// (in den [`GLOBAL_HEIMAT`]-Scope gehoben). Missing/leer/kaputt ⇒ leeres Modell, ein einzelner
+/// mangled Eintrag wird übersprungen — nie ein Fehler (E22).
+fn read_doc(root: &Path) -> Heimaten {
+    // 1) Per-Eintrag-Ablage vorhanden? Dann ist sie die Wahrheit (E54).
+    if ART.dir_path(root).is_dir() {
+        let mut heimaten: Heimaten = BTreeMap::new();
+        for (key, token) in ART.read(root) {
+            // Ein per Hand verkorkster Schlüssel wird übersprungen (Per-Datei-Degradation).
+            if let Some((heimat, version)) = split_entry_key(&key) {
+                heimaten.entry(heimat).or_default().insert(version, token);
+            }
+        }
+        return heimaten;
+    }
+    // 2) Keine Ablage ⇒ aus der alten Einzeldatei migrieren. Roh lesen, um zwischen dem
+    //    Schema-2-Dokument und der alten flachen Map zu unterscheiden — beides degradiert zu „leer".
+    let raw: serde_json::Value =
+        crate::plmstore::read_optional(&root.join(crate::plmstore::PLM_DIR).join(ART_FILE))
+            .unwrap_or(serde_json::Value::Null);
     if raw.is_null() {
-        // Fehlend/leer/kaputt ⇒ leeres Dokument (Degradation, nie Fehler).
-        return RevisionenDoc::default();
+        return BTreeMap::new();
     }
-    // 1) Neue Form: ein Objekt mit `heimaten`/`schema`. Serde-Default deckt fehlende Felder ab.
-    if let Ok(doc) = serde_json::from_value::<RevisionenDoc>(raw.clone()) {
-        // Ein altes flaches `{ "v1.0": "freigabe" }` deserialisiert ebenfalls (alle Felder
-        // defaulten zu leer), liefert aber ein leeres `heimaten` — erkennbar und ein Fall für die
-        // Migration unten. Nur wenn `heimaten` tatsächlich gefüllt ist, ist es die neue Form.
+    // 2a) Schema-2-Dokument mit gefüllter Heimat-Achse (E51a).
+    if let Ok(doc) = serde_json::from_value::<LegacyDoc>(raw.clone()) {
         if !doc.heimaten.is_empty() {
-            return doc;
+            return doc.heimaten;
         }
     }
-    // 2) Alte flache Form (Schema 1): in den produkt-globalen Scope migrieren.
-    if let Ok(flat) = serde_json::from_value::<LegacyFlat>(raw) {
-        if flat.is_empty() {
-            return RevisionenDoc::default();
+    // 2b) Alte flache `version → token`-Map: in den produkt-globalen Scope heben (E51a).
+    if let Ok(flat) = serde_json::from_value::<BTreeMap<String, String>>(raw) {
+        if !flat.is_empty() {
+            let mut heimaten: Heimaten = BTreeMap::new();
+            heimaten.insert(GLOBAL_HEIMAT.to_string(), flat);
+            return heimaten;
         }
-        let mut heimaten = BTreeMap::new();
-        heimaten.insert(GLOBAL_HEIMAT.to_string(), flat);
-        return RevisionenDoc {
-            schema: SCHEMA_VERSION,
-            heimaten,
-        };
     }
-    // 3) Unverständlich ⇒ leer (Degradation).
-    RevisionenDoc::default()
+    // 2c) Unverständlich/leer ⇒ leer (Degradation).
+    BTreeMap::new()
 }
 
-/// Persist the document (pretty + atomic, creating `_plm/` as needed), always at the current
-/// schema version so the on-disk form is self-describing.
-fn write_doc(root: &Path, mut doc: RevisionenDoc) -> std::io::Result<()> {
-    doc.schema = SCHEMA_VERSION;
-    let value = serde_json::to_value(&doc).map_err(std::io::Error::other)?;
-    ART.write(root, &value)
+/// Persist the whole `heimat → version → token` model as **one file per `(Heimat, version)`-Eintrag**
+/// unter `_plm/revisionen/` (pretty + atomic je Datei, E54). Die alte Einzeldatei bleibt als
+/// harmloses Sediment liegen.
+fn write_doc(root: &Path, heimaten: &Heimaten) -> std::io::Result<()> {
+    let mut map: BTreeMap<String, String> = BTreeMap::new();
+    for (heimat, versions) in heimaten {
+        for (version, token) in versions {
+            map.insert(entry_key(heimat, version), token.clone());
+        }
+    }
+    ART.write(root, &map)
 }
 
 /// The recorded [`RevisionArt`] for a version label **within a Heimat scope** (E51a). A tag with no
@@ -116,7 +151,7 @@ fn write_doc(root: &Path, mut doc: RevisionenDoc) -> std::io::Result<()> {
 /// until toggled. `heimat` is the Baustein's Heimat-Ordner; pass [`GLOBAL_HEIMAT`] for a
 /// produkt-weite Revision.
 pub fn read_art_in(root: &Path, heimat: &str, version: &str) -> RevisionArt {
-    match read_doc(root).heimaten.get(heimat).and_then(|m| m.get(version)) {
+    match read_doc(root).get(heimat).and_then(|m| m.get(version)) {
         Some(token) => RevisionArt::from_token(token),
         None => RevisionArt::default(),
     }
@@ -131,11 +166,10 @@ pub fn set_art_in(
     art: RevisionArt,
 ) -> std::io::Result<RevisionArt> {
     let mut doc = read_doc(root);
-    doc.heimaten
-        .entry(heimat.to_string())
+    doc.entry(heimat.to_string())
         .or_default()
         .insert(version.to_string(), art.as_token().to_string());
-    write_doc(root, doc)?;
+    write_doc(root, &doc)?;
     Ok(art)
 }
 
@@ -217,21 +251,56 @@ mod tests {
     #[test]
     fn corrupt_file_degrades_to_prototyp() {
         let dir = tmp();
-        fs::create_dir_all(ART.path(&dir).parent().unwrap()).unwrap();
-        fs::write(ART.path(&dir), "{ not json ]").unwrap();
+        // a single hand-mangled Release-Pointer file is skipped per-file, never fatal.
+        let path = ART.entry_path(&dir, &entry_key(GLOBAL_HEIMAT, "v1.0"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{ not json ]").unwrap();
         assert_eq!(read_art(&dir, "v1.0"), RevisionArt::Prototyp);
         assert_eq!(read_art_in(&dir, "elektronik", "v1.0"), RevisionArt::Prototyp);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn writes_to_the_new_plm_location() {
+    fn writes_one_file_per_release_pointer() {
         let dir = tmp();
         set_art(&dir, "v1.0", RevisionArt::Freigabe).unwrap();
+        set_art(&dir, "v0.9", RevisionArt::Freigabe).unwrap();
         assert!(
-            ART.path(&dir).is_file(),
-            "revision art lives in _plm/revisionen.json"
+            ART.entry_path(&dir, &entry_key(GLOBAL_HEIMAT, "v1.0")).is_file(),
+            "each Release-Pointer is its own file under _plm/revisionen/"
         );
+        // E54: two tags' Release-Pointers are two separate files — no merge collision.
+        assert_ne!(
+            ART.entry_path(&dir, &entry_key(GLOBAL_HEIMAT, "v1.0")),
+            ART.entry_path(&dir, &entry_key(GLOBAL_HEIMAT, "v0.9"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Migration: a product that only has the legacy `_plm/revisionen.json` map file keeps its
+    /// recorded Arts (not reset to Prototyp); the next write lays them out one file per tag.
+    #[test]
+    fn migrates_legacy_revisionen_map_file() {
+        let dir = tmp();
+        let legacy: BTreeMap<String, String> = BTreeMap::from([
+            ("v1.0".to_string(), RevisionArt::Freigabe.as_token().to_string()),
+            ("v0.9".to_string(), RevisionArt::Prototyp.as_token().to_string()),
+        ]);
+        let path = dir.join("_plm").join(ART_FILE);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        // read folds the legacy map in.
+        assert_eq!(read_art(&dir, "v1.0"), RevisionArt::Freigabe);
+
+        // the next write materialises the per-entry directory without losing the recorded Arts.
+        set_art(&dir, "v2.0", RevisionArt::Freigabe).unwrap();
+        assert!(
+            ART.entry_path(&dir, &entry_key(GLOBAL_HEIMAT, "v1.0")).is_file(),
+            "legacy Art written out per file"
+        );
+        assert_eq!(read_art(&dir, "v1.0"), RevisionArt::Freigabe);
+        assert_eq!(read_art(&dir, "v2.0"), RevisionArt::Freigabe);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -242,12 +311,9 @@ mod tests {
     fn migrates_old_flat_map_into_the_global_heimat_scope() {
         let dir = tmp();
         // Schreibe die ALTE flache Form von Hand (so lag sie auf der Platte vor #131).
-        fs::create_dir_all(ART.path(&dir).parent().unwrap()).unwrap();
-        fs::write(
-            ART.path(&dir),
-            r#"{ "v1.0": "freigabe", "v0.9": "prototyp" }"#,
-        )
-        .unwrap();
+        let legacy_path = dir.join("_plm").join(ART_FILE);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, r#"{ "v1.0": "freigabe", "v0.9": "prototyp" }"#).unwrap();
 
         // Lesen migriert nach GLOBAL_HEIMAT — die Freigabe überlebt.
         assert_eq!(read_art(&dir, "v1.0"), RevisionArt::Freigabe);
@@ -255,26 +321,28 @@ mod tests {
         // … und ist unter dem expliziten globalen Scope sichtbar.
         assert_eq!(read_art_in(&dir, GLOBAL_HEIMAT, "v1.0"), RevisionArt::Freigabe);
 
-        // Ein Schreibvorgang persistiert das Dokument in der NEUEN Form (Schema 2, mit Heimat-Achse),
-        // ohne die migrierten Daten zu verlieren — Round-Trip über die Schema-Grenze.
+        // Ein Schreibvorgang persistiert das Modell in der per-Eintrag-Ablage (E54, mit Heimat-Achse),
+        // ohne die migrierten Daten zu verlieren — Round-Trip über die Schema- und Layout-Grenze.
         set_art_in(&dir, "elektronik", "v2.0", RevisionArt::Freigabe).unwrap();
         let doc = read_doc(&dir);
-        assert_eq!(doc.schema, SCHEMA_VERSION, "auf aktuelles Schema gehoben");
         assert_eq!(
-            doc.heimaten.get(GLOBAL_HEIMAT).and_then(|m| m.get("v1.0")).map(String::as_str),
+            doc.get(GLOBAL_HEIMAT).and_then(|m| m.get("v1.0")).map(String::as_str),
             Some("freigabe"),
             "migrierte produkt-globale Freigabe bleibt erhalten"
         );
         assert_eq!(
-            doc.heimaten.get("elektronik").and_then(|m| m.get("v2.0")).map(String::as_str),
+            doc.get("elektronik").and_then(|m| m.get("v2.0")).map(String::as_str),
             Some("freigabe"),
             "neue Baustein-Revision steht im Heimat-Scope"
         );
+        // Per-Eintrag ausgelegt: je `(Heimat, version)`-Paar eine eigene Datei (E54).
+        assert!(ART.entry_path(&dir, &entry_key(GLOBAL_HEIMAT, "v1.0")).is_file());
+        assert!(ART.entry_path(&dir, &entry_key("elektronik", "v2.0")).is_file());
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// **Round-Trip der neuen Form**: das geschriebene Schema-2-Dokument liest sich verlustfrei
-    /// zurück, mit zwei voneinander unabhängigen Heimat-Scopes.
+    /// **Round-Trip der Heimat-skopierten Form** über die per-Eintrag-Ablage (E51a × E54): das
+    /// geschriebene Modell liest sich verlustfrei zurück, mit drei voneinander unabhängigen Scopes.
     #[test]
     fn new_shape_round_trips_across_heimaten() {
         let dir = tmp();
@@ -282,15 +350,14 @@ mod tests {
         set_art_in(&dir, "firmware", "v1.0", RevisionArt::Prototyp).unwrap();
         set_art(&dir, "v9.9", RevisionArt::Freigabe).unwrap(); // produkt-global
 
-        // Aus einem frisch gelesenen Dokument (kein In-Memory-Cache) zurückgewonnen.
+        // Aus einem frisch gelesenen Modell (kein In-Memory-Cache) zurückgewonnen.
         assert_eq!(read_art_in(&dir, "elektronik", "v1.0"), RevisionArt::Freigabe);
         assert_eq!(read_art_in(&dir, "firmware", "v1.0"), RevisionArt::Prototyp);
         assert_eq!(read_art(&dir, "v9.9"), RevisionArt::Freigabe);
 
-        // Das Dokument trägt die aktuelle Schema-Marke und drei getrennte Scopes.
+        // Drei getrennte Heimat-Scopes (elektronik, firmware, produkt-global).
         let doc = read_doc(&dir);
-        assert_eq!(doc.schema, SCHEMA_VERSION);
-        assert_eq!(doc.heimaten.len(), 3);
+        assert_eq!(doc.len(), 3);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -298,10 +365,30 @@ mod tests {
     #[test]
     fn empty_flat_map_degrades_to_empty() {
         let dir = tmp();
-        fs::create_dir_all(ART.path(&dir).parent().unwrap()).unwrap();
-        fs::write(ART.path(&dir), "{}").unwrap();
+        let legacy_path = dir.join("_plm").join(ART_FILE);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, "{}").unwrap();
         assert_eq!(read_art(&dir, "v1.0"), RevisionArt::Prototyp);
-        assert!(read_doc(&dir).heimaten.is_empty());
+        assert!(read_doc(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Der zusammengesetzte `(Heimat, version)`-Schlüssel ist injektiv: kein `|` in Heimat oder
+    /// Versions-Label kann zwei verschiedene Paare auf denselben Schlüssel — und damit dieselbe
+    /// Datei — abbilden.
+    #[test]
+    fn composite_key_is_collision_free_and_round_trips() {
+        for (h, v) in [
+            ("elektronik", "v1.0"),
+            (GLOBAL_HEIMAT, "v9.9"),
+            ("a|b", "c|d"),
+            ("", "v0"),
+            ("mechanik/teil", "rel|2"),
+        ] {
+            let key = entry_key(h, v);
+            assert_eq!(split_entry_key(&key), Some((h.to_string(), v.to_string())));
+        }
+        // Ohne Längen-Präfix kollidierten diese beiden; mit ihm nicht.
+        assert_ne!(entry_key("a|b", "c"), entry_key("a", "b|c"));
     }
 }

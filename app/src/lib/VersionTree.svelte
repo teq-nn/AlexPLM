@@ -352,7 +352,15 @@
 </section>
 
 {#if tip}
-  <!-- Detail card: domain vocabulary only, opens to the left of the pointer. -->
+  <!-- Detail card: a pure read-only readout, opening to the left of the pointer. Since E43 the
+       honest git nouns are sichtbar und erlaubt — only the gefährliche „Wie"-Mechanik stays
+       hidden. So the card NAMES the four git-Substantive a HW-Ingenieur may *see* without ever
+       operating them (Issue #135, E55): Commit (the Stand), Branch (the line it sits on), Tag
+       (the Revision's underlying git tag — a Revision ist „technisch ein Tag auf einem Commit",
+       Glossar), and Push (this Stand reached the shared line — veröffentlicht). The word is
+       clearly named; there is NO field here where a git/recovery formula could be typed — that
+       remains the verb menu's walled-off business. Domain wording stays the headline; the git
+       noun rides beside it as a quiet, honest echo. -->
   <div
     class="tip"
     class:foreign={!tip.node.on_active}
@@ -386,6 +394,12 @@
         <span class="tip-key label">Revision</span>
         <span class="tip-val">{tip.node.has_notes ? "mit Notiz" : "ohne Notiz"}</span>
       </div>
+      <!-- Tag (E55): the honest git noun under a Revision — a Tag on this Commit (Glossar). The
+           Revision is the domain word, the Tag carries its version label. Read-only readout. -->
+      <div class="tip-row mono">
+        <span class="tip-key label">Tag</span>
+        <span class="tip-val">{tip.node.revision}</span>
+      </div>
     {/if}
     {#if tip.node.offloaded}
       <div class="tip-row mono">
@@ -397,6 +411,13 @@
       <div class="tip-row mono">
         <span class="tip-key label">Linie</span>
         <span class="tip-val veroeff">veröffentlicht</span>
+      </div>
+      <!-- Push (E55): the honest git noun behind „veröffentlicht" — this Stand reached the shared
+           line by being pushed there. „veröffentlicht" stays the domain headline; „Push" names the
+           git act it took, read-only. No button: pushing remains its own deliberate handle. -->
+      <div class="tip-row mono">
+        <span class="tip-key label">Push</span>
+        <span class="tip-val veroeff">auf geteilter Linie</span>
       </div>
     {/if}
   </div>
