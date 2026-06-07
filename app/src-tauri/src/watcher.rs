@@ -17,10 +17,19 @@
 //! The timing and the auto-lock *decisions* live in `autocommit` / `autolock` and are table-tested
 //! there. This module only owns the `notify` plumbing, the per-session "already locked" memory, and
 //! the loop, kept deliberately small.
+//!
+//! **Genestete `.git` als opake Grenze (E50a, Issue #130):** Zieht ein Framework eine git-native
+//! Toolchain (`west`, ESP-IDF, PlatformIO, `venv`) in einen Baustein, entsteht ein genestetes
+//! `.git` mit tausenden vendored Dateien. Schreibvorgänge **hinter** so einer Grenze dürfen
+//! **keine Commit-Lawine** im eigenen Repo auslösen. Die Grenze wird beim Watch-Start aus einem
+//! Walk ermittelt ([`crate::nestedboundary::boundary_set`]) und im Loop konsultiert: ein Save, der
+//! hinter einer Grenze liegt, armt den Debouncer nicht und löst kein Auto-Lock aus. Das Prädikat
+//! ist rein und table-getestet in [`crate::nestedboundary`]; hier wird es nur konsultiert.
 
 use crate::autocommit::{commit_all, Debouncer, Decision, Stand, DEFAULT_QUIET_WINDOW};
 use crate::autolock::decide_auto_lock;
 use crate::locks::is_lockable;
+use crate::nestedboundary::{boundary_set, Boundary, GIT_MARKER};
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -66,6 +75,57 @@ fn is_save_event(kind: &EventKind, paths: &[PathBuf]) -> bool {
 fn is_in_git_dir(p: &Path) -> bool {
     p.components()
         .any(|c| c.as_os_str() == std::ffi::OsStr::new(".git"))
+}
+
+/// Walk `root` and build the opaque **nested-`.git` boundary** (E50a). Collects the
+/// product-relative path of each genested `.git` (the parent of which becomes a stop point) and
+/// hands them to the pure [`boundary_set`]. The walk **stops descending at every boundary it
+/// finds**, so it never traverses the thousands of vendored files behind a `west`/ESP-IDF/`venv`
+/// checkout. The product's own root `.git` is collected too but discarded by `boundary_set`
+/// (root is its own repo, never a boundary). The decision is pure; this is just the I/O walk.
+fn discover_boundary(root: &Path) -> Boundary {
+    let mut locations: Vec<String> = Vec::new();
+    walk_for_git(root, root, &mut locations);
+    boundary_set(locations)
+}
+
+/// Recursive helper for [`discover_boundary`]. Records `dir/.git` when present and — for any
+/// **non-root** `.git` — does not descend further (the foreign tree stays opaque). Best-effort:
+/// unreadable directories are silently skipped (the watcher must never fail to start over a
+/// permission glitch deep in a vendored tree).
+fn walk_for_git(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let has_git = dir.join(GIT_MARKER).exists();
+    if has_git {
+        // Record the `.git` location relative to root; `boundary_set` turns it into a stop point.
+        let rel = dir.join(GIT_MARKER);
+        if let Ok(r) = rel.strip_prefix(root) {
+            out.push(
+                r.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            );
+        }
+        // A nested `.git` is an opaque boundary: do not descend into the foreign tree.
+        if dir != root {
+            return;
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        // The `.git` directory itself is never walked into — it is git's own store.
+        if name == std::ffi::OsStr::new(GIT_MARKER) {
+            continue;
+        }
+        walk_for_git(root, &entry.path(), out);
+    }
 }
 
 /// Best-effort product-relative, forward-slash path for a changed file; falls back to the
@@ -115,6 +175,11 @@ where
     let root = root.to_path_buf();
     let (tx, rx) = mpsc::channel::<notify::Event>();
 
+    // Genestete `.git` einmal beim Start aus einem Walk ermitteln: die opake Grenze, hinter der
+    // Schreibvorgänge ignoriert werden (E50a). Der Walk steigt selbst nicht in den fremden Baum
+    // hinein, sammelt also nur die obersten genesteten `.git` ein.
+    let boundary = discover_boundary(&root);
+
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             let _ = tx.send(event);
@@ -126,7 +191,7 @@ where
     let stop_thread = stop.clone();
 
     let join = std::thread::spawn(move || {
-        run_loop(&root, window, &rx, &stop_thread, &on_stand, &on_lock);
+        run_loop(&root, window, &boundary, &rx, &stop_thread, &on_stand, &on_lock);
     });
 
     Ok(WatchHandle {
@@ -142,6 +207,7 @@ where
 fn run_loop<S, L>(
     root: &Path,
     window: Duration,
+    boundary: &Boundary,
     rx: &mpsc::Receiver<notify::Event>,
     stop: &std::sync::atomic::AtomicBool,
     on_stand: &S,
@@ -162,6 +228,12 @@ fn run_loop<S, L>(
             Ok(event) => {
                 if is_save_event(&event.kind, &event.paths) {
                     let rel = rel_for_event(root, &event.paths);
+                    // Opake Grenze (E50a): liegt der Save hinter einem genesteten `.git` (fremder
+                    // Toolchain-Baum), ignorieren — kein Auto-Lock, kein Armen des Debouncers,
+                    // keine Commit-Lawine über fremden Code.
+                    if boundary.contains(&rel) {
+                        continue;
+                    }
                     // Auto-Lock (Issue #42): the FIRST save to a lockable path takes its lock right
                     // now — before any checkpoint — closing the Binär-Invarianten-Fenster. The
                     // pure trigger decides; the glue acquires the lock and makes the file writable.
@@ -180,7 +252,7 @@ fn run_loop<S, L>(
 
         if let Decision::Settle { path } = deb.poll(SystemTime::now()) {
             // One settled burst -> at most one local commit -> at most one new Stand.
-            if let Ok(Some(stand)) = commit_all(root, &path, SystemTime::now()) {
+            if let Ok(Some(stand)) = commit_all(root, &path, boundary, SystemTime::now()) {
                 // The commit just turned freshly-saved lockable files into LFS objects; git-lfs then
                 // rests any lockable-but-unlocked file read-only. Pre-publish we hold no *server*
                 // lock, so re-assert the write bit for every path we auto-locked this session — the

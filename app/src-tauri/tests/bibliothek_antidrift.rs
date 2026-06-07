@@ -23,6 +23,7 @@ fn baustein(id: &str, version: u32, heimat: &str, glob: &str) -> Baustein {
         globs: vec![glob.to_string()],
         ignore: vec![],
         lfs: vec![],
+        rekonstruierbar: vec![],
         oeffnen: Oeffnen::Auto,
         startaufgaben: vec![],
         default_kanten: vec![],

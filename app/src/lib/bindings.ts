@@ -46,6 +46,21 @@ export const commands = {
 	 */
 	toggleRevisionArt: (path: string, version: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("toggle_revision_art", { path, version })),
 	/**
+	 *  **Einen Baustein-Bereich unabhängig freigeben** (Issue #131, E51a). Jeder Baustein trägt seine
+	 *  eigene Revision + Art mit Scope = Heimat-Ordner: der HW-Entwickler gibt `elektronik` als „Rev B"
+	 *  frei, ohne dass WIP-Firmware ihn blockiert. Die Art wandert dabei auf die **Baustein-Revision**
+	 *  (Heimat-getragen), und es wird ein **dauerhafter** Baustein-Freigabe-Tag gesetzt, damit dieser
+	 *  Stand später in eine Produkt-Revision **komponierbar** bleibt. Liefert den frischen
+	 *  Versionsbaum, damit die UI in einer Runde aktualisiert.
+	 */
+	releaseBaustein: (path: string, heimat: string, standId: string, version: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("release_baustein", { path, heimat, standId, version })),
+	/**
+	 *  Eine unabhängige **Baustein-Freigabe zurücknehmen** (Issue #131, E51a — reversibel, E22): die
+	 *  Heimat-Art zurück auf Prototyp und der dauerhafte Baustein-Freigabe-Tag wird entfernt. Liefert
+	 *  den frischen Versionsbaum.
+	 */
+	unreleaseBaustein: (path: string, heimat: string, version: string) => typedError<VersionGraph, string>(__TAURI_INVOKE("unrelease_baustein", { path, heimat, version })),
+	/**
 	 *  **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
 	 *  den Stand `stand_id` als *separaten, schreibgeschützten* Ordner neben dem Produkt (ein detached
 	 *  `git worktree`). Die Werkbank (Jetzt-Zustand) bleibt unberührt — ein Klick auf einen alten Knoten
@@ -123,6 +138,31 @@ export const commands = {
 	 */
 	lockArtifact: (product: string, path: string) => typedError<boolean, string>(__TAURI_INVOKE("lock_artifact", { product, path })),
 	/**
+	 *  Open a lockable binary **even with no reachable lock server** (Issue #136, E49b). The
+	 *  offline-aware sibling of [`lock_artifact`]: it tries the real `git lfs lock`, but if the lock
+	 *  server is unreachable it records a local **Absichts-Sperre** in `.plm-local/`, makes the file
+	 *  writable and returns [`OpenLock::OfflineIntent`] so the binary still opens — the card then shows
+	 *  „offline bearbeitet, Sperre nicht bestätigt", no false safety. A lock held by a **colleague**
+	 *  stays a loud error (real, present coordination the user must see). The pure decision lives in
+	 *  [`offlinelock`]; this command only reads the world and obeys.
+	 */
+	openLockableArtifact: (product: string, path: string) => typedError<OpenLock, string>(__TAURI_INVOKE("open_lockable_artifact", { product, path })),
+	/**
+	 *  Whether a lockable artifact currently carries an unconfirmed **Absichts-Sperre** (Issue #136,
+	 *  E49b) — the fact the card turns into „offline bearbeitet, Sperre nicht bestätigt". A pure read of
+	 *  the local `.plm-local/` store; no network, no second source of truth.
+	 */
+	artifactOfflineIntent: (product: string, path: string) => typedError<boolean, string>(__TAURI_INVOKE("artifact_offline_intent", { product, path })),
+	/**
+	 *  Reconcile the recorded **Absichts-Sperren** against the real server locks **on connect** (Issue
+	 *  #136, E49b) — the Eingang-B side of E49. Confirmable offline intents (the artifact is free or
+	 *  already ours) are cleared silently; a detected **double-edit** (a colleague was holding the
+	 *  artifact the whole time) surfaces as the single loud [`reconciler::Abgleichfrage`] — „du und Ben
+	 *  habt beide offline an X gearbeitet — wessen Arbeit gilt?", never a git/lock marker, never a
+	 *  silent overwrite. The pure decision lives in [`offlinelock::reconcile_intents`].
+	 */
+	reconcileOfflineLocks: (path: string) => typedError<IntentReconcile, string>(__TAURI_INVOKE("reconcile_offline_locks", { path })),
+	/**
 	 *  The Status Reader (Issue #6): read `git lfs locks` + worktree status purely once, then
 	 *  derive the per-artifact LED status (green/grey/orange) for the given product-relative paths.
 	 *  No second source of truth — every call reads git back (E37).
@@ -199,6 +239,42 @@ export const commands = {
 	 */
 	evaluateFreigabeGate: (path: string, art: RevisionArt) => typedError<GateVerdict, string>(__TAURI_INVOKE("evaluate_freigabe_gate", { path, art })),
 	/**
+	 *  Wie [`evaluate_freigabe_gate`], aber das Gate staffelt nach dem **Baustein-Scope der Art** (Issue
+	 *  #131, E51a): die angestrebte Art kommt für `(heimat, version)` aus dem Heimat-getragenen
+	 *  Art-Store statt als Argument. So staffelt das Gate die offenen Punkte nach der Strenge genau
+	 *  dieses Bereichs — `elektronik` kann freigegeben werden, während eine noch reifende Firmware
+	 *  (Prototyp) ihn nicht durch ein hartes Gate blockiert. Sperrt nie aus (E22).
+	 */
+	evaluateFreigabeGateBaustein: (path: string, heimat: string, version: string) => typedError<GateVerdict, string>(__TAURI_INVOKE("evaluate_freigabe_gate_baustein", { path, heimat, version })),
+	/**
+	 *  Die **Zusammenstellung einer Produkt-Revision** prüfen (Issue #140, E52a): aus dem Produkt-Stack,
+	 *  den verfügbaren Freigabe-Ständen je Heimat (E51a) und der aktuellen Auswahl die **Checkliste**
+	 *  (ein Posten je Baustein: „elektronik ✓ Rev B · firmware ⧖ ausstehend") und die
+	 *  **Vollständigkeit** berechnen. Vollständig ist die Revision genau dann, wenn **jeder**
+	 *  verpflichtende Baustein einen Beitrag trägt — einen frischen Freigabe-Stand **oder** das bewusste
+	 *  „Vorstand mitnehmen"; **optionale** Bausteine blockieren nie. `wahlen` ist die laufende Auswahl
+	 *  (heimat → frisch/Vorstand), `optionale_heimaten` benennt die optionalen Bereiche. Reine
+	 *  Lesepfade des `_plm`-Stacks + der git-Tags; das Urteil ist der reine
+	 *  [`zusammenstellung::zusammenstellen`]-Kern. **Keine** Rollen/Rechte — ein Beitrag ist
+	 *  Koordination, keine Autorisierung (E52a). Ein leeres Produkt ist eine leere, vollständige
+	 *  Checkliste (sperrt nie aus — E22).
+	 */
+	evaluateZusammenstellung: (path: string, wahlen: WahlEingabe[], optionaleHeimaten: string[]) => typedError<ZusammenstellungsBericht, string>(__TAURI_INVOKE("evaluate_zusammenstellung", { path, wahlen, optionaleHeimaten })),
+	/**
+	 *  **Cold-Start: initiale Revisionen seeden** (Issue #142, E52b). Beim **allerersten** Produkt-
+	 *  Release trägt **kein** verpflichtender Baustein eine Revision — die erste Produkt-Revision wäre
+	 *  damit nie vollständig, ohne dass der Nutzer erst N Bausteine **manuell** freigibt. Dieser **eine**
+	 *  Akt sät stattdessen je Pflicht-Baustein **ohne** jeden freigegebenen Stand eine **initiale**
+	 *  Baustein-Revision aus dem **aktuellen Stand** (HEAD) — der dauerhafte `freigabe/<heimat>/<version>`-
+	 *  Tag (E51a). Danach trägt jeder Pflicht-Baustein einen Stand und die erste Produkt-Revision ist
+	 *  komponierbar (E52a). `version` ist die gemeinsame initiale Versionsmarke (z.B. `"v0.1"`);
+	 *  `optionale_heimaten` benennt die optionalen Bereiche (die nie gesät werden). Schon revidierte
+	 *  Bausteine bleiben unberührt — wen es zu säen gilt, entscheidet der reine Kern
+	 *  ([`zusammenstellung::kaltstart_seed_liste`]). Liefert die Liste der gesäten Bausteine; ein leeres
+	 *  Produkt / kein offener Pflicht-Bereich sät nichts (E22), nie ein Fehler.
+	 */
+	seedColdStart: (path: string, version: string, optionaleHeimaten: string[]) => typedError<GesaeterBaustein[], string>(__TAURI_INVOKE("seed_cold_start", { path, version, optionaleHeimaten })),
+	/**
 	 *  Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
 	 *  Ein weicher Block (Waise / fehlendes Pflicht-Artefakt) ist bewusst überwindbar — aber **nur per
 	 *  protokollierter Begründung**. Diese landet als dauerhafte Zeile im Diagnose-Log, damit das
@@ -249,6 +325,18 @@ export const commands = {
 	 *  "aktuell / X arbeitet an Y / gesichert"; raw git (push/pull/merge) never surfaces.
 	 */
 	syncProduct: (path: string, other: string | null) => typedError<SyncOutcome, string>(__TAURI_INVOKE("sync_product", { path, other })),
+	/**
+	 *  Run the **silent Reconcile beim Öffnen** (Issue #129, E49a): on open, read the real observed
+	 *  state of the three truth-places — disk (Inhalt), git (Verlauf), server-locks (flüchtige
+	 *  Koordination) — compare it against the last-seen `_plm` memory, and **silently catch up** every
+	 *  drift that is resolvable (re-seeding the memory, no prompt) so the user never works on a stale
+	 *  picture. The one drift that is not silently resolvable — a contested ownership (an unmergeable
+	 *  artifact the tool last knew was ours is now held by a colleague) — returns the single
+	 *  **Abgleichfrage**: a domain-language question ("Bens Sperre liegt jetzt auf deinem Gehaeuse —
+	 *  wessen Arbeit gilt?"), never a git conflict marker. The pure decision lives in
+	 *  [`reconciler::reconcile`]; this command only reads the world and obeys.
+	 */
+	reconcileProduct: (path: string) => typedError<ReconcileDecision, string>(__TAURI_INVOKE("reconcile_product", { path })),
 	/**
 	 *  List the local Bibliothek (Issue #39, ADR 0003): the seeded + user-added Bausteine and the
 	 *  available Toolstacks. Pure read; missing/corrupt entries degrade to an empty list.
@@ -479,9 +567,71 @@ export const commands = {
 	 *  can name them). A product with no task store is never blocked.
 	 */
 	evaluateTaskBlock: (path: string, art: RevisionArt) => typedError<BlockDecision, string>(__TAURI_INVOKE("evaluate_task_block", { path, art })),
+	/**
+	 *  Wie [`evaluate_task_block`], aber die Strenge kommt aus dem **Baustein-Scope der Art** (Issue
+	 *  #131, E51a): die Art wird nicht übergeben, sondern für `(heimat, version)` aus dem
+	 *  Heimat-getragenen Art-Store gelesen. So blockiert eine offene Aufgabe nur den Bereich, der gerade
+	 *  als Freigabe reift — jeder Baustein reift unabhängig. Ein nie freigegebener Bereich ist Default
+	 *  Prototyp (lax) und blockiert nicht.
+	 */
+	evaluateTaskBlockBaustein: (path: string, heimat: string, version: string) => typedError<BlockDecision, string>(__TAURI_INVOKE("evaluate_task_block_baustein", { path, heimat, version })),
+	/**
+	 *  Die offenen **Integrations-Aufgaben** eines Produkts lesen (Issue #141, E53) — die einmaligen,
+	 *  gegen eine Quell-Revision erhobenen Cross-Baustein-Test-Belege. Ein Produkt ohne Beleg-Datei hat
+	 *  null Forderungen (opt-in). Reiner Lese-Zugriff auf den `_plm`-Speicher.
+	 */
+	listIntegrationen: (path: string) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("list_integrationen", { path })),
+	/**
+	 *  **Flaggen** (HW, Issue #141, E53): eine neue, offene Integrations-Forderung anlegen — „mein
+	 *  `quell_baustein` braucht gegen `ziel_baustein` einen Test, erhoben gegen `quell_rev`". Der
+	 *  Empfänger (SW) beantwortet sie später mit ja/nein. Gibt die frische Liste zurück.
+	 */
+	flaggeIntegrationCmd: (path: string, quellBaustein: string, zielBaustein: string, quellRev: string) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("flagge_integration_cmd", { path, quellBaustein, zielBaustein, quellRev })),
+	/**
+	 *  **Beantworten** (SW/Empfänger, Issue #141, E53): die Antwort einer Integrations-Forderung auf
+	 *  ja/nein setzen — der Beleg liegt damit auf Akte. Eine fehlende id ist ein toleranter No-Op. Gibt
+	 *  die frische Liste zurück.
+	 */
+	beantworteIntegrationCmd: (path: string, id: string, antwort: IntegrationsAntwort) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("beantworte_integration_cmd", { path, id, antwort })),
+	/**
+	 *  Eine Integrations-Forderung löschen/zurücknehmen (Issue #141). Fehlende id ⇒ No-Op. Gibt die
+	 *  frische Liste zurück.
+	 */
+	deleteIntegrationCmd: (path: string, id: string) => typedError<IntegrationsAufgabe[], string>(__TAURI_INVOKE("delete_integration_cmd", { path, id })),
+	/**
+	 *  Den **Integrations-Block an der Produkt-Compose** entscheiden (Issue #141, E53): aus den offenen
+	 *  Forderungen und der Compose-Auswahl (der Produkt-Stückliste der zu bauenden Revision) den
+	 *  Block-Entscheid + die passiven Leseschein-Zeilen ableiten. **Nur an der Compose** — eine
+	 *  eigenständige Baustein-/FW-Freigabe ruft dies nie auf, also blockiert eine Integration nie eine
+	 *  Einzel-Freigabe. Eine „nein"/offene Forderung gegen die komponierte Quell-Rev ist ein harter
+	 *  Block; der Leseschein blockiert nie. Reiner Lese-Zugriff; die Entscheidung ist der pure Kern.
+	 */
+	evaluateIntegrationsblock: (path: string, composeAuswahl: StuecklistenPosten[]) => typedError<IntegrationsBlockEntscheid, string>(__TAURI_INVOKE("evaluate_integrationsblock", { path, composeAuswahl })),
 };
 
 /* Types */
+/**
+ *  The domain-language question shown when a drift is **not** silently resolvable (E49). Today the
+ *  one such drift is a contested ownership: an unmergeable artifact the tool last knew was *ours* is
+ *  now held by a colleague, so the tool cannot silently decide whose work continues. The question
+ *  names the artifact in the tool's own words and the contested truth-place — and holds **no** git
+ *  conflict marker by construction (see [`Abgleichfrage::contains_git_marker`]).
+ */
+export type Abgleichfrage = {
+	/**
+	 *  The one-line question, e.g. „Bens Sperre liegt jetzt auf deinem Gehaeuse — wessen Arbeit
+	 *  gilt?". Domain language only.
+	 */
+	frage: string,
+	/**  The contested artifacts, named as artifacts (never git refs). At least one. */
+	artefakte: string[],
+	/**
+	 *  The truth-place the contradiction lives in (always [`TruthOrt::Koordination`] today — a
+	 *  server-lock that changed hands).
+	 */
+	ort: TruthOrt,
+};
+
 /**
  *  A typed error for the auth-bearing ceremony commands (Issue #22). The `code` lets the frontend
  *  react precisely — `"auth"` reopens the credential field, `"keystore"` reports the OS keystore is
@@ -590,6 +740,18 @@ export type AufgabenTyp =
 /**  Blockiert nie. */
 "hinweis";
 
+/**
+ *  One named catch-up the silent reconcile carried out, in domain language (E49). Says *which*
+ *  truth-place drifted and *what* the tool quietly learned — for the calm log only; the user is
+ *  never prompted. Carries **no** git marker by construction.
+ */
+export type Aufholung = {
+	/**  The truth-place that drifted (disk / git / server-locks), named honestly. */
+	ort: TruthOrt,
+	/**  The one-line domain-language note, e.g. „Verlauf ist außerhalb weitergelaufen — aufgeholt". */
+	notiz: string,
+};
+
 /**  Ein **Baustein**: das wiederverwendbare Tool-Wissen für ein Tool (ADR 0003). */
 export type Baustein = {
 	/**  Stabile Kebab-Identität, z.B. `"kicad"`. Eindeutig in der Bibliothek. */
@@ -606,6 +768,12 @@ export type Baustein = {
 	ignore?: string[],
 	/**  LFS-Muster (Marker-Block-Zeilen für `.gitattributes`). */
 	lfs?: string[],
+	/**
+	 *  Rekonstruierbar-Regeln (E50b, Issue #137): die **dritte** Pfad-Klasse — verfolge nur Quelle +
+	 *  gepinntes Manifest, ignoriere die rekonstruierbaren Framework-Dateien. Lebt im selben
+	 *  idempotenten `.gitignore`-Marker-Block wie die Ignore-Muster (E18, keine Spiegelung).
+	 */
+	rekonstruierbar?: RekonstruierbarRegel[],
 	/**  Öffnen-Aktion der Artefakt-Karte. */
 	oeffnen?: Oeffnen,
 	/**  Beim Onboarding anzulegende Startaufgaben/Hinweise. */
@@ -647,6 +815,27 @@ export type BlockDecision = {
 	 *  blocked. Exactly the tasks for which [`task_blocks_at`] held.
 	 */
 	"blocking-task-ids": string[],
+};
+
+/**
+ *  Ein **Checklisten-Posten** je Baustein (E52a). Trägt alles, was die UI für eine Zeile braucht,
+ *  ohne neu zu entscheiden: den Bereich, ob er Pflicht ist, seinen Zustand und — falls ein Beitrag
+ *  gewählt ist — den dazugehörigen Release-Tag (das menschliche „Rev B" der Checkliste).
+ */
+export type ChecklistenPosten = {
+	/**  `id` des Bausteins (z.B. `"kicad"`). */
+	baustein_id: string,
+	/**  Der Heimat-Bereich, den dieser Posten stellt (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Ob dieser Bereich verpflichtend ist (für die Anzeige „Pflicht"/„optional"). */
+	pflicht: boolean,
+	/**  Der Checklisten-Zustand dieses Bereichs. */
+	zustand: PostenZustand,
+	/**
+	 *  Der Release-Tag des Beitrags (z.B. `freigabe/elektronik/Rev-B`), falls einer gewählt ist;
+	 *  sonst leer. Die UI zeigt daraus das menschliche „Rev B".
+	 */
+	release_tag: string,
 };
 
 /**
@@ -799,6 +988,21 @@ export type GeoeffneterOrdner = {
 };
 
 /**
+ *  Was **ein** Cold-Start-Seed-Akt getan hat (Issue #142, E52b): je gesätem Pflicht-Baustein der
+ *  Bereich und die initiale Versionsmarke, die aus dem aktuellen Stand freigegeben wurde. Die UI
+ *  rendert daraus „elektronik · firmware initial freigegeben", ohne neu zu entscheiden.
+ *  `specta::Type` + `Serialize`, damit der Bericht über die Tauri-Naht kommt.
+ */
+export type GesaeterBaustein = {
+	/**  `id` des gesäten Bausteins (z.B. `"kicad"`). */
+	baustein_id: string,
+	/**  Der Heimat-Bereich, der initial freigegeben wurde (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Die initiale Versionsmarke, die gesetzt wurde (z.B. `"v0.1"`). */
+	version: string,
+};
+
+/**
  *  The Härte of a single open point at the Freigabe-Gate (E19). Ordered **härtestes zuerst**:
  *  the `Ord` derive ranks `Hart < Weich < Warnung`, so a plain ascending sort puts the hardest
  *  items at the top of the list — exactly the „nach Härte sortierte Liste" of E19.3.
@@ -843,6 +1047,105 @@ export type ImportResult = {
 	/**  The read-only projection of the freshly imported product (what the shell renders). */
 	product: ProductView,
 };
+
+/**
+ *  Die **Antwort** des Empfängers auf eine Integrations-Forderung (E53). Der HW-Entwickler flaggt,
+ *  der SW-Entwickler (Empfänger) beantwortet mit ja/nein; bis dahin ist die Forderung **offen**.
+ */
+export type IntegrationsAntwort = 
+/**
+ *  Noch **offen** — der Empfänger hat die Forderung weder bejaht noch verneint. Hält den Block
+ *  an der Compose (eine geforderte, aber unbelegte Integration darf nicht still durchgehen).
+ */
+"offen" | 
+/**
+ *  **Ja** — der Empfänger bestätigt: für **diese** Quell-Revision ist der Integrationstest belegt.
+ *  Hebt den Block für genau diese Kombination auf (einmaliger, verbrauchter Beleg).
+ */
+"ja" | 
+/**
+ *  **Nein** — der Empfänger verneint: kein Test / Test nicht bestanden. Hält den harten Block an
+ *  der Compose.
+ */
+"nein";
+
+/**
+ *  Eine **Integrations-Aufgabe** (Issue #141, E53): die Forderung des HW-Entwicklers, seinen Baustein
+ *  **gegen** einen anderen integrativ zu testen — **erhoben gegen eine Quell-Revision**. Schlichte
+ *  Daten; die Glue füllt sie aus dem `_plm`-Beleg-Speicher. Der Kern macht **kein** I/O über sie.
+ * 
+ *  Das **Baustein-Paar** ist die Kombination, die getestet werden soll: `quell_baustein` ist der
+ *  flaggende Baustein (z.B. die Elektronik/PCB), `ziel_baustein` der Baustein, **gegen** den getestet
+ *  wird (z.B. die Firmware). `quell_rev` ist der Stand des flaggenden Bausteins, **gegen** den die
+ *  Forderung erhoben (und ein „ja" belegt) wurde — der Beleg gilt **genau** für diese Revision.
+ * 
+ *  Serde-/specta-tauglich: dieselbe Form ist der **Akten-Beleg** im `_plm`-Speicher
+ *  ([`crate::integrationsblockglue`]) **und** der Wire-Typ für die UI — eine Wahrheit, nicht zwei.
+ */
+export type IntegrationsAufgabe = {
+	/**  Stabile, undurchsichtige id der Forderung (die Glue vergibt sie; die UI keyt Zeilen darauf). */
+	id: string,
+	/**  Die `id` des **flaggenden** Bausteins (z.B. `"kicad"` / die PCB), der den Test fordert. */
+	quell_baustein: string,
+	/**  Die `id` des **Empfänger**-Bausteins, **gegen** den getestet wird (z.B. `"zephyr"` / die FW). */
+	ziel_baustein: string,
+	/**
+	 *  Die **Quell-Revision**, gegen die die Forderung erhoben (und ein „ja" belegt) wurde — der
+	 *  Stand des flaggenden Bausteins zum Flagge-Zeitpunkt (z.B. `"Rev D"`). Einmalig: ein Beleg gilt
+	 *  genau für diese Revision; ein neuer Quell-Stand braucht eine neue Forderung.
+	 */
+	quell_rev: string,
+	/**  Die Antwort des Empfängers (offen/ja/nein) — der Beleg auf Akte. */
+	antwort: IntegrationsAntwort,
+};
+
+/**
+ *  Der **Integrations-Block-Entscheid** für eine Produkt-Komposition (Issue #141, E53). Genau einer;
+ *  total. Trägt die **ids der blockierenden Forderungen** (damit die UI sie benennen kann, ohne die
+ *  Regel erneut zu prüfen) und die abgeleiteten **passiven** Leseschein-Zeilen.
+ */
+export type IntegrationsBlockEntscheid = {
+	/**
+	 *  Ob die Compose blockiert ist. `true` ⇔ [`Self::blockierende_ids`] ist nicht leer (als
+	 *  ehrliches einzelnes Flag mitgeführt, damit die UI eine Wahrheit liest).
+	 */
+	blockiert: boolean,
+	/**
+	 *  Die ids der Integrations-Forderungen, die diese Compose blockieren, in Eingabe-Reihenfolge.
+	 *  Leer ⇔ nicht blockiert. Genau die Forderungen, deren komponierte Kombination „nein"/offen ist.
+	 */
+	blockierende_ids: string[],
+	/**
+	 *  Die passiven Leseschein-Zeilen, eine pro relevantem Baustein-Paar, in stabiler Reihenfolge.
+	 *  Sie blockieren **nichts** — sie machen nur die bekannte/fehlende Test-Kombination sichtbar.
+	 */
+	lesescheine: LesescheinZeile[],
+};
+
+/**
+ *  The single decision the Offline-Lock reconciler returns on connect (Issue #136, E49b). Exactly
+ *  one; total. Mirrors the Eingang-A shape ([`crate::reconciler::ReconcileDecision`]): a silent
+ *  common case and a single loud exception.
+ */
+export type IntentReconcile = 
+/**
+ *  **keine Kollision** — every recorded Absichts-Sperre is confirmable: the artifact is free on
+ *  the server, or already held by us. The tool promotes the intents to real locks with **no**
+ *  prompt. Carries the confirmable artifacts for the calm log; empty when there were no offline
+ *  intents to begin with (a plain online connect). (A struct variant, not a newtype-of-`Vec`,
+ *  so the internally-tagged enum serialises cleanly for the typed frontend bindings.)
+ */
+{ kind: "keine-kollision"; bestaetigt: string[] } | 
+/**
+ *  **Doppelbearbeitung** — at least one Absichts-Sperre collides with a **foreign** server lock:
+ *  two people edited the same unmergeable artifact offline. The one moment the connect raises its
+ *  voice — the same loud [`Abgleichfrage`] Eingang A uses, naming the contested artifacts and the
+ *  colleagues, **never** a git/lock marker. The tool overwrites **nothing** until the user
+ *  answers.
+ */
+{
+	kind: "doppelbearbeitung",
+} & Abgleichfrage;
 
 /**
  *  Eine Referenz auf das angelegte Issue, wie sie ans Frontend geht (für die „angelegt"-Bestätigung
@@ -955,6 +1258,32 @@ export type Label = {
 };
 
 /**
+ *  Eine **passive Leseschein-Zeile** (E53): macht eine Test-Kombination an der Compose sichtbar,
+ *  **blockiert aber nichts**. Sie sagt, **welcher** belegte Stand zuletzt gegen den Partner getestet
+ *  wurde und **welcher** Stand jetzt komponiert wird — damit der Compose-Lesende selbst sieht, ob
+ *  die Kombination belegt ist („FW zuletzt gegen PCB Rev D getestet, du nimmst Rev E — kein Test für
+ *  diese Kombination").
+ */
+export type LesescheinZeile = {
+	/**  Der flaggende (Quell-)Baustein des Paares (z.B. `"kicad"`). */
+	quell_baustein: string,
+	/**  Der Empfänger-(Ziel-)Baustein des Paares (z.B. `"zephyr"`). */
+	ziel_baustein: string,
+	/**
+	 *  Die zuletzt **belegt getestete** Quell-Revision dieses Paares (`Some("Rev D")`), oder `None`,
+	 *  wenn für dieses Paar **gar kein** Test belegt ist.
+	 */
+	zuletzt_getestete_rev: string | null,
+	/**  Die Quell-Revision, die jetzt **komponiert** wird (z.B. `"Rev E"`). */
+	komponierte_rev: string,
+	/**
+	 *  Ob die komponierte Kombination **belegt** ist (`true` ⇔ ein „ja" gegen genau die komponierte
+	 *  Quell-Revision liegt vor). Rein informativ — der Leseschein blockiert nie.
+	 */
+	belegt: boolean,
+};
+
+/**
  *  The domain-language question shown in the single orange-frame loud exception. It names the
  *  contested artifact in the tool's own words and offers the two stands to choose from. It holds
  *  **no** git conflict marker by construction (see [`LoudQuestion::contains_git_marker`]).
@@ -1016,6 +1345,24 @@ export type OfflineProduct = {
 };
 
 /**
+ *  The outcome of opening a lockable binary through the offline-aware path (Issue #136, E49b). One
+ *  of three; total. The non-lockable case is folded into [`OpenLock::Locked`] (a no-op „nothing to
+ *  coordinate", mirroring [`crate::lockglue::acquire_lock`]'s `Ok(false)` for text).
+ */
+export type OpenLock = 
+/**
+ *  The real `git lfs lock` was taken (or the path is mergeable text / pre-publish, so there was
+ *  nothing to coordinate). The binary is safely ours to edit; no Absichts-Sperre recorded.
+ */
+{ kind: "locked" } | 
+/**
+ *  The lock **server was unreachable**, so a local Absichts-Sperre was recorded and the file was
+ *  made writable: the binary opens, but the card must say „offline bearbeitet, Sperre nicht
+ *  bestätigt" — no false safety. Reconciled on the next connect.
+ */
+{ kind: "offline-intent" };
+
+/**
  *  Eine **Baustein-Paar-Default-Kante** (E20): „wenn dieser Baustein **und** der Partner-Baustein
  *  `partner_id` beide im Stack sind, schlage die Kante `derived_glob` ← `source_glob` vor". Der
  *  `derived_glob`/`source_glob` greift über die Heimaten **beider** Bausteine hinweg (das ist der
@@ -1031,6 +1378,29 @@ export type PaarDefaultKante = {
 	/**  Glob der Quelle, aus der es stammt (z.B. Layout **und** BOM — je eine Paar-Kante). */
 	source_glob: string,
 };
+
+/**
+ *  Der **Zustand eines Checklisten-Postens** (E52a) — die eine Achse, die die UI als „✓ Rev B" /
+ *  „⧖ ausstehend" rendert. Genau einer pro Baustein; total.
+ */
+export type PostenZustand = 
+/**  Ein **frischer** Freigabe-Stand wurde für diese Produkt-Revision beigetragen („✓ Rev B"). */
+"beigetragen" | 
+/**
+ *  Der **Vorstand wird mitgenommen** — bewusst „alter Stand reicht" („✓ Vorstand"). Ein
+ *  vollwertiger Beitrag, getrennt benannt, damit die Checkliste die Geste sichtbar macht.
+ */
+"vorstand-mitgenommen" | 
+/**
+ *  Ein **verpflichtender** Bereich **ohne** Beitrag — er steht aus und hält die Vollständigkeit
+ *  („⧖ ausstehend"). Nur ein Pflicht-Baustein kann diesen Zustand tragen.
+ */
+"ausstehend" | 
+/**
+ *  Ein **optionaler** Bereich ohne Beitrag — er ist nicht gewählt, blockiert aber nie
+ *  („– nicht dabei"). Optional & offen ergibt **nie** `Ausstehend` (E52a).
+ */
+"optional-offen";
 
 /**
  *  Die abgeleitete **primäre Aktion** einer Artefakt-Karte (PRD §14). `Auto` löst sich aus dem
@@ -1127,6 +1497,28 @@ export type Punktart =
 /**  A Stale-Kante: the derivation is older than its source (→ Warnung). */
 "stale-kante";
 
+/**  The single decision the Reconciler returns. Exactly one; total. */
+export type ReconcileDecision = 
+/**
+ *  **aktuell** — the `_plm` memory already matched reality. Nothing drifted; nothing to do and
+ *  nothing shown. The quiet common case.
+ */
+({ kind: "aktuell" }) & { aufholungen?: never } | 
+/**
+ *  **still aufgeholt** — work happened outside, but every drift is silently resolvable: the tool
+ *  catches up (the glue re-seeds the `_plm` memory) with **no** user prompt (E49). Carries the
+ *  named catch-ups for the calm log. (A struct variant, not a newtype-of-`Vec`, so the
+ *  internally-tagged enum serialises cleanly for the typed frontend bindings.)
+ */
+{ kind: "still-aufgeholt"; aufholungen: Aufholung[] } | 
+/**
+ *  **Abgleichfrage** — a drift that cannot be silently resolved (a contested ownership). The one
+ *  moment the open raises its voice: a single domain-language question, never a git marker.
+ */
+{
+	kind: "abgleichfrage",
+} & Abgleichfrage;
+
 /**
  *  One registered product: **only its path** (forward-or-native as the OS gave it) plus the
  *  folder name as a convenience label the UI can show without re-reading the disk. The label is
@@ -1137,6 +1529,38 @@ export type RegisteredProduct = {
 	path: string,
 	/**  Folder name, derived from `path` — a display convenience, not a second fact. */
 	name: string,
+};
+
+/**
+ *  Eine **Rekonstruierbar-Regel** (E50b, Issue #137) — die *dritte* Pfad-Klasse neben `ignore`/`lfs`.
+ * 
+ *  Eine git-native Toolchain (`west`, ESP-IDF, PlatformIO, `venv`) zieht beim ersten Build tausende
+ *  **rekonstruierbare** Framework-Dateien in den Heimat-Ordner — Dateien, die ein gepinntes
+ *  **Manifest** (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile) jederzeit **wieder erzeugt**.
+ *  Statt diesen ableitbaren Ballast mitzucommitten, verfolgt der Baustein **nur Quelle + gepinntes
+ *  Manifest**: das `framework`-Muster wird ignoriert, das `manifest` bleibt ausdrücklich verfolgt. Der
+ *  Zustand bleibt reproduzierbar, das Repo schlank — und die Formulierung **ehrlich**: „du hast
+ *  vollständige Ordner" heißt hier „Quelle + rekonstruierendes Manifest", keine falsche Vollständigkeit.
+ * 
+ *  Das **`rekonstruierbar` ist nicht `ignore`**: Ignore wirft Müll weg, der nie zurückkommen muss;
+ *  Rekonstruierbar wirft *ableitbaren* Ballast weg und **hält das Rezept** (das Manifest) verfolgt, das
+ *  ihn wiederherstellt. Beide leben ausschließlich im idempotenten Marker-Block der Dotfiles (E18, keine
+ *  Spiegelung); aus einer Rekonstruierbar-Regel wird ein Ignore-Muster **plus** eine Negation, die das
+ *  Manifest aus dem Ignore wieder herausnimmt (`!west.yml`), sodass git Quelle + Manifest weiter sieht.
+ */
+export type RekonstruierbarRegel = {
+	/**
+	 *  Das Muster der **rekonstruierbaren** Framework-Dateien, das ignoriert wird (z.B. `modules/`,
+	 *  `.west/`, `.pio/`). Das ist der ableitbare Ballast, den das Manifest jederzeit neu erzeugt.
+	 */
+	framework: string,
+	/**
+	 *  Die **gepinnten Manifest**-Pfade, die trotz des `framework`-Ignores ausdrücklich **verfolgt**
+	 *  bleiben (`west.yml`, `platformio.ini`, `sdkconfig`, eine Lockfile). Pro Eintrag entsteht eine
+	 *  Negations-Zeile (`!<manifest>`) im Marker-Block, die das Manifest aus dem Ignore zurückholt.
+	 *  Hier dürfen auch **handgeänderte** Komponenten stehen, damit lokale Patches nicht verlorengehen.
+	 */
+	manifest: string[],
 };
 
 /**
@@ -1379,6 +1803,21 @@ export type StilllegenWirkung = {
 	nichts_bewegt: boolean,
 };
 
+/**
+ *  Die **Produkt-Stückliste (BOM)** einer Produkt-Revision: pro verpflichtendem Baustein der eine
+ *  gewählte Release-Stand, der seinen Heimat-Bereich stellt. Genau das, was der Compose-Commit-Baum
+ *  physisch enthalten **muss** — die Glue prüft die Invariante **Baum = BOM** dagegen, damit kein
+ *  „Tag HEAD + Lüge im Manifest" entsteht.
+ */
+export type StuecklistenPosten = {
+	/**  `id` des Bausteins (z.B. `"kicad"`). */
+	baustein_id: string,
+	/**  Der Heimat-Bereich, den dieser Posten stellt (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Der dauerhafte Release-Tag des gewählten Stands (z.B. `freigabe/elektronik/Rev-B`). */
+	release_tag: string,
+};
+
 /**  The outcome of one silent daily sync pass, ready for the UI in the tool's vocabulary. */
 export type SyncOutcome = {
 	status: SyncStatus,
@@ -1485,6 +1924,22 @@ export type Toolstack = {
 };
 
 /**
+ *  One of the three places a fact can honestly live (E49). The tool never collapses them into a
+ *  single fictional store — disk, git and the server-locks each drift on their own, so the
+ *  reconcile names each catch-up by the place it happened in.
+ */
+export type TruthOrt = 
+/**  **Disk = Inhalt.** The worktree files — the user's actual bytes. The *content*. */
+"inhalt" | 
+/**  **git = Verlauf.** The commit history — durable, shared. The *history*. */
+"verlauf" | 
+/**
+ *  **Server-Sperren = flüchtige Koordination.** The `git lfs locks` — *ephemeral coordination*
+ *  of who currently holds an unmergeable file. Never content, never history.
+ */
+"koordination";
+
+/**
  *  Ein **Unzugeordnet-Fach pro Arbeitsbereich**: die Waisen eines Arbeitsbereichs (oberster
  *  Ordner). Eine Waise ist eine erfasste Datei ohne Etikett — nichts geht verloren, der Ordner
  *  bleibt als Zuordnungs-Hinweis.
@@ -1525,6 +1980,25 @@ export type VersionGraph = {
 };
 
 /**
+ *  Die **aktuelle Auswahl** eines Bereichs in der laufenden Schnür-Sitzung (Issue #140), wie der
+ *  Aufrufer sie übergibt: für einen Heimat-Bereich entweder ein frischer Freigabe-Stand, das
+ *  bewusste „Vorstand mitnehmen" oder (gar nicht in der Map ⇒) offen. Schlicht — die Glue setzt sie
+ *  in die Kern-[`Auswahl`] um. `specta::Type` + `Deserialize`, damit sie als Befehls-Argument über
+ *  die Tauri-Naht kommt (das Frontend schickt die Auswahl der Schnür-Sitzung).
+ */
+export type WahlEingabe = {
+	/**  Der Heimat-Bereich, für den gewählt wurde (z.B. `"elektronik"`). */
+	heimat: string,
+	/**  Der gewählte Release-Tag (ein verfügbarer Freigabe-Stand des Bereichs, E51a). */
+	release_tag: string,
+	/**
+	 *  Ob es das bewusste „alter Stand reicht" ist (Vorstand mitnehmen) statt ein frischer Stand.
+	 *  Beides ist ein vollwertiger Beitrag (E52a) — die Flagge erhält nur die sichtbare Geste.
+	 */
+	vorstand_mitnehmen: boolean,
+};
+
+/**
  *  Exactly one action the Lock Warden returns per snapshot. The glue in [`crate::pushglue`] is
  *  the only thing that turns one of these into git/LFS calls.
  */
@@ -1557,6 +2031,29 @@ export type WerkbankView = {
 	karten: ArtefaktKarte[],
 	/**  Unzugeordnet-Fächer, eines je Arbeitsbereich mit Waisen, sortiert nach `arbeitsbereich`. */
 	unzugeordnet: UnzugeordnetFach[],
+};
+
+/**
+ *  Der **Zusammenstellungs-Bericht** einer Produkt-Revision (E52a): die Checkliste (ein Posten pro
+ *  Baustein, Eingabe-Reihenfolge erhalten) plus die daraus folgende **Vollständigkeit**. Total —
+ *  die UI rendert daraus die ganze Checkliste, ohne neu zu entscheiden.
+ */
+export type ZusammenstellungsBericht = {
+	/**
+	 *  Die Checkliste, ein Posten pro Baustein, in **Eingabe-Reihenfolge** (die Glue liefert sie in
+	 *  der natürlichen Stack-Reihenfolge; der Kern erhält sie stabil).
+	 */
+	posten: ChecklistenPosten[],
+	/**
+	 *  Ob die Produkt-Revision **vollständig** ist: **jeder** Pflicht-Baustein trägt einen Beitrag.
+	 *  Optionale Bausteine zählen hier nie hinein (E52a).
+	 */
+	vollstaendig: boolean,
+	/**
+	 *  Die Bereiche (Heimat-Pfade), die noch **ausstehen** — verpflichtend und ohne Beitrag. Leer
+	 *  ⇔ vollständig. Die UI nennt sie beim Heimat-Namen, damit klar ist, *was* noch fehlt.
+	 */
+	ausstehende: string[],
 };
 
 /* Tauri Specta runtime */

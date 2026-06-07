@@ -13,6 +13,7 @@
 //! *when* a burst of saves has settled. The side-effecting [`commit_all`] and the watcher
 //! loop sit on top and are kept deliberately thin.
 
+use crate::nestedboundary::Boundary;
 use serde::Serialize;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -149,14 +150,28 @@ impl Debouncer {
 /// message. Side-effecting: the only place that touches git. Returns the [`Stand`] to
 /// surface, or `Ok(None)` if there was nothing to commit (a settle with no real change).
 ///
+/// `boundary` is the genested-`.git`-Grenze (E50a): each stop point is **excluded** from
+/// staging via a `:(exclude)` pathspec, so a framework-pulled `west`/ESP-IDF/`venv` tree is
+/// never staged. Without it `git add -A` would *fail outright* on a nested repo that has no
+/// commit checked out (`'…/west/' does not have a commit checked out`) — the very confusion of
+/// the status/commit logic E50a exists to prevent.
+///
 /// Local commit only — never pushes, never touches LFS, never prompts for text (E36/E39).
-pub fn commit_all(root: &Path, rel_path: &str, now: SystemTime) -> std::io::Result<Option<Stand>> {
+pub fn commit_all(
+    root: &Path,
+    rel_path: &str,
+    boundary: &Boundary,
+    now: SystemTime,
+) -> std::io::Result<Option<Stand>> {
     let timestamp = format_timestamp(now);
 
-    // Stage everything under the product root.
-    let add = crate::gitrunner::command(root)
-        .args(["add", "-A"])
-        .output()?;
+    // Stage everything under the product root, excluding every nested-`.git` boundary.
+    let mut add_args: Vec<String> = vec!["add".into(), "-A".into(), "--".into(), ".".into()];
+    for stop in boundary.stops() {
+        // `:(exclude)<stop>` keeps the foreign tree out of the index entirely.
+        add_args.push(format!(":(exclude){stop}"));
+    }
+    let add = crate::gitrunner::command(root).args(&add_args).output()?;
     if !add.status.success() {
         return Err(git_err("git add", &add.stderr));
     }

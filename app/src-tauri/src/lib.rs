@@ -7,6 +7,8 @@ pub mod autolock;
 pub mod baustein;
 pub mod bibliothek;
 pub mod classifier;
+pub mod compose;
+pub mod composeglue;
 pub mod credentials;
 pub mod defaultkanten;
 pub mod edges;
@@ -22,16 +24,23 @@ pub mod graph;
 pub mod graphread;
 pub mod import;
 pub mod import_gate;
+pub mod integrationsblock;
+pub mod integrationsblockglue;
 pub mod kartenstatus;
 pub mod knotenverben;
 pub mod konto;
 pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
+pub mod nestedboundary;
+pub mod offlinelock;
+pub mod offlinelockglue;
 pub mod onboardglue;
 pub mod plmstore;
 pub mod projection;
 pub mod pushglue;
+pub mod reconcileglue;
+pub mod reconciler;
 pub mod recovery;
 pub mod recoveryglue;
 pub mod registry;
@@ -49,9 +58,11 @@ pub mod werkbank;
 pub mod worktreeglue;
 pub mod zuordnung;
 pub mod zuordnungstore;
+pub mod zusammenstellung;
+pub mod zusammenstellungglue;
 
 use aufgabenblock::BlockDecision;
-use aufgabenblockglue::block_for_art;
+use aufgabenblockglue::{block_for_art, block_for_baustein};
 use baustein::{validate_baustein, dedup_globs, is_bundled_id, Baustein, Toolstack};
 use bibliothek::Bibliothek;
 use edgestore::{
@@ -59,16 +70,33 @@ use edgestore::{
     remove_persisted_edge, EdgeView,
 };
 use freigabegate::GateVerdict;
-use freigabegateglue::gate_for_art;
+use freigabegateglue::{gate_for_art, gate_for_baustein};
+use zusammenstellung::ZusammenstellungsBericht;
+use zusammenstellungglue::{
+    seede_initiale_revisionen, zusammenstellung_fuer_produkt, GesaeterBaustein, WahlEingabe,
+};
 use graph::{RevisionArt, VersionGraph};
-use graphread::{promote_to_revision, read_graph, toggle_revision_freigabe};
+use graphread::{
+    promote_to_revision, read_graph, release_baustein_revision, toggle_revision_freigabe,
+    unrelease_baustein_revision,
+};
 use konto::{
     clear_konto as clear_konto_file, konto_path, read_konto as read_konto_file, write_konto,
     KontoConfig, KontoView,
 };
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
+use compose::StuecklistenPosten;
+use integrationsblock::{IntegrationsAntwort, IntegrationsAufgabe, IntegrationsBlockEntscheid};
+use integrationsblockglue::{
+    beantworte_integration, flagge_integration, integrationsblock_fuer_compose, loesche_integration,
+    read_integrationen,
+};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
+use offlinelock::IntentReconcile;
+use offlinelockglue::{acquire_lock_or_intent, has_intent_lock, reconcile_intents_on_connect, OpenLock};
 use projection::{project_product, ProductView};
+use reconcileglue::reconcile_on_open;
+use reconciler::ReconcileDecision;
 use registry::{
     add_registered, read_registry, registry_path, relink_registered, remove_registered,
     RegisteredProduct,
@@ -280,6 +308,44 @@ fn toggle_revision_art(path: String, version: String) -> Result<VersionGraph, St
     toggle_revision_freigabe(root, &version).map_err(|e| e.to_string())
 }
 
+/// **Einen Baustein-Bereich unabhängig freigeben** (Issue #131, E51a). Jeder Baustein trägt seine
+/// eigene Revision + Art mit Scope = Heimat-Ordner: der HW-Entwickler gibt `elektronik` als „Rev B"
+/// frei, ohne dass WIP-Firmware ihn blockiert. Die Art wandert dabei auf die **Baustein-Revision**
+/// (Heimat-getragen), und es wird ein **dauerhafter** Baustein-Freigabe-Tag gesetzt, damit dieser
+/// Stand später in eine Produkt-Revision **komponierbar** bleibt. Liefert den frischen
+/// Versionsbaum, damit die UI in einer Runde aktualisiert.
+#[tauri::command]
+#[specta::specta]
+fn release_baustein(
+    path: String,
+    heimat: String,
+    stand_id: String,
+    version: String,
+) -> Result<VersionGraph, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    release_baustein_revision(root, &heimat, &stand_id, &version).map_err(|e| e.to_string())
+}
+
+/// Eine unabhängige **Baustein-Freigabe zurücknehmen** (Issue #131, E51a — reversibel, E22): die
+/// Heimat-Art zurück auf Prototyp und der dauerhafte Baustein-Freigabe-Tag wird entfernt. Liefert
+/// den frischen Versionsbaum.
+#[tauri::command]
+#[specta::specta]
+fn unrelease_baustein(
+    path: String,
+    heimat: String,
+    version: String,
+) -> Result<VersionGraph, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    unrelease_baustein_revision(root, &heimat, &version).map_err(|e| e.to_string())
+}
+
 /// **Als Ordner öffnen** (Issue #55, E27/E3 — Default-Knoten-Verb des Graph-Raums): materialisiert
 /// den Stand `stand_id` als *separaten, schreibgeschützten* Ordner neben dem Produkt (ein detached
 /// `git worktree`). Die Werkbank (Jetzt-Zustand) bleibt unberührt — ein Klick auf einen alten Knoten
@@ -480,6 +546,56 @@ async fn lock_artifact(product: String, path: String) -> Result<bool, String> {
     on_blocking(move || {
         let root = Path::new(&product);
         lockglue::acquire_lock(root, &path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Open a lockable binary **even with no reachable lock server** (Issue #136, E49b). The
+/// offline-aware sibling of [`lock_artifact`]: it tries the real `git lfs lock`, but if the lock
+/// server is unreachable it records a local **Absichts-Sperre** in `.plm-local/`, makes the file
+/// writable and returns [`OpenLock::OfflineIntent`] so the binary still opens — the card then shows
+/// „offline bearbeitet, Sperre nicht bestätigt", no false safety. A lock held by a **colleague**
+/// stays a loud error (real, present coordination the user must see). The pure decision lives in
+/// [`offlinelock`]; this command only reads the world and obeys.
+#[tauri::command]
+#[specta::specta]
+async fn open_lockable_artifact(product: String, path: String) -> Result<OpenLock, String> {
+    // `git lfs lock` is a networked, bounded call; keep it off the main thread so opening a binary
+    // can never freeze the UI while the (possibly unreachable) lock server is probed.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        acquire_lock_or_intent(root, &path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Whether a lockable artifact currently carries an unconfirmed **Absichts-Sperre** (Issue #136,
+/// E49b) — the fact the card turns into „offline bearbeitet, Sperre nicht bestätigt". A pure read of
+/// the local `.plm-local/` store; no network, no second source of truth.
+#[tauri::command]
+#[specta::specta]
+fn artifact_offline_intent(product: String, path: String) -> Result<bool, String> {
+    let root = Path::new(&product);
+    Ok(has_intent_lock(root, &path))
+}
+
+/// Reconcile the recorded **Absichts-Sperren** against the real server locks **on connect** (Issue
+/// #136, E49b) — the Eingang-B side of E49. Confirmable offline intents (the artifact is free or
+/// already ours) are cleared silently; a detected **double-edit** (a colleague was holding the
+/// artifact the whole time) surfaces as the single loud [`reconciler::Abgleichfrage`] — „du und Ben
+/// habt beide offline an X gearbeitet — wessen Arbeit gilt?", never a git/lock marker, never a
+/// silent overwrite. The pure decision lives in [`offlinelock::reconcile_intents`].
+#[tauri::command]
+#[specta::specta]
+async fn reconcile_offline_locks(path: String) -> Result<IntentReconcile, String> {
+    // Reads the bounded, networked `git lfs locks`; off the main thread so reconnecting never
+    // freezes the UI on a slow coordination read.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        reconcile_intents_on_connect(root).map_err(|e| e.to_string())
     })
     .await
 }
@@ -711,6 +827,30 @@ async fn sync_product(path: String, other: Option<String>) -> Result<SyncOutcome
             return Err(format!("Kein Ordner: {path}"));
         }
         run_sync(root, other).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Run the **silent Reconcile beim Öffnen** (Issue #129, E49a): on open, read the real observed
+/// state of the three truth-places — disk (Inhalt), git (Verlauf), server-locks (flüchtige
+/// Koordination) — compare it against the last-seen `_plm` memory, and **silently catch up** every
+/// drift that is resolvable (re-seeding the memory, no prompt) so the user never works on a stale
+/// picture. The one drift that is not silently resolvable — a contested ownership (an unmergeable
+/// artifact the tool last knew was ours is now held by a colleague) — returns the single
+/// **Abgleichfrage**: a domain-language question ("Bens Sperre liegt jetzt auf deinem Gehaeuse —
+/// wessen Arbeit gilt?"), never a git conflict marker. The pure decision lives in
+/// [`reconciler::reconcile`]; this command only reads the world and obeys.
+#[tauri::command]
+#[specta::specta]
+async fn reconcile_product(path: String) -> Result<ReconcileDecision, String> {
+    // The reconcile reads the bounded, networked `git lfs locks`; off the main thread so opening a
+    // product can never freeze the UI on a slow coordination read.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        reconcile_on_open(root).map_err(|e| e.to_string())
     })
     .await
 }
@@ -1456,6 +1596,104 @@ fn evaluate_task_block(path: String, art: RevisionArt) -> Result<BlockDecision, 
     Ok(block_for_art(root, art))
 }
 
+/// Wie [`evaluate_task_block`], aber die Strenge kommt aus dem **Baustein-Scope der Art** (Issue
+/// #131, E51a): die Art wird nicht übergeben, sondern für `(heimat, version)` aus dem
+/// Heimat-getragenen Art-Store gelesen. So blockiert eine offene Aufgabe nur den Bereich, der gerade
+/// als Freigabe reift — jeder Baustein reift unabhängig. Ein nie freigegebener Bereich ist Default
+/// Prototyp (lax) und blockiert nicht.
+#[tauri::command]
+#[specta::specta]
+fn evaluate_task_block_baustein(
+    path: String,
+    heimat: String,
+    version: String,
+) -> Result<BlockDecision, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(block_for_baustein(root, &heimat, &version))
+}
+
+/// Die offenen **Integrations-Aufgaben** eines Produkts lesen (Issue #141, E53) — die einmaligen,
+/// gegen eine Quell-Revision erhobenen Cross-Baustein-Test-Belege. Ein Produkt ohne Beleg-Datei hat
+/// null Forderungen (opt-in). Reiner Lese-Zugriff auf den `_plm`-Speicher.
+#[tauri::command]
+#[specta::specta]
+fn list_integrationen(path: String) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(read_integrationen(root))
+}
+
+/// **Flaggen** (HW, Issue #141, E53): eine neue, offene Integrations-Forderung anlegen — „mein
+/// `quell_baustein` braucht gegen `ziel_baustein` einen Test, erhoben gegen `quell_rev`". Der
+/// Empfänger (SW) beantwortet sie später mit ja/nein. Gibt die frische Liste zurück.
+#[tauri::command]
+#[specta::specta]
+fn flagge_integration_cmd(
+    path: String,
+    quell_baustein: String,
+    ziel_baustein: String,
+    quell_rev: String,
+) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    flagge_integration(root, &quell_baustein, &ziel_baustein, &quell_rev).map_err(|e| e.to_string())
+}
+
+/// **Beantworten** (SW/Empfänger, Issue #141, E53): die Antwort einer Integrations-Forderung auf
+/// ja/nein setzen — der Beleg liegt damit auf Akte. Eine fehlende id ist ein toleranter No-Op. Gibt
+/// die frische Liste zurück.
+#[tauri::command]
+#[specta::specta]
+fn beantworte_integration_cmd(
+    path: String,
+    id: String,
+    antwort: IntegrationsAntwort,
+) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    beantworte_integration(root, &id, antwort).map_err(|e| e.to_string())
+}
+
+/// Eine Integrations-Forderung löschen/zurücknehmen (Issue #141). Fehlende id ⇒ No-Op. Gibt die
+/// frische Liste zurück.
+#[tauri::command]
+#[specta::specta]
+fn delete_integration_cmd(path: String, id: String) -> Result<Vec<IntegrationsAufgabe>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    loesche_integration(root, &id).map_err(|e| e.to_string())
+}
+
+/// Den **Integrations-Block an der Produkt-Compose** entscheiden (Issue #141, E53): aus den offenen
+/// Forderungen und der Compose-Auswahl (der Produkt-Stückliste der zu bauenden Revision) den
+/// Block-Entscheid + die passiven Leseschein-Zeilen ableiten. **Nur an der Compose** — eine
+/// eigenständige Baustein-/FW-Freigabe ruft dies nie auf, also blockiert eine Integration nie eine
+/// Einzel-Freigabe. Eine „nein"/offene Forderung gegen die komponierte Quell-Rev ist ein harter
+/// Block; der Leseschein blockiert nie. Reiner Lese-Zugriff; die Entscheidung ist der pure Kern.
+#[tauri::command]
+#[specta::specta]
+fn evaluate_integrationsblock(
+    path: String,
+    compose_auswahl: Vec<StuecklistenPosten>,
+) -> Result<IntegrationsBlockEntscheid, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(integrationsblock_fuer_compose(root, &compose_auswahl))
+}
+
 /// Die **Freigabe-Gate**-Verdict für einen Checkpoint bei der angestrebten Revision-Art
 /// berechnen (Issue #52, E19/E19.3). Sammelt die offenen Punkte — offene Aufgaben (#49), Waisen
 /// (#47) und Stale-Kanten (#10) — und staffelt sie **nach Härte** hinter **einem** kontextabhängigen
@@ -1471,6 +1709,75 @@ fn evaluate_freigabe_gate(path: String, art: RevisionArt) -> Result<GateVerdict,
         return Err(format!("Kein Ordner: {path}"));
     }
     Ok(gate_for_art(root, art))
+}
+
+/// Wie [`evaluate_freigabe_gate`], aber das Gate staffelt nach dem **Baustein-Scope der Art** (Issue
+/// #131, E51a): die angestrebte Art kommt für `(heimat, version)` aus dem Heimat-getragenen
+/// Art-Store statt als Argument. So staffelt das Gate die offenen Punkte nach der Strenge genau
+/// dieses Bereichs — `elektronik` kann freigegeben werden, während eine noch reifende Firmware
+/// (Prototyp) ihn nicht durch ein hartes Gate blockiert. Sperrt nie aus (E22).
+#[tauri::command]
+#[specta::specta]
+fn evaluate_freigabe_gate_baustein(
+    path: String,
+    heimat: String,
+    version: String,
+) -> Result<GateVerdict, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(gate_for_baustein(root, &heimat, &version))
+}
+
+/// Die **Zusammenstellung einer Produkt-Revision** prüfen (Issue #140, E52a): aus dem Produkt-Stack,
+/// den verfügbaren Freigabe-Ständen je Heimat (E51a) und der aktuellen Auswahl die **Checkliste**
+/// (ein Posten je Baustein: „elektronik ✓ Rev B · firmware ⧖ ausstehend") und die
+/// **Vollständigkeit** berechnen. Vollständig ist die Revision genau dann, wenn **jeder**
+/// verpflichtende Baustein einen Beitrag trägt — einen frischen Freigabe-Stand **oder** das bewusste
+/// „Vorstand mitnehmen"; **optionale** Bausteine blockieren nie. `wahlen` ist die laufende Auswahl
+/// (heimat → frisch/Vorstand), `optionale_heimaten` benennt die optionalen Bereiche. Reine
+/// Lesepfade des `_plm`-Stacks + der git-Tags; das Urteil ist der reine
+/// [`zusammenstellung::zusammenstellen`]-Kern. **Keine** Rollen/Rechte — ein Beitrag ist
+/// Koordination, keine Autorisierung (E52a). Ein leeres Produkt ist eine leere, vollständige
+/// Checkliste (sperrt nie aus — E22).
+#[tauri::command]
+#[specta::specta]
+fn evaluate_zusammenstellung(
+    path: String,
+    wahlen: Vec<WahlEingabe>,
+    optionale_heimaten: Vec<String>,
+) -> Result<ZusammenstellungsBericht, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    Ok(zusammenstellung_fuer_produkt(root, &wahlen, &optionale_heimaten))
+}
+
+/// **Cold-Start: initiale Revisionen seeden** (Issue #142, E52b). Beim **allerersten** Produkt-
+/// Release trägt **kein** verpflichtender Baustein eine Revision — die erste Produkt-Revision wäre
+/// damit nie vollständig, ohne dass der Nutzer erst N Bausteine **manuell** freigibt. Dieser **eine**
+/// Akt sät stattdessen je Pflicht-Baustein **ohne** jeden freigegebenen Stand eine **initiale**
+/// Baustein-Revision aus dem **aktuellen Stand** (HEAD) — der dauerhafte `freigabe/<heimat>/<version>`-
+/// Tag (E51a). Danach trägt jeder Pflicht-Baustein einen Stand und die erste Produkt-Revision ist
+/// komponierbar (E52a). `version` ist die gemeinsame initiale Versionsmarke (z.B. `"v0.1"`);
+/// `optionale_heimaten` benennt die optionalen Bereiche (die nie gesät werden). Schon revidierte
+/// Bausteine bleiben unberührt — wen es zu säen gilt, entscheidet der reine Kern
+/// ([`zusammenstellung::kaltstart_seed_liste`]). Liefert die Liste der gesäten Bausteine; ein leeres
+/// Produkt / kein offener Pflicht-Bereich sät nichts (E22), nie ein Fehler.
+#[tauri::command]
+#[specta::specta]
+fn seed_cold_start(
+    path: String,
+    version: String,
+    optionale_heimaten: Vec<String>,
+) -> Result<Vec<GesaeterBaustein>, String> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("Kein Ordner: {path}"));
+    }
+    seede_initiale_revisionen(root, &version, &optionale_heimaten).map_err(|e| e.to_string())
 }
 
 /// Den **protokollierten Begründungs-Satz** eines weichen Blocks festhalten (Issue #52, E19/§22.1).
@@ -1624,6 +1931,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         read_version_graph,
         promote_revision,
         toggle_revision_art,
+        release_baustein,
+        unrelease_baustein,
         knoten_als_ordner,
         knoten_abzweigen,
         knoten_zurueckwerfen,
@@ -1636,6 +1945,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         evaluate_gate,
         migrate_history,
         lock_artifact,
+        open_lockable_artifact,
+        artifact_offline_intent,
+        reconcile_offline_locks,
         read_status,
         read_foreign_locks,
         read_setup_state,
@@ -1645,6 +1957,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         freigeben,
         sichern,
         evaluate_freigabe_gate,
+        evaluate_freigabe_gate_baustein,
+        evaluate_zusammenstellung,
+        seed_cold_start,
         log_freigabe_begruendung,
         read_git_log,
         clear_git_log,
@@ -1653,6 +1968,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         melde_problem,
         sweep_clean_locks,
         sync_product,
+        reconcile_product,
         list_bibliothek,
         save_baustein_cmd,
         delete_baustein_cmd,
@@ -1679,7 +1995,13 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         edit_task_cmd,
         set_task_status_cmd,
         delete_task_cmd,
-        evaluate_task_block
+        evaluate_task_block,
+        evaluate_task_block_baustein,
+        list_integrationen,
+        flagge_integration_cmd,
+        beantworte_integration_cmd,
+        delete_integration_cmd,
+        evaluate_integrationsblock
     ])
 }
 

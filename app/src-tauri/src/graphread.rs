@@ -9,7 +9,7 @@
 //! `VERSION_NOTES.md` — the **only** place human text lives (E28) — and tags the commit so
 //! the version label is durable. The words "commit"/"tag" never leave this layer.
 
-use crate::artstore::{read_art, set_art};
+use crate::artstore::{read_art, read_art_in, set_art, set_art_in};
 use crate::autocommit::{format_timestamp, machine_message};
 use crate::graph::{
     toggle_revision_art, BranchFact, CommitFact, RepoSnapshot, RevisionFact, VersionGraph,
@@ -37,6 +37,14 @@ pub(crate) const TAG_PREFIX: &str = "version/";
 /// Its presence is the git-side signal that the version tag is schreibgeschützt; un-releasing
 /// removes it. Internal — the user only ever sees the Prototyp/Freigabe state, never the tag.
 const PROTECT_PREFIX: &str = "version-protect/";
+
+/// Prefix of the durable **Baustein-Freigabe-Tag** (E51a, Issue #131): `freigabe/<heimat>/<label>`.
+/// Eine **unabhängige** Baustein-Freigabe setzt diesen dauerhaften Tag, damit ein alter Stand des
+/// Bausteins später in eine Produkt-Revision **komponierbar** bleibt — der Tag zeigt durabel auf
+/// genau den Stand, den der HW-Entwickler für seinen Bereich freigegeben hat, unabhängig davon, ob
+/// andere Bausteine (z.B. WIP-Firmware) noch reifen. Intern — der Nutzer sieht nur „Rev B
+/// freigegeben", nie den Tag-Mechanismus.
+const BAUSTEIN_FREIGABE_PREFIX: &str = "freigabe/";
 
 /// Read a repository at `root` into a [`RepoSnapshot`], then project it for the UI. The
 /// projection itself is pure; this function only collects the facts.
@@ -348,6 +356,146 @@ pub fn toggle_revision_freigabe(root: &Path, version: &str) -> std::io::Result<V
     read_graph(root)
 }
 
+/// **Eine Baustein-Revision unabhängig freigeben** (E51a, Issue #131). Anders als
+/// [`toggle_revision_freigabe`] (produkt-globale Art) reift hier jeder Bereich für sich: die Art
+/// wird im **Heimat-Scope** des Bausteins aufgezeichnet ([`set_art_in`]), und es wird ein
+/// **dauerhafter** Baustein-Freigabe-Tag `freigabe/<heimat>/<label>` auf den freigegebenen Stand
+/// gesetzt, damit dieser Stand später in eine Produkt-Revision **komponierbar** bleibt. Der
+/// HW-Entwickler kann so `elektronik` als „Rev B" freigeben, ohne dass WIP-Firmware ihn blockiert.
+///
+/// `heimat` ist der Heimat-Ordner des Bausteins (z.B. `elektronik`); `version` ist die
+/// Versionsmarke (z.B. `v1.0`/`Rev B`); `commit_id` ist der freizugebende Stand. Die produkt-weite
+/// `version/<label>`-Schreibschutz-Maschinerie bleibt unberührt — die Baustein-Freigabe ist ein
+/// **eigener**, Heimat-getragener Fakt.
+///
+/// SEAM (wie bei [`toggle_revision_freigabe`]): die dreistufige Freigabe-Gate-Prüfung (E19.3) läuft
+/// vor dem Anheben — sie wird vom Aufrufer (Glue/UI) mit dem **Baustein-Scope** der Art gestaffelt
+/// (Issue #52), bevor diese Funktion den Tag setzt.
+pub fn release_baustein_revision(
+    root: &Path,
+    heimat: &str,
+    commit_id: &str,
+    version: &str,
+) -> std::io::Result<VersionGraph> {
+    let heimat = heimat.trim();
+    let version = version.trim();
+    if heimat.is_empty() {
+        return Err(std::io::Error::other("Heimat darf nicht leer sein"));
+    }
+    if version.is_empty() {
+        return Err(std::io::Error::other("Version darf nicht leer sein"));
+    }
+
+    // Art im Heimat-Scope auf Freigabe heben (E51a: die Art wandert auf die Baustein-Revision).
+    set_art_in(root, heimat, version, crate::graph::RevisionArt::Freigabe)?;
+
+    // Dauerhaften Baustein-Freigabe-Tag auf den freigegebenen Stand setzen, damit er komponierbar
+    // bleibt. `-f`, damit ein erneutes Freigeben desselben Bereichs idempotent den Tag nachzieht.
+    let tag = baustein_freigabe_tag(heimat, version);
+    git_ok(root, &["tag", "-f", &tag, commit_id])?;
+
+    read_graph(root)
+}
+
+/// Der git-sichere **Baustein-Freigabe-Tag-Name** für `(heimat, version)` (E51a). Das menschliche
+/// Label (z.B. `„Rev B"`) lebt im Heimat-Art-Store; **git-Tags** dürfen aber keine Leerzeichen und
+/// keine Sonderzeichen wie `~^:?*[\` tragen (sonst lehnt git den Ref ab). Darum wird Heimat und
+/// Version hier in eine **stabile, slug-artige** Ref-Komponente überführt: alles, was kein
+/// `[A-Za-z0-9._-]` ist, wird zu `-`, Mehrfach-`-` zusammengezogen, führende/abschließende `-`/`.`
+/// entfernt. Rein und deterministisch — derselbe Bereich ergibt immer denselben dauerhaften Tag.
+fn baustein_freigabe_tag(heimat: &str, version: &str) -> String {
+    format!(
+        "{BAUSTEIN_FREIGABE_PREFIX}{}/{}",
+        slug_for_ref(heimat),
+        slug_for_ref(version)
+    )
+}
+
+/// Eine git-ref-sichere Slug-Komponente aus beliebigem menschlichem Text (siehe
+/// [`baustein_freigabe_tag`]). Rein und total.
+fn slug_for_ref(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = false;
+    for ch in s.trim().chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    // Führende/abschließende `-`/`.` sind in Ref-Komponenten unerwünscht.
+    out.trim_matches(|c| c == '-' || c == '.').to_string()
+}
+
+/// Eine unabhängige Baustein-Freigabe **zurücknehmen** (E22, reversibel): die Heimat-Art zurück auf
+/// Prototyp schalten und den dauerhaften Baustein-Freigabe-Tag entfernen. Total/idempotent — fehlt
+/// der Tag bereits, ist das kein Fehler.
+pub fn unrelease_baustein_revision(
+    root: &Path,
+    heimat: &str,
+    version: &str,
+) -> std::io::Result<VersionGraph> {
+    let heimat = heimat.trim();
+    let version = version.trim();
+    if heimat.is_empty() || version.is_empty() {
+        return Err(std::io::Error::other("Heimat und Version dürfen nicht leer sein"));
+    }
+    set_art_in(root, heimat, version, crate::graph::RevisionArt::Prototyp)?;
+    let tag = baustein_freigabe_tag(heimat, version);
+    if tag_ref_exists(root, &tag)? {
+        git_ok(root, &["tag", "-d", &tag])?;
+    }
+    read_graph(root)
+}
+
+/// Die im **Heimat-Scope** aufgezeichnete Art einer Baustein-Revision lesen (E51a). Eine noch nie
+/// freigegebene Baustein-Revision ist Default **Prototyp** (lax, E42). Reiner Lesepfad über den
+/// Heimat-getragenen Art-Store; degradiert wie alles andere zu Prototyp.
+pub fn baustein_revision_art(
+    root: &Path,
+    heimat: &str,
+    version: &str,
+) -> crate::graph::RevisionArt {
+    read_art_in(root, heimat, version)
+}
+
+/// Whether a durable Baustein-Freigabe-Tag exists for a Heimat's version (E51a). The tag is the
+/// durable, composable signal that this Baustein-Bereich was released independently.
+pub fn baustein_freigabe_tag_exists(
+    root: &Path,
+    heimat: &str,
+    version: &str,
+) -> std::io::Result<bool> {
+    let tag = baustein_freigabe_tag(heimat, version);
+    tag_ref_exists(root, &tag)
+}
+
+/// Die **dauerhaften Baustein-Freigabe-Tags** eines Heimat-Bereichs auflisten (E51a, Issue #140) —
+/// die für diesen Bereich **verfügbaren freigegebenen Stände**, aus denen eine Produkt-Revision
+/// wählen kann (frischer Stand) oder einen Vorstand mitnimmt. Liefert die vollen Tag-Refs
+/// (`freigabe/<heimat-slug>/<label-slug>`), neuester zuerst, sodass die Zusammenstellungs-Glue
+/// (#140) sie direkt als `verfuegbare_staende` durchreichen kann.
+///
+/// Gefiltert wird mit demselben Heimat-Slug, mit dem [`release_baustein_revision`] die Tags setzt —
+/// so passt das Listen-Präfix genau zu den geschriebenen Refs. Treu zur Degradations-Invariante
+/// (E22): kein Repo / kein Tag ⇒ leere Liste, nie ein Fehler.
+pub fn list_baustein_freigaben(root: &Path, heimat: &str) -> Vec<String> {
+    let praefix = format!("{BAUSTEIN_FREIGABE_PREFIX}{}/", slug_for_ref(heimat));
+    let muster = format!("{praefix}*");
+    // `--sort=-creatordate`: neuester Stand zuerst (der natürliche „frischeste" Vorschlag oben).
+    match git(root, &["tag", "--list", "--sort=-creatordate", &muster]) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether a durable version tag exists for `version`.
 fn tag_exists(root: &Path, version: &str) -> std::io::Result<bool> {
     let tag = format!("{TAG_PREFIX}{version}");
@@ -418,6 +566,33 @@ mod tests {
         let empty = "## v0.3\n_2026-05-30T09:00:00Z_\n\n## v0.2\nbody\n";
         assert!(!notes_have_section(empty, "v0.3"));
         assert!(notes_have_section(empty, "v0.2"));
+    }
+
+    #[test]
+    fn slug_for_ref_makes_a_git_safe_component() {
+        // table: human label -> git-ref-sichere Slug-Komponente (E51a). Leerzeichen/Sonderzeichen
+        // werden zu `-`, Mehrfach-`-` zusammengezogen, Ränder bereinigt.
+        let cases: &[(&str, &str)] = &[
+            ("Rev B", "Rev-B"),
+            ("v1.0", "v1.0"),
+            ("Rev  B", "Rev-B"),       // Mehrfach-Whitespace
+            ("  Rev B  ", "Rev-B"),    // Ränder getrimmt
+            ("a~b^c:d?e*f", "a-b-c-d-e-f"), // git-verbotene Zeichen
+            ("elektronik", "elektronik"),
+            ("a__b-c", "a__b-c"),      // `_`/`-` bleiben
+        ];
+        for (input, expected) in cases {
+            assert_eq!(slug_for_ref(input), *expected, "input = {input:?}");
+        }
+    }
+
+    #[test]
+    fn baustein_freigabe_tag_uses_the_safe_prefix_and_slug() {
+        // Der dauerhafte Baustein-Freigabe-Tag (E51a) ist `freigabe/<heimat-slug>/<version-slug>`.
+        assert_eq!(
+            baustein_freigabe_tag("elektronik", "Rev B"),
+            "freigabe/elektronik/Rev-B"
+        );
     }
 
     #[test]

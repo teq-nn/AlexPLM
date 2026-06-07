@@ -32,6 +32,7 @@ fn baustein(id: &str, version: u32, heimat: &str, globs: &[&str], ignore: &[&str
         globs: globs.iter().map(|s| s.to_string()).collect(),
         ignore: ignore.iter().map(|s| s.to_string()).collect(),
         lfs: vec![],
+        rekonstruierbar: vec![],
         oeffnen: Oeffnen::Auto,
         startaufgaben: vec![],
         default_kanten: vec![],

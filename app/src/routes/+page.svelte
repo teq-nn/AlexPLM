@@ -23,6 +23,9 @@
     SyncOutcome,
     PublishOutcome,
     LoudQuestion,
+    ReconcileDecision,
+    Abgleichfrage,
+    IntentReconcile,
     StandChoice,
     Task,
     TaskKind,
@@ -31,6 +34,7 @@
     WerkbankView,
     ArtefaktKarte as ArtefaktKarteT,
     ProduktStack,
+    ZusammenstellungsBericht,
   } from "$lib/types";
   import VersionBar from "$lib/VersionBar.svelte";
   import GraphRaum from "$lib/GraphRaum.svelte";
@@ -45,8 +49,10 @@
   import BibliothekAnsicht from "$lib/BibliothekAnsicht.svelte";
   import StandList from "$lib/StandList.svelte";
   import VersionTree from "$lib/VersionTree.svelte";
+  import Zusammenstellung from "$lib/Zusammenstellung.svelte";
   import Sicherungsstatus from "$lib/Sicherungsstatus.svelte";
   import LauteAusnahme from "$lib/LauteAusnahme.svelte";
+  import AbgleichBeimOeffnen from "$lib/AbgleichBeimOeffnen.svelte";
   import ProduktSuche from "$lib/ProduktSuche.svelte";
   import AufgabenListe from "$lib/AufgabenListe.svelte";
   import StackEinrichtung from "$lib/StackEinrichtung.svelte";
@@ -174,6 +180,48 @@
     }
   }
   onDestroy(stopSyncLoop);
+
+  // The Reconcile beim Öffnen (Issue #129, E49a). On open the tool SILENTLY reconciles the real
+  // observed state of the three truth-places — Inhalt (Platte), Verlauf (Git), Koordination
+  // (Server-Sperren) — against the last-seen `_plm` memory, so the user never works on a stale
+  // picture. A drift that is silently resolvable is just caught up (no prompt); the ONE drift that
+  // is not — a contested Sperre (an Artefakt the tool last knew was ours, now held by a Kollege) —
+  // surfaces as a single domain-language `Abgleichfrage`, never a git conflict marker.
+  let abgleich = $state<Abgleichfrage | null>(null);
+
+  /** Run the silent open-time reconcile once per open (E49). Best-effort: a raw reconcile error must
+   *  never break the silent open — the tool stays quiet. The pure Reconciler (Rust) decides silent
+   *  catch-up vs. the to-report question; the UI only reflects a question, never the catch-ups. */
+  async function runReconcile(path: string) {
+    abgleich = null;
+    try {
+      const decision: ReconcileDecision = await cmd.reconcileProduct(path);
+      // „aktuell" and „still-aufgeholt" are SILENT by design (E49) — nothing surfaces; the catch-up
+      // already re-seeded the memory in the backend. Only a contested ownership raises its voice.
+      if (decision.kind === "abgleichfrage") {
+        abgleich = decision;
+      }
+    } catch (e) {
+      // Silent by design (E49): an offline/unpublished/unreadable product keeps the open quiet.
+    }
+    // Eingang B (Issue #136, E49b): reconcile the local Absichts-Sperren recorded while offline
+    // against the real server locks now reachable. A confirmable intent is cleared silently; a
+    // detected double-edit („du und Ben habt beide offline an X gearbeitet") flows into the SAME
+    // single loud `Abgleichfrage` — never a silent overwrite, never a git/lock marker. Eingang A's
+    // contested ownership, if it already fired, stays — the loudest single voice is enough.
+    if (abgleich) return;
+    try {
+      const intent: IntentReconcile = await cmd.reconcileOfflineLocks(path);
+      if (intent.kind === "doppelbearbeitung") {
+        abgleich = intent;
+      }
+      // A keine-Kollision is SILENT by design (E49b) — the confirmable intents are already cleared
+      // in the backend; the cards stop warning on the next status pulse.
+      await pulse.refreshStatus();
+    } catch (e) {
+      // Silent by design: an offline/unpublished product keeps the connect quiet.
+    }
+  }
 
   /** Resolve the loud exception by choosing whose stand applies (Issue #43, E41). The backend
    *  applies the chosen side for the contested artifact and FINISHES the sync — a raw git conflict
@@ -308,6 +356,12 @@
     return k.hauptdatei ? (pulse.signals[k.hauptdatei] ?? null) : null;
   }
 
+  /** E49b (#136): whether a card's Hauptdatei was opened offline and carries an unconfirmed
+   *  Absichts-Sperre — drives the honest „offline bearbeitet, Sperre nicht bestätigt" line. */
+  function offlineIntentFor(k: ArtefaktKarteT): boolean {
+    return k.hauptdatei ? pulse.offlineIntents.has(k.hauptdatei) : false;
+  }
+
   /** THE one-click primary action of an Artefakt-Karte (Issue #47, PRD §14): open the dominant
    *  file or the folder via the OS default program. For a lockable Hauptdatei this also
    *  auto-acquires the lock (E31) before opening, reusing the existing edit gesture. */
@@ -363,6 +417,7 @@
     ceremonyOpen = false;
     syncQuiet = null;
     loud = null;
+    abgleich = null;
     loudFromPublish = false;
     resolving = false;
     stands = [];
@@ -383,6 +438,13 @@
   // The version tree (Issue #8): Stände as nodes, Revisionen marked, active version
   // driving the bar. Read read-only and refreshed whenever a new Stand settles.
   let graph = $state<VersionGraph | null>(null);
+
+  // Die Produkt-Zusammenstellung als Checkliste (Issue #140, E52a): pro Baustein ein Posten
+  // (beigetragen / Vorstand / ausstehend) + die Vollständigkeit. Read-only und opt-in — ohne
+  // Auswahl steht jeder Pflicht-Bereich aus. Refreshed on open und wenn ein Stand settled (neue
+  // Freigabe-Stände können dazukommen). Auswahl/Optional sind hier noch leer: die Checkliste zeigt
+  // den Reifestand, das Schnüren einer Revision ist eine spätere Geste.
+  let zusammenstellung = $state<ZusammenstellungsBericht | null>(null);
 
   // Manual „abgeleitet von" edges + their Stale-Warnungen (Issue #10). Opt-in: a product
   // with no drawn edges keeps this empty and shows no warnings (E40).
@@ -534,6 +596,19 @@
       graph = await cmd.readVersionGraph(productPath);
     } catch (e) {
       // The tree is a read-only view; a transient read failure must not break the shell.
+      error = String(e);
+    }
+  }
+
+  // Die Produkt-Zusammenstellung neu berechnen (Issue #140, E52a): Checkliste + Vollständigkeit
+  // aus dem Stack + den verfügbaren Freigabe-Ständen. Noch keine laufende Auswahl/Optional-Achse
+  // verdrahtet (das Schnüren ist eine spätere Geste) — die Checkliste zeigt den reinen Reifestand.
+  // Read-only; ein Lesefehler darf die Schale nie brechen.
+  async function refreshZusammenstellung() {
+    if (!productPath) return;
+    try {
+      zusammenstellung = await cmd.evaluateZusammenstellung(productPath, [], []);
+    } catch (e) {
       error = String(e);
     }
   }
@@ -771,8 +846,13 @@
       await refreshTasks();
       await refreshWerkbank();
       await refreshStack();
+      await refreshZusammenstellung();
       await refreshSetup();
       pulse.start();
+      // Reconcile beim Öffnen (Issue #129, E49a): BEFORE the daily rhythm begins, silently catch the
+      // tool up to the real observed state so the user never works on a stale picture. A contested
+      // Sperre surfaces as the single `Abgleichfrage`; every other drift is caught up quietly.
+      await runReconcile(path);
       // The daily net-sync begins silently (E41): pull on open, then on idle ticks.
       startSyncLoop();
       // Opened products fill the Verlauf even without the search (Issue #73): register + stamp.
@@ -856,6 +936,7 @@
       await refreshEdges();
       await refreshTasks();
       await refreshWerkbank();
+      await refreshZusammenstellung();
       await refreshSetup();
       // A freshly created product has no server yet — open the one-time ceremony once so the
       // user is guided to share it. Reopening/daily use never re-triggers this.
@@ -1370,6 +1451,7 @@
                   karte={k}
                   index={i}
                   signal={signalFor(k)}
+                  offlineIntent={offlineIntentFor(k)}
                   onOpen={openKarte}
                   candidates={karteCandidates(k)}
                   source={sourceOf.get(k.ordner) ?? null}
@@ -1505,6 +1587,14 @@
 
       <div class="tree-col" style="width: {treeWidth}px;">
         <VersionTree {graph} onPromote={promote} onToggleArt={toggleArt} />
+        <!-- Die Produkt-Zusammenstellung als Checkliste (Issue #140, E52a): „elektronik ✓ Rev B ·
+             firmware ⧖ ausstehend". Zeigt den Reifestand je Baustein + ob die Revision vollständig
+             ist; kein Rollen-/Rechte-Gate. -->
+        {#if zusammenstellung}
+          <div class="zus-col">
+            <Zusammenstellung bericht={zusammenstellung} />
+          </div>
+        {/if}
       </div>
 
       <!-- Splitter between the Versionsbaum and the Fremde-Sperren-Schiene. -->
@@ -1624,6 +1714,13 @@
      contradiction and raised its voice. Domain language only; no git markers, ever. -->
 {#if loud}
   <LauteAusnahme question={loud} busy={resolving} onChoose={resolveLoud} />
+{/if}
+
+<!-- The single open-time „Abgleich" moment (Issue #129, E49a): the silent reconcile hit a contested
+     Sperre it cannot catch up on its own. Domain language only; the three truth-places are named
+     honestly; no git markers, ever. -->
+{#if abgleich}
+  <AbgleichBeimOeffnen frage={abgleich} onClose={() => (abgleich = null)} />
 {/if}
 
 <!-- Produktübergreifende Live-Suche (Issue #45, E45): an app-level instrument screen. -->
@@ -1865,10 +1962,22 @@
     max-width: 640px;
     min-height: 0;
     display: flex;
+    flex-direction: column;
   }
   .tree-col > :global(.display) {
     width: 100%;
     flex: 1;
+    min-height: 0;
+  }
+  /* Die Zusammenstellungs-Checkliste sitzt unter dem Versionsbaum, mit eigenem Scroll und einer
+     ruhigen Hairline als Naht. Routine = grau. */
+  .zus-col {
+    flex: none;
+    max-height: 42%;
+    overflow: auto;
+    padding: 10px;
+    border-top: 1px solid var(--hairline);
+    background: var(--surface-sunken);
   }
 
   /* A splitter is a hairline seam with an invisible widened grab zone. It carries no fill of

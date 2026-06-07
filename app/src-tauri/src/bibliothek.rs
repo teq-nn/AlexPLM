@@ -217,6 +217,7 @@ mod tests {
             globs: vec!["*.x".to_string()],
             ignore: vec![],
             lfs: vec![],
+            rekonstruierbar: vec![],
             oeffnen: Oeffnen::Auto,
             startaufgaben: vec![],
             default_kanten: vec![],

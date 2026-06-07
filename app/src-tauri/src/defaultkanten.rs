@@ -221,6 +221,7 @@ mod tests {
             globs: globs.iter().map(|s| s.to_string()).collect(),
             ignore: vec![],
             lfs: vec![],
+            rekonstruierbar: vec![],
             oeffnen: Oeffnen::Auto,
             startaufgaben: vec![],
             default_kanten,
