@@ -12,6 +12,9 @@
     index = 0,
     // Auto-Lock LED signal for the Hauptdatei, if read back (Issue #6); quiet by default.
     signal = null,
+    // E49b (#136): the Hauptdatei was opened while the lock server was unreachable, so it carries an
+    // unconfirmed Absichts-Sperre — the card says so honestly, no false safety. Quiet by default.
+    offlineIntent = false,
     // One-click primary action: open the dominant file or the folder via OS default.
     onOpen = (_karte: ArtefaktKarte) => {},
     // Hand-assignment is ONLY a correction (Issue #47): a quiet, hidden-until-asked gesture.
@@ -28,6 +31,7 @@
     karte: ArtefaktKarte;
     index?: number;
     signal?: ArtifactSignal | null;
+    offlineIntent?: boolean;
     onOpen?: (karte: ArtefaktKarte) => void;
     onCorrect?: ((karte: ArtefaktKarte) => void) | undefined;
     candidates?: { ordner: string; baustein: string }[];
@@ -136,6 +140,14 @@
         {#if signal.locked_at}
           <span class="since">seit {signal.locked_at}</span>
         {/if}
+      </div>
+    {/if}
+
+    {#if offlineIntent}
+      <!-- E49b (#136): opened offline, the lock could not be confirmed. Stated honestly — the user
+           knows the safety is unconfirmed until the next connect reconciles it. No false safety. -->
+      <div class="offlineline mono" title="Beim Öffnen war der Sperr-Server nicht erreichbar — die Sperre wird beim nächsten Verbinden abgeglichen.">
+        offline bearbeitet, Sperre nicht bestätigt
       </div>
     {/if}
 
@@ -308,6 +320,18 @@
   }
   .lockline .since {
     color: var(--ink-muted);
+  }
+
+  /* E49b (#136): the honest "opened offline, lock unconfirmed" line. Grey, not orange — it is a
+     known, recoverable state (reconciled on connect), not the loud foreign-lock exception. */
+  .offlineline {
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--ink-muted);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Derived "prüf-mich" status line (Issue #53): a quiet grey readout under the body. Routine

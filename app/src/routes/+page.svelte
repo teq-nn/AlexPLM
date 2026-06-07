@@ -25,6 +25,7 @@
     LoudQuestion,
     ReconcileDecision,
     Abgleichfrage,
+    IntentReconcile,
     StandChoice,
     Task,
     TaskKind,
@@ -201,6 +202,23 @@
     } catch (e) {
       // Silent by design (E49): an offline/unpublished/unreadable product keeps the open quiet.
     }
+    // Eingang B (Issue #136, E49b): reconcile the local Absichts-Sperren recorded while offline
+    // against the real server locks now reachable. A confirmable intent is cleared silently; a
+    // detected double-edit („du und Ben habt beide offline an X gearbeitet") flows into the SAME
+    // single loud `Abgleichfrage` — never a silent overwrite, never a git/lock marker. Eingang A's
+    // contested ownership, if it already fired, stays — the loudest single voice is enough.
+    if (abgleich) return;
+    try {
+      const intent: IntentReconcile = await cmd.reconcileOfflineLocks(path);
+      if (intent.kind === "doppelbearbeitung") {
+        abgleich = intent;
+      }
+      // A keine-Kollision is SILENT by design (E49b) — the confirmable intents are already cleared
+      // in the backend; the cards stop warning on the next status pulse.
+      await pulse.refreshStatus();
+    } catch (e) {
+      // Silent by design: an offline/unpublished product keeps the connect quiet.
+    }
   }
 
   /** Resolve the loud exception by choosing whose stand applies (Issue #43, E41). The backend
@@ -334,6 +352,12 @@
   /** Signal lookup for a card, keyed on its Hauptdatei (the Auto-Lock LED, E37). */
   function signalFor(k: ArtefaktKarteT): ArtifactSignal | null {
     return k.hauptdatei ? (pulse.signals[k.hauptdatei] ?? null) : null;
+  }
+
+  /** E49b (#136): whether a card's Hauptdatei was opened offline and carries an unconfirmed
+   *  Absichts-Sperre — drives the honest „offline bearbeitet, Sperre nicht bestätigt" line. */
+  function offlineIntentFor(k: ArtefaktKarteT): boolean {
+    return k.hauptdatei ? pulse.offlineIntents.has(k.hauptdatei) : false;
   }
 
   /** THE one-click primary action of an Artefakt-Karte (Issue #47, PRD §14): open the dominant
@@ -1374,6 +1398,7 @@
                   karte={k}
                   index={i}
                   signal={signalFor(k)}
+                  offlineIntent={offlineIntentFor(k)}
                   onOpen={openKarte}
                   candidates={karteCandidates(k)}
                   source={sourceOf.get(k.ordner) ?? null}

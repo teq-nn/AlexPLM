@@ -28,6 +28,8 @@ pub mod lockglue;
 pub mod locks;
 pub mod markerblock;
 pub mod nestedboundary;
+pub mod offlinelock;
+pub mod offlinelockglue;
 pub mod onboardglue;
 pub mod plmstore;
 pub mod projection;
@@ -71,6 +73,8 @@ use konto::{
 };
 use import::{evaluate_import_gate, import_folder, migrate_history_behind_gate, GateReport, ImportResult};
 use locks::{derive_statuses, foreign_locks, ArtifactSignal, LockInfo};
+use offlinelock::IntentReconcile;
+use offlinelockglue::{acquire_lock_or_intent, has_intent_lock, reconcile_intents_on_connect, OpenLock};
 use projection::{project_product, ProductView};
 use reconcileglue::reconcile_on_open;
 use reconciler::ReconcileDecision;
@@ -487,6 +491,56 @@ async fn lock_artifact(product: String, path: String) -> Result<bool, String> {
     on_blocking(move || {
         let root = Path::new(&product);
         lockglue::acquire_lock(root, &path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Open a lockable binary **even with no reachable lock server** (Issue #136, E49b). The
+/// offline-aware sibling of [`lock_artifact`]: it tries the real `git lfs lock`, but if the lock
+/// server is unreachable it records a local **Absichts-Sperre** in `.plm-local/`, makes the file
+/// writable and returns [`OpenLock::OfflineIntent`] so the binary still opens — the card then shows
+/// „offline bearbeitet, Sperre nicht bestätigt", no false safety. A lock held by a **colleague**
+/// stays a loud error (real, present coordination the user must see). The pure decision lives in
+/// [`offlinelock`]; this command only reads the world and obeys.
+#[tauri::command]
+#[specta::specta]
+async fn open_lockable_artifact(product: String, path: String) -> Result<OpenLock, String> {
+    // `git lfs lock` is a networked, bounded call; keep it off the main thread so opening a binary
+    // can never freeze the UI while the (possibly unreachable) lock server is probed.
+    on_blocking(move || {
+        let root = Path::new(&product);
+        acquire_lock_or_intent(root, &path).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Whether a lockable artifact currently carries an unconfirmed **Absichts-Sperre** (Issue #136,
+/// E49b) — the fact the card turns into „offline bearbeitet, Sperre nicht bestätigt". A pure read of
+/// the local `.plm-local/` store; no network, no second source of truth.
+#[tauri::command]
+#[specta::specta]
+fn artifact_offline_intent(product: String, path: String) -> Result<bool, String> {
+    let root = Path::new(&product);
+    Ok(has_intent_lock(root, &path))
+}
+
+/// Reconcile the recorded **Absichts-Sperren** against the real server locks **on connect** (Issue
+/// #136, E49b) — the Eingang-B side of E49. Confirmable offline intents (the artifact is free or
+/// already ours) are cleared silently; a detected **double-edit** (a colleague was holding the
+/// artifact the whole time) surfaces as the single loud [`reconciler::Abgleichfrage`] — „du und Ben
+/// habt beide offline an X gearbeitet — wessen Arbeit gilt?", never a git/lock marker, never a
+/// silent overwrite. The pure decision lives in [`offlinelock::reconcile_intents`].
+#[tauri::command]
+#[specta::specta]
+async fn reconcile_offline_locks(path: String) -> Result<IntentReconcile, String> {
+    // Reads the bounded, networked `git lfs locks`; off the main thread so reconnecting never
+    // freezes the UI on a slow coordination read.
+    on_blocking(move || {
+        let root = Path::new(&path);
+        if !root.is_dir() {
+            return Err(format!("Kein Ordner: {path}"));
+        }
+        reconcile_intents_on_connect(root).map_err(|e| e.to_string())
     })
     .await
 }
@@ -1706,6 +1760,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         evaluate_gate,
         migrate_history,
         lock_artifact,
+        open_lockable_artifact,
+        artifact_offline_intent,
+        reconcile_offline_locks,
         read_status,
         read_foreign_locks,
         read_setup_state,
