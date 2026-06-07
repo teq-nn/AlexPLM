@@ -19,11 +19,25 @@
 //! Like the rest of the gate family, the intended Revision-Art is an **input**, not something
 //! this glue computes: Issue #52's UI calls this with [`RevisionArt::Freigabe`] at the moment a
 //! Prototyp is toggled up to a Freigabe, to staff the open points before the tag is raised.
+//!
+//! ## Scope = Heimat + git-diff-Ableitung (E51b, Issue #138)
+//!
+//! Eine **Baustein-Freigabe** scopt das Gate auf die **Heimat** dieses Bausteins: [`gate_for_baustein`]
+//! übergibt dem reinen Kern einen [`Scope`] über `heimat`, sodass nur die offenen Punkte dieses
+//! Bereichs gestaffelt werden (eine WIP-Firmware hält eine PCB-Freigabe nicht als Geisel). Der
+//! produkt-weite [`gate_for_art`] übergibt einen **leeren** Scope (ganzes Produkt, bisheriges
+//! Verhalten).
+//!
+//! **Welcher Baustein sich geändert hat**, wird **nicht von Hand** zugewiesen, sondern aus dem
+//! **git-Diff der Heimat-Ordner** abgeleitet ([`changed_heimaten`]): aus den Kandidaten-Heimaten
+//! des Produkt-Stacks bleiben genau die, in deren Ordner der Diff Pfade berührt. Das Einsortieren
+//! nutzt dieselbe Segmentregel wie der Kern ([`crate::freigabegate::within_heimat`]).
 
 use crate::artstore::read_art_in;
 use crate::edgestore::read_edge_view;
-use crate::freigabegate::{decide_gate, GateInputs, GateVerdict};
+use crate::freigabegate::{decide_gate, GateInputs, GateVerdict, Scope};
 use crate::graph::RevisionArt;
+use crate::syncglue::parse_diff_names;
 use crate::taskstore::read_tasks;
 use crate::werkbank::read_werkbank;
 use std::path::Path;
@@ -57,18 +71,82 @@ pub fn gate_for_art(root: &Path, art: RevisionArt) -> GateVerdict {
         fehlende_pflicht: Vec::new(),
         fremd_warnung: None,
     };
-    decide_gate(&inputs, art)
+    // Produkt-weiter Aufruf (E47-Push, der Versionsbalken): leerer Scope = ganzes Produkt im Blick.
+    decide_gate(&inputs, art, &Scope::default())
 }
 
-/// Wie [`gate_for_art`], aber die angestrebte Art kommt aus dem **Baustein-Scope** (E51a, Issue
-/// #131): sie wird aus dem **Heimat-getragenen** Art-Store für `(heimat, version)` gelesen
-/// ([`read_art_in`]) statt übergeben. So staffelt das Gate die offenen Punkte nach der Strenge
-/// **genau dieses Bereichs** — der HW-Entwickler kann `elektronik` freigeben, während die
-/// WIP-Firmware (für dieselbe Marke noch Prototyp) ihn nicht durch ein hartes Gate blockiert. Eine
-/// nie freigegebene Baustein-Revision ist Default Prototyp (lax). Sperrt nie aus (E22).
+/// Wie [`gate_for_art`], aber die angestrebte Art **und** der Scope kommen aus dem
+/// **Baustein-Scope** (E51a/E51b, Issues #131/#138): die Art wird aus dem **Heimat-getragenen**
+/// Art-Store für `(heimat, version)` gelesen ([`read_art_in`]), und das Gate **filtert** die offenen
+/// Punkte zusätzlich auf die **Heimat** dieses Bausteins. So staffelt es nur die Punkte **genau
+/// dieses Bereichs** — der HW-Entwickler kann `elektronik` freigeben, während die WIP-Firmware
+/// (eigener Bereich, eigene noch reifende Revision) ihn weder durch ein hartes Gate noch durch ihre
+/// offenen Punkte als Geisel hält. Eine nie freigegebene Baustein-Revision ist Default Prototyp
+/// (lax). Sperrt nie aus (E22).
 pub fn gate_for_baustein(root: &Path, heimat: &str, version: &str) -> GateVerdict {
     let art = read_art_in(root, heimat, version);
-    gate_for_art(root, art)
+    let tasks = read_tasks(root);
+    let stale = read_edge_view(root).warnings;
+    let waisen = read_werkbank(root)
+        .map(|w| {
+            w.unzugeordnet
+                .into_iter()
+                .flat_map(|fach| fach.dateien)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+
+    let inputs = GateInputs {
+        tasks,
+        stale,
+        waisen,
+        fehlende_pflicht: Vec::new(),
+        fremd_warnung: None,
+    };
+    decide_gate(&inputs, art, &Scope::heimat(heimat))
+}
+
+/// Aus dem **git-Diff der Heimat-Ordner** ableiten, **welche** Bausteine sich geändert haben (E51b,
+/// Issue #138) — nicht von Hand zugewiesen. Gegeben die Kandidaten-Heimat-Pfade (die Heimaten der
+/// Produkt-Stack-Bausteine) liefert die Funktion genau die Teilmenge, in deren Ordner der Diff
+/// gegen `base` Pfade berührt. Eine Baustein-Freigabe scopt dann genau auf diese Heimat(en).
+///
+/// `base` ist die git-Referenz, gegen die verglichen wird (z.B. der letzte Freigabe-Tag oder
+/// `HEAD`); ein leerer `base` vergleicht den **Arbeitsbaum gegen `HEAD`** (uncommitted + staged),
+/// der Stand kurz vor dem Setzen des Freigabe-Tags. Seiteneffekt nur im git-Diff; das Einsortieren
+/// ist die reine [`crate::freigabegate::within_heimat`]-Segmentregel — dieselbe wie im Kern.
+///
+/// Treu zur Degradations-Invariante (E22): kein Repo / Diff schlägt fehl ⇒ leere Liste (kein
+/// Bereich „geändert"), nie ein Fehler.
+pub fn changed_heimaten(root: &Path, candidate_heimaten: &[String], base: &str) -> Vec<String> {
+    let changed = diff_names(root, base);
+    candidate_heimaten
+        .iter()
+        .filter(|h| {
+            changed
+                .iter()
+                .any(|p| crate::freigabegate::within_heimat(p, h))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Die produkt-relativen Pfade, die der git-Diff gegen `base` berührt. `base` leer ⇒ Arbeitsbaum
+/// gegen `HEAD` (`git diff --name-only`); sonst gegen die genannte Referenz. Spiegelt den
+/// `syncglue`-Lesepfad (`git diff --name-only` + [`parse_diff_names`]). Best-effort: kein
+/// Repo / Fehlschlag ⇒ leer (E22).
+fn diff_names(root: &Path, base: &str) -> Vec<String> {
+    let mut cmd = crate::gitrunner::command(root);
+    cmd.args(["diff", "--name-only"]);
+    if !base.trim().is_empty() {
+        cmd.arg(base);
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            parse_diff_names(&String::from_utf8_lossy(&out.stdout))
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +181,32 @@ mod tests {
             due: None,
             blocks_everywhere: false,
         }
+    }
+
+    /// Eine offene Aufgabe, an einen Arbeitsbereich (Heimat-Pfad) gehängt — der Scope-Bezug (E51b).
+    fn aufgabe_at(title: &str, arbeitsbereich: &str) -> NewTask {
+        let mut t = aufgabe(title);
+        t.link = Some(crate::tasks::TaskLink::Arbeitsbereich(arbeitsbereich.to_string()));
+        t
+    }
+
+    /// Ein git-Befehl im Repo (Test-Helfer).
+    fn git(root: &Path, args: &[&str]) {
+        crate::gitrunner::command(root)
+            .args(args)
+            .output()
+            .unwrap();
+    }
+
+    /// Ein leeres git-Repo mit erstem Commit anlegen, damit `git diff` eine Basis hat.
+    fn git_init(root: &Path) {
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "t@t"]);
+        git(root, &["config", "user.name", "t"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("README"), "x").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "init"]);
     }
 
     /// An empty product (no stores) is a clean `Taggen` verdict in any context — the gate never
@@ -166,6 +270,82 @@ mod tests {
         assert_eq!(f.knopf, KnopfZustand::Taggen);
         assert!(f.punkte.is_empty());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **E51b Heimat-Scope durch die Stores** (Issue #138): eine **firmware**-verknüpfte offene
+    /// Aufgabe hält eine **elektronik**-Freigabe **nicht** als Geisel — sie fällt aus dem Scope, auch
+    /// wenn beide Bereiche freigegeben sind. Aus Sicht der firmware-Freigabe blockiert dieselbe
+    /// Aufgabe sehr wohl. Jeder Bereich reift für sich.
+    #[test]
+    fn baustein_gate_scopes_open_points_to_its_heimat() {
+        use crate::artstore::set_art_in;
+        let dir = tmp();
+        // Eine Aufgabe, die fest zur firmware gehört.
+        create_task(&dir, aufgabe_at("Bootloader fixen", "firmware")).unwrap();
+
+        // Beide Bereiche sind freigegeben (streng) …
+        set_art_in(&dir, "elektronik", "v1.0", RevisionArt::Freigabe).unwrap();
+        set_art_in(&dir, "firmware", "v1.0", RevisionArt::Freigabe).unwrap();
+
+        // … aber die elektronik-Freigabe scopt auf elektronik → die firmware-Aufgabe fällt heraus.
+        let e = gate_for_baustein(&dir, "elektronik", "v1.0");
+        assert_eq!(e.knopf, KnopfZustand::Taggen, "firmware-WIP hält elektronik nicht");
+        assert!(e.punkte.is_empty());
+
+        // Aus Sicht der firmware-Freigabe ist genau diese Aufgabe ein harter Block.
+        let f = gate_for_baustein(&dir, "firmware", "v1.0");
+        assert_eq!(f.knopf, KnopfZustand::GesperrtDurchAufgabe);
+        assert_eq!(f.hard_blocking_task_ids(), vec![f.punkte[0].ref_id.clone()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **E51b „welcher Baustein änderte sich" aus dem git-Diff** (Issue #138): zwischen dem letzten
+    /// Stand (`base`) und dem aktuellen HEAD wurde **nur** unter `elektronik/` committet, also liefert
+    /// [`changed_heimaten`] aus den Kandidaten-Heimaten genau `elektronik` — nicht von Hand
+    /// zugewiesen, sondern aus dem Diff der Heimat-Ordner abgeleitet (`git diff --name-only base`).
+    /// Ein Geschwisterordner mit gemeinsamem Präfix (`elektronik-alt/`) zählt **nicht** dazu
+    /// (Segmentgrenze).
+    #[test]
+    fn changed_heimaten_derives_the_changed_baustein_from_the_git_diff() {
+        let dir = tmp();
+        git_init(&dir);
+
+        let candidates = vec![
+            "elektronik".to_string(),
+            "firmware".to_string(),
+            "mechanik".to_string(),
+        ];
+        // Der letzte Freigabe-Stand = der erste Commit. Gegen ihn noch keine Änderung.
+        assert!(changed_heimaten(&dir, &candidates, "HEAD").is_empty());
+
+        // Einen neuen Stand committen, der NUR elektronik/ (und einen Präfix-Geschwisterordner)
+        // berührt — so läge er nach einem Werkbank-Autocommit vor dem Setzen des Freigabe-Tags.
+        fs::create_dir_all(dir.join("elektronik")).unwrap();
+        fs::write(dir.join("elektronik/board.kicad_pcb"), "rev b").unwrap();
+        fs::create_dir_all(dir.join("elektronik-alt")).unwrap();
+        fs::write(dir.join("elektronik-alt/x"), "y").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "rev b"]);
+
+        // Gegen den vorherigen Stand (HEAD~1) ist genau elektronik berührt — nicht elektronik-alt.
+        let changed = changed_heimaten(&dir, &candidates, "HEAD~1");
+        assert_eq!(
+            changed,
+            vec!["elektronik".to_string()],
+            "nur die elektronik-Heimat ist im Diff berührt, elektronik-alt passt nicht hinein"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// **Degradation (E22)**: ohne git-Repo schlägt der Diff fehl ⇒ leere Liste, nie ein Fehler.
+    #[test]
+    fn changed_heimaten_degrades_without_a_repo() {
+        let dir = tmp();
+        let candidates = vec!["elektronik".to_string()];
+        assert!(changed_heimaten(&dir, &candidates, "HEAD").is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 }
